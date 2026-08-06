@@ -1,0 +1,12 @@
+linear-Gaussian testbed: 4 params, 6 obs, exact posterior known
+budget 20000/60, 20 datasets x 600 draws
+
+      base |  mean err |  std ratio |  corr err |  W1/std
+------------------------------------------------------------
+  standard |     1.51% |      1.098 |     0.071 |   0.305
+      data |     1.63% |      1.016 |     0.089 |   0.335
+      full |     1.58% |      1.049 |     0.120 |   0.318
+------------------------------------------------------------
+targets: mean err -> 0, std ratio -> 1.000, corr err -> 0, W1/std -> 0
+(std ratio < 1 = over-confident posterior; corr err shows whether the flow
+ reproduces the true parameter correlations at all)

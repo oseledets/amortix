@@ -1,0 +1,3 @@
+honest scoreboard | budget 12000/40 | 100 datasets x 400 draws
+          case | prior-only |   ridge | amortized | classical | verdict
+------------------------------------------------------------------------------

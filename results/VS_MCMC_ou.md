@@ -7,43 +7,43 @@ Per held-out dataset, the amortized posterior is compared with MCMC samples from
 OU: amortized CFM posterior vs MCMC gold standard
 ================================================================================================
 params ['theta', 'mu', 'sigma'] | tokens 74 | path 500 steps @ dt=0.02
-budget n_train=12000 epochs=40 | 12 held-out datasets | 2000 amortized draws vs 20000 MCMC draws
+budget n_train=12000 epochs=40 | 12 held-out datasets | 2000 amortized draws vs 8000 MCMC draws
 
 reference: exact OU likelihood, data=observed (73 of 501 path points), scheme=exact
-MCMC quality: max split-Rhat 1.008 | min ESS 893 / 20000 | mean acceptance 0.25
+MCMC quality: max split-Rhat 1.028 | min ESS 331 / 8000 | mean acceptance 0.25   <-- WARNING: reference not converged, raise --mcmc_samples
 
    param | mean diff | |bias|/std | std ratio |  W1/std | std amort |  std MCMC
 -------------------------------------------------------------------------------
-   theta |     5.90% |       0.27 |     0.882 |   0.285 |    19.26% |    21.76%
-      mu |     8.21% |       0.80 |     0.073 |   1.087 |     0.68% |    10.23%
-   sigma |     2.09% |       0.31 |     1.004 |   0.352 |     6.11% |     6.34%
+   theta |     5.40% |       0.25 |     0.953 |   0.261 |    20.68% |    21.76%
+      mu |     2.46% |       0.26 |     0.791 |   0.308 |     7.90% |    10.20%
+   sigma |     2.05% |       0.31 |     1.061 |   0.316 |     6.91% |     6.43%
 -------------------------------------------------------------------------------
-     ALL |     5.40% |       0.46 |     0.653 |   0.575 |     8.68% |    12.78%
-MC floor |     0.43% |       0.03 |     1.011 |   0.045 |  (two independent MCMC runs of the SAME posterior)
+     ALL |     3.30% |       0.27 |     0.935 |   0.295 |    11.83% |    12.80%
+MC floor |     0.66% |       0.05 |     1.005 |   0.068 |  (two independent MCMC runs of the SAME posterior)
 
-correlation-matrix difference (mean |d corr| over off-diagonals): 0.251   (MC floor 0.020)
+correlation-matrix difference (mean |d corr| over off-diagonals): 0.132   (MC floor 0.038)
 per pair (mean over datasets)  -- a pair whose amortized posterior is degenerate makes its correlation meaningless:
-    corr(theta,mu): amortized +0.038 | MCMC -0.030 | diff 0.068 | MC floor 0.002
-    corr(theta,sigma): amortized +0.121 | MCMC +0.286 | diff 0.165 | MC floor 0.006
-    corr(mu,sigma): amortized -0.418 | MCMC -0.004 | diff 0.414 | MC floor 0.011
-worst-dataset W1/std per param: theta:1.04  mu:2.24  sigma:0.78
+    corr(theta,mu): amortized +0.053 | MCMC -0.028 | diff 0.081 | MC floor 0.014
+    corr(theta,sigma): amortized +0.129 | MCMC +0.289 | diff 0.159 | MC floor 0.003
+    corr(mu,sigma): amortized +0.053 | MCMC -0.006 | diff 0.059 | MC floor 0.022
+worst-dataset W1/std per param: theta:0.69  mu:0.62  sigma:0.75
 targets: mean diff -> 0, |bias|/std -> 0, std ratio -> 1.000, W1/std -> 0, corr diff -> 0;
 the MC floor row is what those metrics read when BOTH sample sets are exact -- that is the resolution limit.
 (std ratio > 1 = too wide/under-confident, < 1 = over-confident; mean diff and stds are % of prior range)
 
 anchor -- RMSE of the posterior mean to the true parameter (% of prior range):
-  amortized theta:26.65%  mu:1.91%  sigma:7.05%   (mean 11.87%)
-  MCMC      theta:26.26%  mu:11.22%  sigma:6.33%   (mean 14.60%)
+  amortized theta:25.23%  mu:11.69%  sigma:6.83%   (mean 14.58%)
+  MCMC      theta:25.79%  mu:11.78%  sigma:6.82%   (mean 14.80%)
 
 note -- OU initial condition: the simulator sets X_0 = mu exactly, so the data pins mu.
 The conditional likelihood above deliberately ignores that (as the closed-form MLE does),
 so the reference posterior for mu is artificially broad. Measured:
-  amortized |E[mu] - X_0| = 1.81% of prior range, amortized std(mu) = 0.68%, MCMC std(mu) = 10.23%
+  amortized |E[mu] - X_0| = 17.17% of prior range, amortized std(mu) = 7.90%, MCMC std(mu) = 10.20%
   reference B (mu pinned at X_0 -- the exact posterior of the actual generative model):
-     theta: mean diff 4.70%  std ratio 0.985  W1/std 0.235
-     sigma: mean diff 2.13%  std ratio 1.007  W1/std 0.356
+     theta: mean diff 12.36%  std ratio 1.258  W1/std 0.991
+     sigma: mean diff 1.96%  std ratio 1.065  W1/std 0.305
 
-timing: train 1651s once | amortized 3161 ms/dataset (2000 draws) | MCMC 1701 ms/dataset (20000 draws)
+timing: train 662s once | amortized 927 ms/dataset (2000 draws) | MCMC 322 ms/dataset (8000 draws)
 (MCMC is cheap here precisely because the likelihood is closed-form -- these two cases exist to
  validate the machinery, not to be beaten on speed. The amortization pays off where no such likelihood exists.)
 ```

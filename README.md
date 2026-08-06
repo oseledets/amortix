@@ -60,30 +60,42 @@ tokens, _ = prob.observe(true_params)      # one observed dataset -> token set
 samples = post.sample(tokens, n=2000)      # posterior over (theta, mu, sigma), ~180 ms
 ```
 
-### Result on Ornstein–Uhlenbeck (validation case)
+### Result on Ornstein–Uhlenbeck — WITHDRAWN
 
-OU has an *exact* closed-form MLE, so we can check the amortized posterior against
-a near-optimal classical estimator. Mean abs error as % of prior range, over 120
-held-out datasets:
+This section used to publish a table showing the amortized posterior beating the
+exact MLE on OU (mu at 1.4% of the prior range). **Those numbers were an artifact
+and have been withdrawn.** Two audits established why:
 
-| param | amortized | exact MLE | 90% coverage |
-|-------|----------:|----------:|-------------:|
-| theta | 16.6%     | 24.5%     | 91%          |
-| mu    | 1.4%      | 7.8%      | 100%         |
-| sigma | 5.5%      | 2.1%      | 88%          |
-| **all** | **7.8%** | **11.5%** | **93%**     |
+* The OU simulator started every path at `X0 = mu` *exactly*, so mu could be read
+  straight off the first observation instead of being inferred. The network found
+  the leak; the likelihood baseline, which ignores the initial condition, could
+  not. `X0` is now drawn from the stationary law.
+* An exact information floor for this problem (the Euler discretization makes OU
+  an exact AR(1), so the Bayes posterior given the observed times is computable)
+  puts the best achievable error at **mu 7.29%**. The published 1.4% was 5.2x
+  below the optimum — arithmetically impossible, which is exactly the signature
+  of the leak.
 
-The amortized posterior is **competitive with the exact MLE** (better overall —
-it is more robust to sampling resolution for the drift, since it consumes a
-multi-resolution view). The point is not to beat MLE on OU — it is that *the same
-code transfers to SDEs with no tractable likelihood*, where MLE is unavailable.
-(`uv run python examples/recover.py ou --plot`)
+The same audit found the shipped "exact MLE" baseline is neither exact nor
+near-optimal here: it carries a +31% small-sample bias in theta.
 
-*Coverage ≈ 90% here looks reassuring, but note the caveat below: coverage alone
-is a weak calibration test, and OU's μ/σ do **not** pass strict SBC at this
-budget. Numbers measured on the original engine.*
+New numbers will be published only alongside the controls described below.
 
 ---
+
+## Reading any number in this repo
+
+Every comparison must be read against two floors, or it means nothing:
+
+| reference | what it is |
+|---|---|
+| **prior-only** | ignore the data, predict the prior mean — exactly **25.00%** of the range for a uniform prior. A parameter scored near this is not being recovered at all. |
+| **ridge control** | degree-2 ridge on ~20 summary statistics — the cheapest serious attempt. Neural machinery that does not beat this earns nothing. |
+
+`uv run python examples/scoreboard.py` reports both next to the amortized result.
+Coverage-based calibration claims are especially treacherous: a posterior that
+simply returns the prior passes `cov90 in [80,97]%`, so that criterion alone can
+never show a method learned anything. Use SBC (`examples/calib_gallery.py`).
 
 ## Why SDE recovery is the sweet spot
 

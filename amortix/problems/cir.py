@@ -57,8 +57,21 @@ class CIR(SDEProblem):
         return sigma * torch.sqrt(x.clamp_min(0.0))   # state-dependent [B, 1]
 
     def x0_sampler(self, m, generator=None):
-        # start at the long-run mean b so paths are stationary-ish from the outset
-        return m[:, 1:2].clone()                 # [B, 1]
+        # Draw X0 from the CIR stationary law, Gamma(2ab/sigma^2, rate 2a/sigma^2),
+        # whose mean is b. Sampled by inverse-CDF from uniforms taken off the
+        # supplied generator, so runs stay reproducible.
+        #
+        # Do NOT start at X0 = b exactly: that hands the long-run mean to any
+        # estimator that looks at the first observation, so b stops being inferred
+        # and starts being read off (it was the best-recovered parameter for
+        # exactly that reason).
+        from scipy.stats import gamma as _gamma
+        a, b, sigma = m[:, 0], m[:, 1], m[:, 2]
+        conc = (2.0 * a * b / sigma ** 2).clamp(min=1e-3)
+        scale = (sigma ** 2 / (2.0 * a))
+        u = torch.rand(m.shape[0], generator=generator).clamp(1e-6, 1 - 1e-6)
+        x0 = _gamma.ppf(u.numpy(), a=conc.numpy(), scale=scale.numpy())
+        return torch.as_tensor(x0, dtype=m.dtype).clamp_min(1e-6).unsqueeze(-1)
 
     def simulate_paths(self, m, generator=None):
         # clamp the state positive after each Euler step (CIR positivity)
