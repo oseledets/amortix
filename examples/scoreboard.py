@@ -26,7 +26,7 @@ import numpy as np
 import torch
 
 from amortix import FlowPosterior
-from amortix.controls import prior_mean_error, ridge_control_error
+from amortix.controls import prior_mean_error, ridge_control_error, contraction
 from amortix.problems import GALLERY
 
 
@@ -83,23 +83,47 @@ def main():
                    "loses to ridge" if beats_prior else "NO SIGNAL (~prior)")
         emit(f"{name:>14} | {prior_e.mean():9.2f}% | {ridge_e.mean():6.2f}% | "
              f"{amort.mean():8.2f}% | {class_e.mean():8.2f}% | {verdict}")
+        contr = contraction(draws, prob)
         rows.append(dict(case=name, names=prob.prior.names,
                          prior=prior_e.tolist(), ridge=ridge_e.tolist(),
-                         amort=amort.tolist(), classical=class_e.tolist()))
+                         amort=amort.tolist(), classical=class_e.tolist(),
+                         contraction=contr.tolist()))
 
     emit("-" * 78)
     n_ridge = sum(1 for r in rows if np.mean(r["amort"]) < np.mean(r["ridge"]))
     emit(f"amortized beats the ridge control in {n_ridge}/{len(rows)} cases")
     emit("")
-    emit("--- per parameter (prior-only / ridge / amortized) ---")
-    emit("a parameter whose amortized error sits at the prior-only level is not")
-    emit("being recovered at all, whatever the aggregate says")
+    emit("--- per parameter: prior-only / ridge / amortized | contraction | verdict ---")
+    emit("contraction = prior sd / posterior sd (1.0 = the posterior IS the prior).")
+    emit("A flat posterior alone is ambiguous, so the ridge control arbitrates:")
+    emit("  NO INFO   - the posterior is flat AND the ridge cannot beat the prior")
+    emit("              => the data does not contain the parameter; scoring it is noise")
+    emit("  WE FAILED - the posterior is flat but the ridge DOES extract the parameter")
+    emit("              => the information is there and our model missed it")
+    no_info, we_failed = [], []
     for r in rows:
         emit(f"\n{r['case']}")
         for j, nm in enumerate(r["names"]):
-            flag = "  <-- no information" if r["amort"][j] > 0.9 * r["prior"][j] else ""
+            c = r["contraction"][j]
+            ridge_helps = r["ridge"][j] < 0.8 * r["prior"][j]
+            if c < 1.15 and not ridge_helps:
+                verdict, tag = "NO INFO", no_info
+            elif c < 1.15:
+                verdict, tag = "WE FAILED", we_failed
+            else:
+                verdict, tag = "", None
+            if tag is not None:
+                tag.append(f"{r['case']}.{nm}")
             emit(f"   {nm:>10}: {r['prior'][j]:6.2f}% / {r['ridge'][j]:6.2f}% / "
-                 f"{r['amort'][j]:6.2f}%{flag}")
+                 f"{r['amort'][j]:6.2f}% | {c:5.2f}x  {verdict}")
+    emit("")
+    if no_info:
+        emit(f"no information in the data ({len(no_info)}): " + ", ".join(no_info))
+    if we_failed:
+        emit(f"OUR FAILURES -- ridge extracts what we do not ({len(we_failed)}): "
+             + ", ".join(we_failed))
+    if not no_info and not we_failed:
+        emit("every parameter is being recovered")
 
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     path = os.path.join(repo, args.out)

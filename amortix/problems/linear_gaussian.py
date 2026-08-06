@@ -28,9 +28,13 @@ N_OBS = 6
 NOISE = 0.5
 
 # fixed, correlated design matrix (seeded once, not learned)
+# dtype is pinned: torch.randn follows the ambient default dtype, so this
+# "fixed, seeded" matrix silently changed (and the posterior got 2.3x wider)
+# whenever the process default was float64. The reference instrument must not
+# depend on global state.
 _g = torch.Generator().manual_seed(20240630)
-A = (torch.randn(N_OBS, D_PARAM, generator=_g) * 0.6
-     + torch.linspace(0.4, 1.0, D_PARAM)[None, :])
+A = (torch.randn(N_OBS, D_PARAM, generator=_g, dtype=torch.float32) * 0.6
+     + torch.linspace(0.4, 1.0, D_PARAM, dtype=torch.float32)[None, :])
 
 
 class _VectorObserver:

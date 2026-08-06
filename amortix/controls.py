@@ -31,6 +31,20 @@ def prior_mean_error(prob, m_true) -> np.ndarray:
     return (np.abs(guess[None] - mt) / rng * 100).mean(0)
 
 
+def contraction(draws, prob) -> np.ndarray:
+    """Posterior contraction per parameter: prior sd / posterior sd.
+
+    The identifiability check. 1.0 means the data said nothing and the posterior
+    is the prior; a parameter sitting near 1.0 is not being recovered, so its
+    "error" is noise and including it in an average silently dilutes the result.
+    Several parameters in this gallery sit at 1.02-1.06 (sindy c2/c3, SEIRD alpha),
+    which is why headline averages over all parameters were misleading.
+    """
+    s = np.asarray(draws)                       # [K, n_post, d]
+    prior_sd = ((prob.prior.high - prob.prior.low).numpy()) / np.sqrt(12.0)
+    return prior_sd / (s.std(1).mean(0) + 1e-12)
+
+
 def summary_features(tokens: torch.Tensor) -> np.ndarray:
     """Generic per-feature summary statistics of a token set [B, T, F] -> [B, K].
 
