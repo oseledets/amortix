@@ -12,22 +12,15 @@ import argparse
 import importlib
 import json
 import os
-import sys
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from amortix import FlowPosterior
 from amortix.problems import GALLERY
-from amortix.diagnostics import run_sbc, coverage_from_ranks, sbc_uniformity
+from amortix.diagnostics import (run_sbc, coverage_from_ranks, sbc_uniformity,
+                                 calibration_error)
 
-LEVELS = (0.5, 0.9, 0.95)
-
-
-def calib_error(ranks, n_post):
-    cov = coverage_from_ranks(ranks, n_post, LEVELS)
-    return float(np.mean([np.abs(cov[q] - q) for q in LEVELS])) * 100
 
 
 def main():
@@ -41,7 +34,7 @@ def main():
     ap.add_argument("--conditioning", type=str, default="xattn",
                     choices=["concat", "xattn"],
                     help="how the velocity is conditioned on the data (xattn = dense)")
-    ap.add_argument("--out", type=str, default="CALIB_GALLERY_RESULTS.md",
+    ap.add_argument("--out", type=str, default="results/CALIB_GALLERY_RESULTS.md",
                     help="results file (markdown; a .json sibling is also written)")
     args = ap.parse_args()
     cases = args.cases if args.cases else GALLERY
@@ -61,7 +54,7 @@ def main():
         res = run_sbc(post, prob, n_sims=args.n_sims, n_post=args.n_post, seed=0)
         ranks = res["ranks"]
         pvals = sbc_uniformity(ranks, args.n_post)
-        ce = calib_error(ranks, args.n_post)
+        ce = calibration_error(ranks, args.n_post)
         cov50 = coverage_from_ranks(ranks, args.n_post, (0.5,))[0.5]
         cov90 = coverage_from_ranks(ranks, args.n_post, (0.9,))[0.9]
         rows.append(dict(name=name, d=prob.prior.dim, names=res["names"],

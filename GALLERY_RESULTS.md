@@ -45,7 +45,7 @@ amortized inference ≈ **119 ms / dataset** (then reusable for any new dataset)
   (GBM 1.8%, CIR 1.6%, double-well 2.2%), because the classical estimator sees
   all 500 fine increments whereas amortix sees only the 50-token fast channel.
   This is a **data-budget artifact, not a method limit** — wider fast channels
-  or more paths close it (see `examples/ou_data_axis.py`).
+  or more paths close it.
 - **Low-noise regimes favor deterministic fitting.** Stochastic Lotka–Volterra
   uses small multiplicative noise (s=0.05), so deterministic NLS fits the
   near-clean path almost exactly; amortix trades a little point accuracy for a

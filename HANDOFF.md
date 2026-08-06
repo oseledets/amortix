@@ -13,7 +13,7 @@ an honest amortized-vs-classical benchmark harness.
 git clone <this repo> && cd amortix
 uv sync --extra plot          # Python 3.11 pinned, deps locked in uv.lock
 uv run pytest -q              # 23 smoke tests, ~20 s — verifies the install
-uv run python examples/ou_recovery.py    # first real result (~2.5 min CPU)
+uv run amortix recover ou     # first real result (~2 min CPU)
 ```
 
 If `uv` is missing: `curl -LsSf https://astral.sh/uv/install.sh | sh`.
@@ -26,7 +26,7 @@ If `uv` is missing: `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 | [`CALIBRATION.md`](CALIBRATION.md) | the calibration investigation — **read before trusting any posterior** |
 | [`USECASES.md`](USECASES.md) | ~22 cited real-world applications + positioning vs `sbi`/BayesFlow |
 | [`GALLERY_RESULTS.md`](GALLERY_RESULTS.md) | accuracy vs classical baselines (⚠️ stale, see banner) |
-| [`CONTRACT_cases.md`](CONTRACT_cases.md) | the contract to follow when adding a new case |
+| [`ADDING_CASES.md`](ADDING_CASES.md) | the contract to follow when adding a new case |
 
 ## Code map
 
@@ -88,8 +88,9 @@ to `results/` as markdown + JSON so nothing is lost to a closed terminal.
 
 ## Adding a new case
 
-Follow [`CONTRACT_cases.md`](CONTRACT_cases.md): write
+Follow [`ADDING_CASES.md`](ADDING_CASES.md): write
 `amortix/problems/<name>.py` exposing a `Problem` subclass plus `make()`,
 `SOTA_NAME` and `sota(tokens, traj, prob)`, register it in
-`amortix/problems/__init__.py` (`GALLERY`), and add `examples/<name>_recovery.py`.
+`amortix/problems/__init__.py` (`GALLERY`). It is then automatically covered by
+`examples/recover.py`, the gallery benchmarks and the CLI.
 `uv run pytest -q` will then exercise it automatically.

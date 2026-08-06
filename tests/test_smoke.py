@@ -113,3 +113,35 @@ def test_sde_vector_state_and_correlated_noise():
     traj = euler_maruyama(lambda x, mm: -x, lambda x, mm: torch.ones_like(x),
                           torch.zeros(4, 2), m, dt=0.01, n_steps=20, corr_chol=chol)
     assert traj.shape == (4, 21, 2) and torch.isfinite(traj).all()
+
+
+def test_sample_batch_matches_single():
+    """Batched sampling must agree with the single-dataset path."""
+    from amortix import OrnsteinUhlenbeck
+    prob = OrnsteinUhlenbeck()
+    post = FlowPosterior(prob).fit(n_train=128, epochs=1, verbose=False)
+    tk, _ = prob.observe(prob.prior.sample(3, generator=torch.Generator().manual_seed(1)))
+    batch = post.sample_batch(tk, n=32, seed=5, n_steps=10)
+    single = post.sample_batch(tk[:1], n=32, seed=5, n_steps=10)
+    assert batch.shape == (3, 32, prob.prior.dim)
+    assert torch.allclose(batch[0], single[0], atol=1e-5)
+
+
+@pytest.mark.parametrize("solver", ["euler", "midpoint", "rk4"])
+def test_solvers_agree(solver):
+    """All ODE solvers must produce finite, in-prior samples."""
+    from amortix import OrnsteinUhlenbeck
+    prob = OrnsteinUhlenbeck()
+    post = FlowPosterior(prob).fit(n_train=128, epochs=1, verbose=False)
+    s = post.sample(prob.simulate(2)[1][0], n=32, n_steps=10, solver=solver)
+    assert torch.isfinite(s).all()
+    assert (s >= prob.prior.low - 1e-4).all() and (s <= prob.prior.high + 1e-4).all()
+
+
+def test_cli_cases_runs(capsys):
+    """The console-script entry point must work."""
+    from amortix.cli import main
+    main(["cases"])
+    out = capsys.readouterr().out
+    for name in GALLERY:
+        assert name in out

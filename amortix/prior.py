@@ -49,7 +49,3 @@ class BoxUniform:
     def denormalize(self, z: torch.Tensor) -> torch.Tensor:
         u = 0.5 * (1.0 + torch.erf(z / _SQRT2))
         return self.low + u * self.span
-
-    def base_sample(self, n: int, generator: torch.Generator = None) -> torch.Tensor:
-        """Base distribution of the flow (standard normal == prior marginal)."""
-        return torch.randn(n, self.dim, generator=generator)

@@ -81,7 +81,23 @@ sample `z₀`:
     z_t = (1−t) z₀ + t z₁,     t ~ U(0,1)
     L_CFM = E ‖ v_θ(z_t, t, c) − (z₁ − z₀) ‖²
 
-Inference integrates `dz/dt = v_θ(...)` from `t=0→1` with RK4, then denormalizes.
+Inference integrates `dz/dt = v_θ(...)` from `t=0→1`, then denormalizes.
+
+**Solver cost.** The linear-path CFM trajectory is nearly straight, so high-order
+integration is wasted work. Measured against an RK4/200-step reference (OU, 20
+datasets × 400 draws), the deviation in posterior mean/std as % of prior range:
+
+| solver | steps | net evals | error | time |
+|---|---|---|---|---|
+| RK4 | 60 | 240 | 0.000% | 21.7 s |
+| **midpoint** | **20** | **40** | **0.002%** | **3.3 s** |
+| midpoint | 10 | 20 | 0.009% | 1.8 s |
+| Euler | 20 | 20 | 0.143% | 1.5 s |
+
+Midpoint/20 is the default: **6.6× cheaper than RK4/60 for a 0.002% difference**
+— negligible next to calibration errors of a few percentage points. Euler is
+visibly worse and not worth the extra 2×. `sample_batch` also solves many
+datasets jointly (`chunk`), which matters for SBC studies over hundreds of them.
 
 **How `v_θ` is conditioned on the data (`conditioning=`):**
 - `"xattn"` (**default**): dense, DiT-style. The encoder's *full per-observation

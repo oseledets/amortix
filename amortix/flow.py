@@ -57,6 +57,13 @@ class VelocityNet(nn.Module):
         te = timestep_embedding(t, self.t_dim)
         return self.net(torch.cat([z, te, ctx], dim=-1))
 
+    def forward_grouped(self, z, t, ctx):
+        """z [B, G, d], t [B], ctx [B, ctx_dim] -> [B, G, d] (G samples per dataset)."""
+        B, G, d = z.shape
+        te = timestep_embedding(t, self.t_dim)[:, None].expand(B, G, -1)
+        ctx = ctx[:, None].expand(B, G, -1)
+        return self.net(torch.cat([z, te, ctx], dim=-1))
+
 
 def _modulate(x, shift, scale):
     # x [B, P, dim]; shift/scale [B, dim]
@@ -138,6 +145,20 @@ class CrossCondVelocity(nn.Module):
         for blk, (k, v) in zip(self.blocks, cache):
             tok = blk(tok, k, v, temb)
         return self.out(self.out_norm(tok)).squeeze(-1)                   # [B,d]
+
+    def forward_grouped(self, z, t, cache):
+        """z [B, G, d], t [B], cache from a [B, T, dim] memory -> [B, G, d].
+
+        G posterior samples per dataset are folded into the query axis, so the
+        per-dataset K,V are used as-is (no replication): attention is [B,H,G*d,T].
+        """
+        B, G, d = z.shape
+        tok = self.param_emb.view(1, 1, d, -1) + self.val_in(z.unsqueeze(-1))
+        tok = tok.reshape(B, G * d, -1)                                   # [B,G*d,dim]
+        temb = self.t_mlp(timestep_embedding(t, self.t_dim))              # [B,dim]
+        for blk, (k, v) in zip(self.blocks, cache):
+            tok = blk(tok, k, v, temb)
+        return self.out(self.out_norm(tok)).reshape(B, G, d)
 
 
 class BaseHead(nn.Module):
@@ -227,29 +248,50 @@ class FlowPosterior(nn.Module):
 
     # --- inference -------------------------------------------------------
     @torch.no_grad()
-    def sample(self, tokens: torch.Tensor, n: int = 2000, n_steps: int = 60,
-               seed: int = 0) -> torch.Tensor:
-        """Posterior samples for one observation. tokens: [T, F] or [1, T, F]."""
+    def sample_batch(self, tokens: torch.Tensor, n: int = 1000, n_steps: int = 20,
+                     seed: int = 0, chunk: int = 16, solver: str = "midpoint") -> torch.Tensor:
+        """Posterior samples for a *batch* of observations. tokens [B, T, F] -> [B, n, d].
+
+        All B datasets are encoded together and their ODEs solved jointly, which is
+        what makes calibration studies (hundreds of datasets) tractable: one solve
+        instead of B python-loop solves. `chunk` bounds peak attention memory.
+        """
+        gen = torch.Generator().manual_seed(seed)
+        outs = []
+        for start in range(0, tokens.shape[0], chunk):
+            tb = tokens[start:start + chunk]
+            B = tb.shape[0]
+            memory = self.encoder.encode(tb)                  # [B, T, dim]
+            ctx = self.encoder.pool(memory)                   # [B, dim]
+            eps = torch.randn(B, n, self.d, generator=gen)
+            if self.base == "data":
+                mu, s = self.base_head(ctx)                   # [B, d]
+                z = mu[:, None] + s[:, None] * eps
+            else:
+                z = eps
+            # conditioning computed once per dataset, reused across the whole solve
+            grouped = self.velocity.forward_grouped
+            cond = self.velocity.encode_memory(memory) if self.conditioning == "xattn" else ctx
+            dt = 1.0 / n_steps
+            for i in range(n_steps):
+                t = torch.full((B,), i * dt)
+                if solver == "euler":                         # 1 eval / step
+                    z = z + dt * grouped(z, t, cond)
+                elif solver == "midpoint":                    # 2 evals / step
+                    k1 = grouped(z, t, cond)
+                    z = z + dt * grouped(z + 0.5 * dt * k1, t + 0.5 * dt, cond)
+                else:                                         # rk4: 4 evals / step
+                    k1 = grouped(z, t, cond)
+                    k2 = grouped(z + 0.5 * dt * k1, t + 0.5 * dt, cond)
+                    k3 = grouped(z + 0.5 * dt * k2, t + 0.5 * dt, cond)
+                    k4 = grouped(z + dt * k3, t + dt, cond)
+                    z = z + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+            outs.append(self.prior.denormalize(z))
+        return torch.cat(outs, dim=0)
+
+    def sample(self, tokens: torch.Tensor, n: int = 2000, n_steps: int = 20,
+               seed: int = 0, solver: str = "midpoint") -> torch.Tensor:
+        """Posterior samples for one observation. tokens: [T, F] or [1, T, F] -> [n, d]."""
         if tokens.dim() == 2:
             tokens = tokens[None]
-        gen = torch.Generator().manual_seed(seed)
-        memory = self.encoder.encode(tokens)           # [1, T, dim]
-        ctx = self.encoder.pool(memory)                # [1, dim]
-        eps = torch.randn(n, self.d, generator=gen)
-        if self.base == "data":
-            mu, s = self.base_head(ctx)                 # [1, d] -> broadcast over n
-            z = mu + s * eps
-        else:
-            z = eps
-        # conditioning computed once per dataset and reused across the ODE solve
-        cond = self.velocity.encode_memory(memory) if self.conditioning == "xattn" \
-            else ctx.expand(n, -1)
-        dt = 1.0 / n_steps
-        for i in range(n_steps):                       # RK4 ODE integration
-            t = torch.full((n,), i * dt)
-            k1 = self.velocity(z, t, cond)
-            k2 = self.velocity(z + 0.5 * dt * k1, t + 0.5 * dt, cond)
-            k3 = self.velocity(z + 0.5 * dt * k2, t + 0.5 * dt, cond)
-            k4 = self.velocity(z + dt * k3, t + dt, cond)
-            z = z + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
-        return self.prior.denormalize(z)
+        return self.sample_batch(tokens, n=n, n_steps=n_steps, seed=seed, solver=solver)[0]

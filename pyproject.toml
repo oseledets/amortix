@@ -1,23 +1,35 @@
 [build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "amortix"
-version = "0.0.1"
-description = "Amortized parameter recovery for dynamical systems via conditional flow matching"
+version = "0.1.0"
+description = "Amortized Bayesian parameter recovery for dynamical systems via conditional flow matching"
 readme = "README.md"
 requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Ivan Oseledets", email = "ivan.oseledets@gmail.com" }]
+keywords = ["simulation-based-inference", "flow-matching", "sde", "bayesian", "amortized-inference"]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Programming Language :: Python :: 3",
+]
 dependencies = ["torch>=2.0", "numpy", "scipy"]
 
 [project.optional-dependencies]
 plot = ["matplotlib"]
 sde = ["torchsde"]   # optional: production SDE integrators (Euler-Maruyama is built in)
 
-[tool.setuptools.packages.find]
-include = ["amortix*"]
+[project.scripts]
+amortix = "amortix.cli:main"
 
 [dependency-groups]
-dev = [
-    "pytest>=8.4.2",
-]
+dev = ["pytest>=8.4.2"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["amortix"]
+
+[tool.hatch.build.targets.sdist]
+include = ["amortix", "examples", "tests", "*.md"]

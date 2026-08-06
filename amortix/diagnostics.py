@@ -17,26 +17,25 @@ import numpy as np
 import torch
 
 
-def run_sbc(post, prob, n_sims: int = 300, n_post: int = 200, seed: int = 0):
+def run_sbc(post, prob, n_sims: int = 300, n_post: int = 200, seed: int = 0,
+            chunk: int = 32):
     """One pass of SBC. Returns a dict with ranks, estimates, stds, truths.
 
     ranks[i, j] in {0,...,n_post} is the rank of the true j-th parameter among
-    the n_post posterior draws for simulated dataset i.
+    the n_post posterior draws for simulated dataset i. Datasets are sampled in
+    batches (`chunk`), so this is one vectorized ODE solve per chunk rather than
+    one per dataset.
     """
     gen = torch.Generator().manual_seed(seed)
     m_true = prob.prior.sample(n_sims, generator=gen)
     tokens, _ = prob.observe(m_true, generator=gen)
-    d = prob.prior.dim
 
-    ranks = np.zeros((n_sims, d), dtype=np.int64)
-    est = np.zeros((n_sims, d))
-    std = np.zeros((n_sims, d))
+    draws = post.sample_batch(tokens, n=n_post, seed=seed, chunk=chunk)  # [n_sims, L, d]
     mt = m_true.numpy()
-    for i in range(n_sims):
-        s = post.sample(tokens[i], n=n_post, seed=i).numpy()      # [L, d]
-        ranks[i] = (s < mt[i][None, :]).sum(0)
-        est[i] = s.mean(0)
-        std[i] = s.std(0)
+    s = draws.numpy()
+    ranks = (s < mt[:, None, :]).sum(1).astype(np.int64)
+    est = s.mean(1)
+    std = s.std(1)
     return {
         "ranks": ranks, "est": est, "std": std, "truth": mt,
         "n_post": n_post, "names": list(prob.prior.names),
@@ -55,6 +54,16 @@ def coverage_from_ranks(ranks: np.ndarray, n_post: int, levels: Sequence[float])
         lo, hi = (1 - q) / 2, (1 + q) / 2
         out[q] = ((u >= lo) & (u <= hi)).mean(0)    # per-parameter
     return out
+
+
+def calibration_error(ranks: np.ndarray, n_post: int,
+                      levels=(0.5, 0.9, 0.95)) -> float:
+    """Mean |empirical - nominal| central-interval coverage, in percentage points.
+
+    One scalar summarising how far the posterior's credible intervals are from
+    their nominal level (0 = perfectly calibrated)."""
+    cov = coverage_from_ranks(ranks, n_post, levels)
+    return float(np.mean([np.abs(cov[q] - q) for q in levels])) * 100
 
 
 def sbc_uniformity(ranks: np.ndarray, n_post: int, n_bins: int = 20):
@@ -149,7 +158,6 @@ def _plot(res, levels, path):
     # coverage calibration plot
     ax = axes[d]
     qs = np.linspace(0.02, 0.98, 25)
-    covq = res.get("coverage")
     full = coverage_from_ranks(ranks, n_post, qs)
     for j in range(d):
         ax.plot(qs, [full[q][j] for q in qs], lw=1.4, label=names[j])

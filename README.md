@@ -24,17 +24,30 @@ Reproducible environment via [uv](https://docs.astral.sh/uv/) (Python pinned to
 
 ```bash
 uv sync --extra plot            # creates .venv, installs torch/numpy/scipy/matplotlib + amortix (editable)
-uv run python examples/ou_recovery.py   # run anything inside the env
+uv run amortix cases                    # the CLI is installed with the package
 ```
 
 (`uv run` auto-uses the project venv; or activate `.venv/bin/activate`.)
 
+**As a dependency / standalone tool.** `amortix` is a normal installable package
+(hatchling build backend, console script `amortix`):
+
+```bash
+uv add amortix                        # as a dependency of another uv project
+uv tool install amortix               # as a standalone CLI on your PATH
+uvx --from amortix amortix cases      # run once without installing
+uv build                              # produce dist/*.whl + *.tar.gz  (uv publish to release)
+```
+
+Until it is on PyPI, point those at the repo or a built wheel, e.g.
+`uv tool install /path/to/amortix` or `uvx --from ./dist/amortix-0.1.0-py3-none-any.whl amortix cases`.
+
 ## Quickstart
 
 ```bash
-uv run python examples/ou_recovery.py        # ~2.5 min CPU: train + benchmark vs exact MLE
-uv run python examples/gallery.py            # all 8 cases vs classical SOTA
-uv run python examples/calib_gallery.py --n_train 12000 --epochs 40   # SBC calibration
+uv run amortix recover ou                  # train + benchmark one case vs exact MLE
+uv run amortix sbc ou                      # strict calibration check (SBC)
+uv run amortix gallery                     # all 8 cases vs their classical baselines
 ```
 
 ```python
@@ -64,7 +77,7 @@ The amortized posterior is **competitive with the exact MLE** (better overall �
 it is more robust to sampling resolution for the drift, since it consumes a
 multi-resolution view). The point is not to beat MLE on OU — it is that *the same
 code transfers to SDEs with no tractable likelihood*, where MLE is unavailable.
-(`examples/ou_recovery.png`)
+(`uv run python examples/recover.py ou --plot`)
 
 *Coverage ≈ 90% here looks reassuring, but note the caveat below: coverage alone
 is a weak calibration test, and OU's μ/σ do **not** pass strict SBC at this

@@ -13,21 +13,14 @@ import argparse
 import importlib
 import json
 import os
-import sys
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from amortix import FlowPosterior
-from amortix.diagnostics import run_sbc, coverage_from_ranks, sbc_uniformity
+from amortix.diagnostics import (run_sbc, coverage_from_ranks, sbc_uniformity,
+                                 calibration_error)
 
-LEVELS = (0.5, 0.9, 0.95)
-
-
-def calib_error(ranks, n_post):
-    cov = coverage_from_ranks(ranks, n_post, LEVELS)
-    return float(np.mean([np.abs(cov[q] - q) for q in LEVELS])) * 100
 
 
 def main():
@@ -62,7 +55,7 @@ def main():
             post.fit(n_train=args.n_train, epochs=args.epochs, seed=sd, verbose=False)
             res = run_sbc(post, prob, n_sims=args.n_sims, n_post=args.n_post, seed=sd)
             P.append(sbc_uniformity(res["ranks"], args.n_post))
-            CE.append(calib_error(res["ranks"], args.n_post))
+            CE.append(calibration_error(res["ranks"], args.n_post))
             names = res["names"]
         P = np.stack(P)                                  # [n_seeds, d]
         meanp = P.mean(0)
@@ -81,7 +74,7 @@ def main():
 
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     suffix = f"_{args.tag}" if args.tag else ""
-    md = os.path.join(repo, f"COND_{args.case}{suffix}_RESULTS.md")
+    md = os.path.join(repo, "results", f"COND_{args.case}{suffix}_RESULTS.md")
     with open(md, "w") as f:
         f.write(f"# conditioning A/B: {args.case}\n\n```\n" + "\n".join(out_lines) + "\n```\n")
     with open(os.path.splitext(md)[0] + ".json", "w") as f:

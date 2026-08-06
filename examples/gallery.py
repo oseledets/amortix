@@ -13,13 +13,11 @@ from __future__ import annotations
 import argparse
 import importlib
 import os
-import sys
 import time
 
 import numpy as np
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from amortix import FlowPosterior
 from amortix.problems import GALLERY
@@ -52,16 +50,12 @@ def run_case(name, n_train, epochs, K, n_post):
     m_true = prob.prior.sample(K, generator=gen)
     tokens, traj = prob.observe(m_true, generator=gen)
 
-    amort = np.zeros((K, d)); std = np.zeros((K, d))
-    lo = np.zeros((K, d)); hi = np.zeros((K, d)); base = np.zeros((K, d))
     t0 = time.time()
-    for i in range(K):
-        s = post.sample(tokens[i], n=n_post, seed=i).numpy()
-        amort[i] = s.mean(0); std[i] = s.std(0)
-        lo[i] = np.quantile(s, 0.05, 0); hi[i] = np.quantile(s, 0.95, 0)
+    draws = post.sample_batch(tokens, n=n_post, seed=0).numpy()      # [K, n_post, d]
     inf_t = (time.time() - t0) / K
-    for i in range(K):
-        base[i] = mod.sota(tokens[i].numpy(), traj[i].numpy(), prob)
+    amort, std = draws.mean(1), draws.std(1)
+    lo = np.quantile(draws, 0.05, axis=1); hi = np.quantile(draws, 0.95, axis=1)
+    base = np.stack([mod.sota(tokens[i].numpy(), traj[i].numpy(), prob) for i in range(K)])
 
     mt = m_true.numpy()
     a_err = (np.abs(amort - mt) / rng * 100)
