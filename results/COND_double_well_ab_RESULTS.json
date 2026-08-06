@@ -1,0 +1,49 @@
+{
+  "case": "double_well",
+  "n_train": 20000,
+  "epochs": 50,
+  "results": [
+    {
+      "cond": "concat",
+      "calib_err_mean": 2.518518518518519,
+      "calib_err_std": 0.6025399675018481,
+      "names": [
+        "theta1",
+        "theta2",
+        "sigma"
+      ],
+      "mean_sbc_p": [
+        0.32902447160101866,
+        0.07882290892132061,
+        0.05904188762139581
+      ],
+      "seeds_passed": [
+        2,
+        1,
+        1
+      ],
+      "n_seeds": 3
+    },
+    {
+      "cond": "xattn",
+      "calib_err_mean": 2.074074074074074,
+      "calib_err_std": 0.6115785716790553,
+      "names": [
+        "theta1",
+        "theta2",
+        "sigma"
+      ],
+      "mean_sbc_p": [
+        0.15213783221825594,
+        0.23363114414877637,
+        0.05953710939245376
+      ],
+      "seeds_passed": [
+        2,
+        2,
+        1
+      ],
+      "n_seeds": 3
+    }
+  ]
+}

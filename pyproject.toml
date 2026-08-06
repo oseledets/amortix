@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "amortix"
+version = "0.0.1"
+description = "Amortized parameter recovery for dynamical systems via conditional flow matching"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["torch>=2.0", "numpy", "scipy"]
+
+[project.optional-dependencies]
+plot = ["matplotlib"]
+sde = ["torchsde"]   # optional: production SDE integrators (Euler-Maruyama is built in)
+
+[tool.setuptools.packages.find]
+include = ["amortix*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+]
