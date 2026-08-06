@@ -70,6 +70,11 @@ def main():
         ridge_e, _ = ridge_control_error(prob, n_train=args.n_train, n_test=args.n_test)
         classical = np.stack([mod.sota(tokens[i].numpy(), traj[i].numpy(), prob)
                               for i in range(args.n_test)])
+        # Clip the classical estimate into the prior box. The amortized posterior
+        # physically cannot leave it, so scoring an unclipped baseline is an
+        # unfairness in the other direction: 19-23% of raw estimates land outside,
+        # and clipping improves them by 16-21%.
+        classical = np.clip(classical, prob.prior.low.numpy(), prob.prior.high.numpy())
         class_e = (np.abs(classical - m_true.numpy()) / rng * 100).mean(0)
 
         beats_prior = amort.mean() < prior_e.mean() - 1.0

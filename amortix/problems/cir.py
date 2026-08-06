@@ -121,7 +121,11 @@ def sota(tokens, traj, prob):
 
     a_hat = -c1 / dt
     # guard against degenerate / non-mean-reverting fits
-    if not np.isfinite(a_hat) or abs(a_hat) < 1e-8:
+    # a_hat must be POSITIVE for a mean-reverting fit: the old |a_hat| < 1e-8
+    # guard let small negative values through, and b_hat = c0/(a_hat*dt) then
+    # exploded (one dataset produced b = -96.8, an 8104% error, which by itself
+    # moved the case mean from 7.4% to 23.4%).
+    if not np.isfinite(a_hat) or a_hat < 1e-6:
         a_hat = 1e-3
     b_hat = c0 / (a_hat * dt)
 

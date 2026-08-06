@@ -33,6 +33,19 @@ of this harness. Known-truth checks (F4, F8, F10) simulate from the stated
 transition law directly with `np.random.default_rng(seed)` and compare the
 estimator's Monte-Carlo mean/sd against the analytic Cramér–Rao width.
 
+**Relation to commit `14e72f2`** (landed while this audit was running, from a
+parallel workstream). That commit independently reached four of the conclusions
+below and should be treated as corroboration, not duplication: the CIR X0 leak,
+the prior-only 25% control (**F3**), "baselines are not information-matched …
+46% of the `stoch_lv` margin" (**F1**, **F6**), and withdrawing the README OU
+table (**F11**). Where we overlap, the numbers agree — its scoreboard reports OU
+classical 12.91%, identical to mine. **New here:** the σ Cramér–Rao floor proving
+the restricted baselines are *efficient* (F1), the missing prior-box clip (F2),
+`ou_mle`'s +39% θ bias and 1.40× CRB width (F4), bounded least squares for the
+KM/SINDy fits (F5), the stationary-X0 likelihood term and its `2/(θT)` law (F7),
+the CIR `â` guard bug (F8), and — the one that flips a case on its own —
+FitzHugh–Nagumo multistart (F12).
+
 ---
 
 ## Verdict in one paragraph
@@ -49,10 +62,15 @@ better on SINDy") are artifacts. Separately, three estimators do not deliver wha
 their docstring advertises: `ou_mle` is algebraically the right conditional MLE
 but is biased +39% in θ and 1.40× wider than Cramér–Rao, so "near-optimal" is
 false; the CIR "Euler pseudo-MLE" is plain OLS and divides by a quantity it does
-not guard; the SINDy "library fit" is a degenerate OLS rescued by a clip.
-**In 8 of 16 parameters across the five
-closed-form SDE cases, the shipped baseline is worse than predicting the prior
-mean.**
+not guard; the SINDy "library fit" is a degenerate OLS rescued by a clip. And one
+baseline is crippled by its single optimizer start: 5-start multistart takes
+FitzHugh–Nagumo from 19.73% to 13.14%, erasing a reported +6 pp amortized win.
+**In 10 of 21 parameters the shipped baseline is worse than predicting the prior
+mean.** Net effect on the scoreboard: of the five cases `GALLERY_RESULTS.md`
+counts as amortized wins, **`fhn` becomes a tie**, **`double_well`'s margin rests
+on a K=40 outlier plus the missing clip**, and **`sindy_sde` and `seir` are wins
+over a constant-equivalent baseline**. Of the two SOTA wins, `stoch_lv`'s 2×
+margin shrinks to 1.2× and CIR's rests on σ alone.
 
 ---
 
@@ -177,7 +195,7 @@ clip-after-the-fact).
 
 ---
 
-## F3 · CONFIRMED · 8 of 16 parameters: the baseline is worse than a constant
+## F3 · CONFIRMED · 10 of 21 parameters: the baseline is worse than a constant
 
 **What is wrong.** For `m ~ U[lo, hi]` the constant predictor `(lo+hi)/2` has MAE
 = range/4 = **25.0%** of the prior range, by construction, for every parameter.
@@ -196,18 +214,32 @@ Any "SOTA" above 25% is losing to a number typed in by hand. Nobody checked.
 | `sindy_sde` | c₃ | 51.62% | 28.30% | **worse than constant** |
 | `sindy_sde` | **mean** | **28.49%** | **24.14%** | **worse than constant** |
 
-**Headline impact.** "SINDy-SDE: 18.0% vs 32.4%, ~1.8× better" is a comparison
-against an estimator that loses to a constant. The honest statement is "amortix
-18.0%, constant predictor 25%, classical SINDy fit 32.4% (degenerate)". Most of
-this is cured by F2 + F5; what remains (`ou` θ, `gbm` μ) is genuine weak
-identifiability and should be *said* rather than dressed up as a baseline.
+`seir` (measured separately at K=40, F12) is the same story: **mean 24.64% vs a
+25% constant**, with α at **41.82%** and γ_r at **26.70%** both losing to a
+constant; only γ_d (10.80%) and β₁ (17.83%) carry real information. So the count
+is **10 of 21 parameters** across the six non-trivial cases.
 
-**Patch.** Add a `constant (prior mean)` row to `examples/gallery.py` — one line,
-and it permanently prevents this class of claim:
-```python
-mid = (0.5 * (prob.prior.low + prob.prior.high)).numpy()
-triv = np.abs(mid[None, :] - mt) / rng * 100      # ~25% by construction
-```
+**Headline impact.** Two "amortix wins" are wins over a constant-equivalent:
+- "SINDy-SDE: 18.0% vs 32.4%, ~1.8× better" — the baseline loses to a constant.
+  Honest version: "amortix 18.0%, constant 25%, classical SINDy fit 32.4%
+  (degenerate)".
+- "SEIRD: 21.7% vs 24.6%, amortix wins" — the baseline **is** a constant to
+  within noise. Honest version: "amortix 21.7% vs a 25% constant" — a 13% edge
+  over guessing, and the case says nothing about classical-vs-amortized.
+
+Most of the SDE entries are cured by F2 + F5; what remains (`ou` θ, `gbm` μ,
+`seir` α/γ_r) is genuine weak identifiability and should be *stated* rather than
+dressed up as a defeated baseline.
+
+**Patch — already available, just not wired into the gallery.** Commit `14e72f2`
+(landed while this audit was running) added exactly this control as
+`amortix.controls.prior_mean_error(prob, m_true)`, used by
+`examples/scoreboard.py`. It independently reaches the same conclusion. The
+remaining work is to make `examples/gallery.py` print that column too, so the
+headline table can never again show a "SOTA" that loses to it.
+
+Cross-check: `results/SCOREBOARD_smoke.md` reports OU classical = **12.91%**,
+identical to my K=40 measurement — the two audits agree to the digit.
 
 ---
 
@@ -581,6 +613,59 @@ constant.
 
 ---
 
+## F12 · CONFIRMED · Task 4 — multistart: irrelevant for two NLS baselines, decisive for FitzHugh–Nagumo
+
+All three NLS baselines start from a single point (the prior mean) with
+`max_nfev=200`. Tested against 5 random starts inside the prior box, keeping the
+best residual.
+
+| case | shipped (1 start) | **5-start** | change | residual improved | nfev (median / max) | terminations |
+|---|---:|---:|---:|---:|---|---|
+| `stoch_lv` (K=20) | 7.12% | 7.12% | **none** | 0/20 | 10 / 15 | 20× `ftol` |
+| `seir` (K=40) | 24.64% | 25.54% | **none (slightly worse)** | 3/40 | 19 / 40 | 39× `xtol`, 1× `ftol` |
+| **`fhn` (K=40)** | **19.73%** | **13.14%** | **−33%** | **6/40** | 16 / 200 | 34× `ftol`, 5× `xtol`, **1× `max_nfev`** |
+
+**`stoch_lv` and `seir` are fine — this part of the suspicion is cleared.**
+Multistart changes nothing; both converge in ~10–20 evaluations, far inside the
+budget, so `max_nfev=200` is not binding. For `seir`, 10 starts with
+`max_nfev=600` also changed nothing (25.52%), and note that where multistart *did*
+find a lower residual (3/40) the parameters got slightly **worse** — a lower
+residual buying worse accuracy is the signature of weak identifiability, not of a
+bad optimizer. `seir`'s error is a property of the problem, not of the fit.
+
+**`fhn` is a genuinely crippled baseline.** Only **6 of 40** datasets land in a
+bad local minimum, but those six dominate the mean: fixing them cuts the error by
+a third overall and by **73% on `eps`** (13.10% → 3.52%). The FHN likelihood is
+multimodal for the obvious reason — the model is oscillatory and only `v` is
+observed, so a phase-shifted fit is a competing optimum. A smaller sample makes
+it look even worse (K=12: 15.12% → 7.10%, −53%), which is itself a warning about
+K=40 means.
+
+**Headline impact — this flips a case.** `GALLERY_RESULTS.md`: "FitzHugh–Nagumo,
+amort **13.4%** vs nonlinear LS **19.7%** — amortix wins, +6 pp". My K=40
+single-start run reproduces that 19.73% exactly. With 5 random starts the same
+baseline scores **13.14%** — the 6 pp amortized win becomes a **dead tie, with
+the classical method marginally ahead**. FHN parity is otherwise perfect (the
+baseline already consumes exactly the tokens), so this is purely a
+weak-baseline artifact.
+
+**Patch** (`amortix/problems/fhn.py`, and worth applying to all three for
+uniformity):
+```python
+from scipy.optimize import least_squares
+rng = np.random.default_rng(0)                      # fixed -> reproducible
+starts = [0.5 * (low + high)] + [low + rng.random(low.size) * (high - low)
+                                 for _ in range(4)]
+best = min((least_squares(resid, s, bounds=(low, high), method="trf",
+                          max_nfev=500) for s in starts), key=lambda r: r.cost)
+return np.asarray(best.x, dtype=np.float64)
+```
+Cost is 5× a fit that already takes milliseconds — there is no reason not to.
+Also raise `max_nfev` from 200 to ~500: one FHN dataset in 40 currently
+terminates on the budget rather than on a convergence criterion.
+
+---
+
 ## Appendix — corrected comparison
 
 Shipped baseline vs a baseline that is both **fair** (F1: restricted to the
@@ -597,16 +682,30 @@ re-measured** (F11).
 | `double_well` | 15.94% (12.57 clipped) | **19.62%** | 25.15% | 14.6% | amort win survives, margin re-derived |
 | `sindy_sde` | 29.34% | **24.92%** | 25.61% | 18.0% | "1.8× better" → **1.4×** vs a near-constant |
 | `stoch_lv` | 7.12% (K=20) | **13.39%** | – | 16.3% | SOTA win 2× → **1.2×**; γ 9.2 → 18.2 |
-| `seir`, `fhn`, `linear_gaussian` | parity already OK | see F12 | – | – | multistart only |
+| `fhn` | 19.73% | **13.14%** (5-start) | ~25% | 13.4% | parity OK, but **amort +6 pp win → tie** |
+| `seir` | 24.64% | unchanged (multistart no help) | ~25% | 21.7% | baseline ≈ a constant; α 41.8%, γ_r 26.7% |
+| `linear_gaussian` | 4.11% | 4.11% (exact posterior mean) | – | – | clean, no action |
 
 ### Recommended order of work
-1. **F1** — route every `sota` through `amortix.mcmc.observed_indices`. Biggest
-   effect, smallest diff, and the helper already exists and is tested.
-2. **F2** — clip all baselines to the prior box (consistency with `sindy_sde`).
-   Do 1 and 2 **together**: individually they move the table in opposite
-   directions and either one alone makes things *less* honest, not more.
+1. **F1 + F2 together** — route every `sota` through
+   `amortix.mcmc.observed_indices` (verified to work: it returns exactly the
+   73/95/73/114/83/122 index sets above, and importing it from
+   `amortix/problems/*.py` is not circular), *and* clip every baseline to the
+   prior box. Do them **together**: individually they move the table in opposite
+   directions, so either one alone makes the comparison *less* honest, not more.
+   Biggest effect, smallest diff.
+2. **F12** — add 5-start multistart to `fhn` (and to `seir`/`stoch_lv` for
+   uniformity; it costs nothing and changes nothing there). Raise `max_nfev` to
+   ~500. This is the only finding that flips a case purely on baseline quality.
 3. **F11** — re-measure `GALLERY_RESULTS.md` and the `README.md` OU table from
-   scratch, and add the "constant predictor" column (F3) permanently.
-4. **F4/F5/F7/F8** — strengthen the estimators themselves.
+   scratch at **K ≥ 200**, report medians alongside means, and add the
+   "constant predictor" column (F3) permanently so this class of claim cannot
+   recur.
+4. **F4 / F5 / F7 / F8** — strengthen the estimators themselves (AR(1) bias
+   correction, bounded least squares, stationary-X0 term, the CIR `â` guard).
 5. **F6** — decide whether `stoch_lv`'s observer is under-specified (`every *
    count = 240 ≠ 600`) or the baseline is over-fed, and fix the one that is wrong.
+6. **Docs** — fix the two stale statements found in passing: `amortix/mcmc.py`'s
+   "the simulator starts every path at X_0 = mu" (false since `8222173`, written
+   in that very commit) and `cir.py`'s docstring header "X0 = b" (false as of the
+   uncommitted working-tree change).

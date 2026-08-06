@@ -117,6 +117,16 @@ def sota(tokens, traj, prob) -> np.ndarray:
         sol = _fhn_solve_np(m, dt, n_steps)
         return sol[obs_steps, 0] - v_obs
 
-    m0 = 0.5 * (low + high)
-    res = least_squares(resid, m0, bounds=(low, high), method="trf", max_nfev=200)
+    # Multistart: a single start from the prior mean lands in a local minimum on
+    # ~15% of datasets (19.73% -> 13.14% mean error with 5 starts). Comparing
+    # against a baseline crippled by its initialisation is not a fair comparison.
+    rng = np.random.default_rng(0)
+    starts = [0.5 * (low + high)] + [low + rng.random(len(low)) * (high - low)
+                                     for _ in range(4)]
+    best = None
+    for m0 in starts:
+        r = least_squares(resid, m0, bounds=(low, high), method="trf", max_nfev=200)
+        if best is None or r.cost < best.cost:
+            best = r
+    res = best
     return np.asarray(res.x, dtype=np.float64)

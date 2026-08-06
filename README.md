@@ -92,7 +92,16 @@ Every comparison must be read against two floors, or it means nothing:
 | **prior-only** | ignore the data, predict the prior mean — exactly **25.00%** of the range for a uniform prior. A parameter scored near this is not being recovered at all. |
 | **ridge control** | degree-2 ridge on ~20 summary statistics — the cheapest serious attempt. Neural machinery that does not beat this earns nothing. |
 
-`uv run python examples/scoreboard.py` reports both next to the amortized result.
+A third caveat applies to the *classical* column: several `sota` estimators
+consume the **full fine path** (500-1000 increments) while the network sees only
+its token set (73-122 points), a 5-9x information advantage. Restricted to the
+observed points every one of them lands on the Cramer-Rao floor, and the headline
+"classical wins on sigma" (5.5% vs 2.1%) becomes a 1.17x tie. Conversely the
+baselines were not clipped to the prior box the network cannot leave. Both
+distortions are documented in `results/CRITIC_baselines.md`; clipping is now
+applied, information parity is not yet.
+
+`uv run python examples/scoreboard.py` reports both controls next to the amortized result.
 Coverage-based calibration claims are especially treacherous: a posterior that
 simply returns the prior passes `cov90 in [80,97]%`, so that criterion alone can
 never show a method learned anything. Use SBC (`examples/calib_gallery.py`).

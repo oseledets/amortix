@@ -48,7 +48,7 @@ class StochasticLotkaVolterra(SDEProblem):
             dt_sim=0.01, n_steps=600,
             channels=[
                 Channel(every=1, count=50, label="fast"),
-                Channel(every=6, count=40, label="slow"),
+                Channel(every=15, count=40, label="slow"),   # spans the full horizon
             ],
             obs_dims=(0, 1),          # observe both prey and predator
         )

@@ -1,3 +1,4 @@
 honest scoreboard | budget 12000/40 | 100 datasets x 400 draws
           case | prior-only |   ridge | amortized | classical | verdict
 ------------------------------------------------------------------------------
+linear_gaussian |     24.19% |  19.15% |     4.51% |     4.19% | beats ridge
