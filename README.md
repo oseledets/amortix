@@ -89,7 +89,7 @@ Every comparison must be read against two floors, or it means nothing:
 
 | reference | what it is |
 |---|---|
-| **prior-only** | ignore the data, predict the prior mean — exactly **25.00%** of the range for a uniform prior. A parameter scored near this is not being recovered at all. |
+| **prior-only** | ignore the data, predict the prior mean — exactly **25.00%** of the range for a uniform prior. A parameter scored near this is *prior-limited*: where the likelihood is flat the correct posterior **is** the prior, so error-to-truth is capped there and stops measuring method quality. It is not evidence of a defect. |
 | **ridge control** | degree-2 ridge on ~20 summary statistics — the cheapest serious attempt. Neural machinery that does not beat this earns nothing. |
 
 A third caveat applies to the *classical* column: several `sota` estimators
@@ -100,6 +100,13 @@ observed points every one of them lands on the Cramer-Rao floor, and the headlin
 baselines were not clipped to the prior box the network cannot leave. Both
 distortions are documented in `results/CRITIC_baselines.md`; clipping is now
 applied, information parity is not yet.
+
+**Error-to-truth is a proxy, and it breaks where the posterior is wide.** The
+quantity we actually want is the posterior itself, so the primary metric is the
+distance to the *true* posterior — exactly computable on `linear_gaussian`
+(`examples/vs_exact.py`), approximated by MCMC where an exact likelihood exists
+(`examples/vs_mcmc.py`), and checked by SBC everywhere else. A wide posterior is a
+legitimate answer; a posterior of the *wrong width* is the error.
 
 `uv run python examples/scoreboard.py` reports both controls next to the amortized result.
 Coverage-based calibration claims are especially treacherous: a posterior that

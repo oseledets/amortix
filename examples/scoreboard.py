@@ -95,11 +95,14 @@ def main():
     emit("")
     emit("--- per parameter: prior-only / ridge / amortized | contraction | verdict ---")
     emit("contraction = prior sd / posterior sd (1.0 = the posterior IS the prior).")
-    emit("A flat posterior alone is ambiguous, so the ridge control arbitrates:")
-    emit("  NO INFO   - the posterior is flat AND the ridge cannot beat the prior")
-    emit("              => the data does not contain the parameter; scoring it is noise")
-    emit("  WE FAILED - the posterior is flat but the ridge DOES extract the parameter")
-    emit("              => the information is there and our model missed it")
+    emit("A wide posterior is NOT a failure: where the likelihood is flat the correct")
+    emit("posterior is the prior. What a flat posterior does mean is that error-to-truth")
+    emit("is capped at the prior's 25% and says nothing about method quality there.")
+    emit("The ridge control disambiguates the two flat cases:")
+    emit("  PRIOR-LIMITED - flat, and the ridge cannot do better either")
+    emit("                  => near-prior is the right answer; judge it by SBC, not MAE")
+    emit("  WIDTH WRONG   - flat, but the ridge locates the parameter")
+    emit("                  => the true posterior is narrow and ours is not: a real error")
     no_info, we_failed = [], []
     for r in rows:
         emit(f"\n{r['case']}")
@@ -107,9 +110,9 @@ def main():
             c = r["contraction"][j]
             ridge_helps = r["ridge"][j] < 0.8 * r["prior"][j]
             if c < 1.15 and not ridge_helps:
-                verdict, tag = "NO INFO", no_info
+                verdict, tag = "PRIOR-LIMITED", no_info
             elif c < 1.15:
-                verdict, tag = "WE FAILED", we_failed
+                verdict, tag = "WIDTH WRONG", we_failed
             else:
                 verdict, tag = "", None
             if tag is not None:
@@ -118,12 +121,11 @@ def main():
                  f"{r['amort'][j]:6.2f}% | {c:5.2f}x  {verdict}")
     emit("")
     if no_info:
-        emit(f"no information in the data ({len(no_info)}): " + ", ".join(no_info))
+        emit(f"prior-limited, not a defect ({len(no_info)}): " + ", ".join(no_info)
+             + "  -- score these by SBC / distance to the true posterior, not by MAE")
     if we_failed:
-        emit(f"OUR FAILURES -- ridge extracts what we do not ({len(we_failed)}): "
-             + ", ".join(we_failed))
-    if not no_info and not we_failed:
-        emit("every parameter is being recovered")
+        emit(f"POSTERIOR TOO WIDE -- the ridge locates what we leave at the prior "
+             f"({len(we_failed)}): " + ", ".join(we_failed))
 
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     path = os.path.join(repo, args.out)

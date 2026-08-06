@@ -34,11 +34,17 @@ def prior_mean_error(prob, m_true) -> np.ndarray:
 def contraction(draws, prob) -> np.ndarray:
     """Posterior contraction per parameter: prior sd / posterior sd.
 
-    The identifiability check. 1.0 means the data said nothing and the posterior
-    is the prior; a parameter sitting near 1.0 is not being recovered, so its
-    "error" is noise and including it in an average silently dilutes the result.
-    Several parameters in this gallery sit at 1.02-1.06 (sindy c2/c3, SEIRD alpha),
-    which is why headline averages over all parameters were misleading.
+    NOT a quality score. The posterior always exists, and when the likelihood is
+    flat in a parameter the correct posterior IS the prior -- reproducing it is
+    the right answer, not a failure. Contraction near 1.0 therefore says nothing
+    about the method; what it does say is that *error-to-truth is meaningless
+    there*, because the best achievable MAE is already the prior's 25%.
+
+    Read it together with the ridge control, which is what disambiguates:
+      contraction ~ 1 and the ridge cannot beat the prior  -> the posterior really
+        is near-prior; a flat posterior is correct and MAE-to-truth is uninformative
+      contraction ~ 1 but the ridge locates the parameter  -> the true posterior is
+        narrow and ours is not; that is a genuine error, of width
     """
     s = np.asarray(draws)                       # [K, n_post, d]
     prior_sd = ((prob.prior.high - prob.prior.low).numpy()) / np.sqrt(12.0)
