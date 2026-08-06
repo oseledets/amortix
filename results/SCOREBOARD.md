@@ -1,3 +1,6 @@
+# Honest scoreboard
+
+```
 honest scoreboard | budget 12000/40 | 100 datasets x 400 draws
           case | prior-only |   ridge | amortized | classical | verdict
 ------------------------------------------------------------------------------
@@ -25,5 +28,4 @@ ou
 gbm
            mu:  24.74% /  16.65% /  17.95%
         sigma:  24.95% /   5.05% /   4.79%
-
-[saved] /Users/ioseledets/work/amortix/results/SCOREBOARD.md
+```

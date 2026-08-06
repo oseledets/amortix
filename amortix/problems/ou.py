@@ -18,10 +18,16 @@ from ..sde import SDEProblem, PathObserver, Channel
 
 class OrnsteinUhlenbeck(SDEProblem):
     def __init__(self, n_paths: int = 1):
+        # Canonical (centred) OU: two parameters. mu is a pure location parameter
+        # that separates from the dynamics -- it added a third dimension without
+        # adding a question, it was where the X0 = mu leak lived, and it polluted
+        # the correlation measurement with a spurious mu-sigma pair. The
+        # substantive dependence in OU is theta-sigma: both enter the transition
+        # law through rho = exp(-theta dt) and sigma^2 (1 - rho^2) / (2 theta).
         self.prior = BoxUniform(
-            low=[0.3, -1.0, 0.2],
-            high=[3.0, 1.0, 1.5],
-            names=["theta", "mu", "sigma"],
+            low=[0.3, 0.2],
+            high=[3.0, 1.5],
+            names=["theta", "sigma"],
         )
         # internal integration grid + two observation channels:
         #   fast: every step over a short window  -> diffusion (sigma)
@@ -37,23 +43,16 @@ class OrnsteinUhlenbeck(SDEProblem):
         )
 
     def drift(self, x, m):
-        theta, mu = m[:, 0:1], m[:, 1:2]
-        return theta * (mu - x)                 # [B, 1]
+        return -m[:, 0:1] * x                   # [B, 1]
 
     def diffusion(self, x, m):
-        return m[:, 2:3].expand_as(x)           # constant additive diffusion [B, 1]
+        return m[:, 1:2].expand_as(x)           # constant additive diffusion [B, 1]
 
     def x0_sampler(self, m, generator=None):
-        # Draw X0 from the stationary law N(mu, sigma^2 / (2 theta)).
-        #
-        # Do NOT start at X0 = mu exactly: that leaks the parameter into the very
-        # first observation, so mu becomes trivially readable and any estimator
-        # that notices (the amortized network does) appears to beat a likelihood
-        # baseline that ignores the initial condition. The stationary start keeps
-        # paths stationary from t=0 without handing mu to the network for free.
-        theta, mu, sigma = m[:, 0:1], m[:, 1:2], m[:, 2:3]
+        # Stationary start: X0 ~ N(0, sigma^2 / (2 theta)).
+        theta, sigma = m[:, 0:1], m[:, 1:2]
         sd = sigma / torch.sqrt(2.0 * theta)
-        return mu + sd * torch.randn(mu.shape, generator=generator)
+        return sd * torch.randn(sd.shape, generator=generator)
 
 
 # --- gallery contract -----------------------------------------------------
@@ -68,4 +67,4 @@ def sota(tokens, traj, prob):
     from ..baselines import ou_mle
     path = np.asarray(traj)[:, 0]
     d = ou_mle(path, dt=prob.observer.dt_sim)
-    return np.array([d["theta"], d["mu"], d["sigma"]])
+    return np.array([d["theta"], d["sigma"]])

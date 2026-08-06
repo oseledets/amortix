@@ -70,7 +70,7 @@ def test_both_conditionings_run(conditioning):
     assert post.conditioning == conditioning
     post.fit(n_train=128, epochs=1, verbose=False)
     s = post.sample(prob.simulate(2)[1][0], n=16, n_steps=10)
-    assert s.shape == (16, 3)
+    assert s.shape == (16, prob.prior.dim)
 
 
 def test_xattn_is_default():
@@ -96,13 +96,14 @@ def test_diagnostics_runs():
     from amortix.diagnostics import run_sbc, coverage_from_ranks, sbc_uniformity
     prob = OrnsteinUhlenbeck()
     post = FlowPosterior(prob).fit(n_train=128, epochs=1, verbose=False)
+    d = prob.prior.dim
     res = run_sbc(post, prob, n_sims=12, n_post=20)
-    assert res["ranks"].shape == (12, 3)
+    assert res["ranks"].shape == (12, d)
     assert (res["ranks"] >= 0).all() and (res["ranks"] <= 20).all()
     cov = coverage_from_ranks(res["ranks"], 20, (0.5, 0.9))
-    assert set(cov) == {0.5, 0.9} and cov[0.9].shape == (3,)
+    assert set(cov) == {0.5, 0.9} and cov[0.9].shape == (d,)
     p = sbc_uniformity(res["ranks"], 20)
-    assert p.shape == (3,) and np.all((p >= 0) & (p <= 1))
+    assert p.shape == (d,) and np.all((p >= 0) & (p <= 1))
 
 
 def test_sde_vector_state_and_correlated_noise():

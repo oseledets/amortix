@@ -32,8 +32,9 @@ posterior: against it even a perfectly calibrated amortized posterior would look
 
 Both likelihoods condition on the first observed point (they are conditional
 likelihoods, exactly like the closed-form estimators in `amortix.baselines`).
-For OU note that the simulator starts every path at X_0 = mu, so the raw data
-also pins mu exactly; that information is deliberately *not* in the likelihood.
+OU is the canonical centred process dX = -theta X dt + sigma dW with X_0 drawn
+from the stationary law N(0, sigma^2 / (2 theta)); the likelihood below is the
+conditional one (given X_0), which is what the closed-form MLE also uses.
 Use ``fixed=`` to build the reference posterior that does use it.
 
 Discretization
@@ -90,16 +91,16 @@ def _as_series(path) -> np.ndarray:
 
 
 def log_likelihood_ou(path, m, dt, scheme: str = "exact", dt_fine: float = None) -> float:
-    """Exact log-likelihood of an OU path,  dX = theta (mu - X) dt + sigma dW.
+    """Exact log-likelihood of an OU path,  dX = -theta X dt + sigma dW (centred).
 
     The OU transition is Gaussian in closed form for *any* gap:
 
-        X_{k+1} | X_k ~ N( mu + (X_k - mu) rho ,  s2 ),
+        X_{k+1} | X_k ~ N( X_k rho ,  s2 ),
         rho = exp(-theta dt),   s2 = sigma^2 / (2 theta) * (1 - rho^2)
 
     Args:
         path: observed values [n+1] (or [n+1, S]; component 0 is used).
-        m:    (theta, mu, sigma).
+        m:    (theta, sigma).
         dt:   scalar gap, or an array of n per-transition gaps (for a
               non-uniformly subsampled path).
         scheme: "exact" -> continuous-time OU transition (above).
@@ -116,9 +117,9 @@ def log_likelihood_ou(path, m, dt, scheme: str = "exact", dt_fine: float = None)
     if x.size < 2:
         return 0.0
     p = np.asarray(m, dtype=np.float64).reshape(-1)
-    if p.size != 3 or not np.all(np.isfinite(p)):
+    if p.size != 2 or not np.all(np.isfinite(p)):
         return -np.inf
-    theta, mu, sigma = float(p[0]), float(p[1]), float(p[2])
+    theta, sigma = float(p[0]), float(p[1])
     if theta <= 0.0 or sigma <= 0.0:
         return -np.inf
 
@@ -140,7 +141,7 @@ def log_likelihood_ou(path, m, dt, scheme: str = "exact", dt_fine: float = None)
     else:
         raise ValueError(f"unknown scheme {scheme!r} (use 'exact' or 'euler')")
 
-    mean = mu + (x[:-1] - mu) * rho
+    mean = x[:-1] * rho
     return _gauss_ll(x[1:], mean, s2)
 
 

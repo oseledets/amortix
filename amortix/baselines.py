@@ -65,20 +65,22 @@ def seird_nls(I_obs, D_obs, obs_steps, dt, n_steps, t_switch, low, high) -> dict
 
 
 def ou_mle(path: np.ndarray, dt: float) -> dict:
-    """Closed-form conditional MLE of (theta, mu, sigma) from a uniform OU path."""
+    """Closed-form conditional MLE of (theta, sigma) for the centred OU process.
+
+    For dX = -theta X dt + sigma dW the discrete law is a zero-mean AR(1),
+        X_{k+1} = rho X_k + eps,   rho = exp(-theta dt),
+        Var(eps) = sigma^2 (1 - rho^2) / (2 theta),
+    so rho is the regression of X_{k+1} on X_k *through the origin* and sigma
+    follows from the residual variance.
+    """
     x = np.asarray(path, dtype=np.float64)
     x0, x1 = x[:-1], x[1:]
     n = x0.size
-    # OLS  x1 = a + b x0
-    sx, sy = x0.mean(), x1.mean()
-    sxx = ((x0 - sx) ** 2).mean()
-    sxy = ((x0 - sx) * (x1 - sy)).mean()
-    b = sxy / sxx
-    a = sy - b * sx
-    rho = float(np.clip(b, 1e-6, 1 - 1e-9))
-    resid = x1 - (a + b * x0)
+    denom = (x0 ** 2).sum()
+    rho = float((x0 * x1).sum() / denom) if denom > 0 else 0.0
+    rho = float(np.clip(rho, 1e-6, 1 - 1e-9))
+    resid = x1 - rho * x0
     s2 = (resid ** 2).sum() / n
     theta = -np.log(rho) / dt
-    mu = a / (1.0 - rho)
     sigma2 = s2 * 2.0 * theta / (1.0 - rho ** 2)
-    return {"theta": float(theta), "mu": float(mu), "sigma": float(np.sqrt(max(sigma2, 1e-12)))}
+    return {"theta": float(theta), "sigma": float(np.sqrt(max(sigma2, 1e-12)))}
