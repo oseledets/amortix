@@ -1,0 +1,69 @@
+linear-Gaussian, exact reference | n_train=20000, batch=64, target 15000 steps
+watching: energy distance to the exact posterior (0 = identical)
+
+[fit] simulating 20000 training trajectories (312 batches/epoch)...
+  epoch   0  step    312  cfm 1.3064  (2.4s)
+  step    624  cfm 0.9557  dist-to-reference 0.2768  (6s)
+  step   1248  cfm 0.3320  dist-to-reference 0.0336  (12s)
+  step   1560  cfm 0.2722  dist-to-reference 0.0224  (16s)
+  step   2184  cfm 0.2386  dist-to-reference 0.0162  (22s)
+  step   2808  cfm 0.2134  dist-to-reference 0.0169  (28s)
+  step   3120  cfm 0.2137  dist-to-reference 0.0142  (32s)
+  step   3744  cfm 0.2018  dist-to-reference 0.0145  (38s)
+  step   4056  cfm 0.1992  dist-to-reference 0.0189  (41s)
+  step   4680  cfm 0.1999  dist-to-reference 0.0142  (48s)
+  step   5304  cfm 0.2035  dist-to-reference 0.0088  (54s)
+  step   5616  cfm 0.1956  dist-to-reference 0.0223  (58s)
+  step   6240  cfm 0.2050  dist-to-reference 0.0176  (64s)
+  step   6552  cfm 0.1888  dist-to-reference 0.0250  (68s)
+  step   7176  cfm 0.1912  dist-to-reference 0.0104  (74s)
+  step   7800  cfm 0.1903  dist-to-reference 0.0122  (81s)
+  step   8112  cfm 0.1897  dist-to-reference 0.0167  (86s)
+  step   8736  cfm 0.1896  dist-to-reference 0.0157  (96s)
+  step   9048  cfm 0.1771  dist-to-reference 0.0103  (101s)
+  step   9672  cfm 0.1912  dist-to-reference 0.0104  (110s)
+  step  10296  cfm 0.1800  dist-to-reference 0.0225  (119s)
+  step  10608  cfm 0.1877  dist-to-reference 0.0141  (126s)
+  step  11232  cfm 0.1852  dist-to-reference 0.0177  (135s)
+  step  11544  cfm 0.1815  dist-to-reference 0.0159  (138s)
+  step  12168  cfm 0.1759  dist-to-reference 0.0100  (144s)
+  step  12792  cfm 0.1765  dist-to-reference 0.0069  (150s)
+  step  13104  cfm 0.1777  dist-to-reference 0.0133  (154s)
+  step  13728  cfm 0.1762  dist-to-reference 0.0074  (160s)
+  step  14040  cfm 0.1739  dist-to-reference 0.0084  (164s)
+  step  14664  cfm 0.1785  dist-to-reference 0.0087  (172s)
+  epoch  47  step  14976  cfm 0.1726  (175.9s)
+
+step     dist-to-exact
+   624   0.2768
+  1248   0.0336
+  1560   0.0224
+  2184   0.0162
+  2808   0.0169
+  3120   0.0142
+  3744   0.0145
+  4056   0.0189
+  4680   0.0142
+  5304   0.0088
+  5616   0.0223
+  6240   0.0176
+  6552   0.0250
+  7176   0.0104
+  7800   0.0122
+  8112   0.0167
+  8736   0.0157
+  9048   0.0103
+  9672   0.0104
+ 10296   0.0225
+ 10608   0.0141
+ 11232   0.0177
+ 11544   0.0159
+ 12168   0.0100
+ 12792   0.0069
+ 13104   0.0133
+ 13728   0.0074
+ 14040   0.0084
+ 14664   0.0087
+
+improvement over the last 9 checks: 38.4%
+still improving -- more steps would help

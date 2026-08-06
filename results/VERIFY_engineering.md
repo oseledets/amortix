@@ -25,7 +25,7 @@ hot-swap of a module with the same interface; the only file written is this one.
 
 | # | finding | status | causes a too-wide / under-correlated posterior? |
 |---|---|---|---|
-| **E0** | `AttentionPool` — the whole pooling module, 12 738 parameters — receives **exactly zero gradient** and never changes. `ctx.detach()` is the only edge into it in the default `conditioning="xattn"` config. The base head, which sets the posterior's spread, therefore reads a **randomly-initialised** projection | CONFIRMED | **yes, directly — this is E1's root cause** |
+| **E0** | `AttentionPool` — the whole pooling module, 12 544 parameters — receives **exactly zero gradient** and never changes. `ctx.detach()` is the only edge into it in the default `conditioning="xattn"` config. The base head, which sets the posterior's spread, therefore reads a **randomly-initialised** projection | CONFIRMED | **yes, directly — this is E1's root cause** |
 | **E1** | The data-dependent base head is **not converged**: it is 89 % worse than the best *linear* probe on its own frozen input, and its σ̂ is **2.1–3.3× the true posterior sd** — the exact opposite of what its docstring claims | CONFIRMED | **yes, directly** |
 | **E2** | Token features are unnormalised: at init the informative channels carry **0.05–0.7 %** of the first-layer variance while a 1-bit channel indicator carries **43–91 %**; on SEIR the *measured value* carries **0.22 %** | CONFIRMED | plausibly (weak encoder ⇒ E1 gets worse) |
 | **E3** | Training pairs are simulated **once** before the epoch loop and reused for all epochs | CONFIRMED; gap measured **+5.1 %** | marginally, at small `n_train` |
@@ -35,16 +35,81 @@ hot-swap of a module with the same interface; the only file written is this one.
 | **E7** | The `cid` / channel feature is identically zero in 6 of 9 problems — a permanently dead input dimension | CONFIRMED | no |
 | **E8** | OU's fast and slow channels share 3 time indices, so 2 of 74 tokens are redundant | CONFIRMED | no |
 | **E9** | Latent trap: in `fit`, `torch.manual_seed(seed)` and `torch.Generator().manual_seed(seed)` are the **same stream** | CONFIRMED (inert today) | no |
+| **E10** | The model is **hard-wired to float32**: `FlowPosterior(...).double()` raises. `timestep_embedding` pins `dtype=torch.float32`, `rope_tables` pins `.float()`, and `_rope`'s growth path silently re-creates a float32 table | CONFIRMED | no, but it blocks the fp64 check and any AMP/GPU dtype work |
+| **E11** | The reported posterior width is **solver-dependent at the same magnitude as the defect being measured**: at 20 steps Euler gives std ratio 0.953 and midpoint 1.035 on the same weights | CONFIRMED | it changes the *reading*, not the posterior |
 
 **Clean bills — verified numerically, not assumed.** Chunk-size invariance of
 `sample_batch`; independence of base draws across chunks and datasets; `rand`/`randn`
 seed reuse in SBC; `velocity.forward` vs `forward_grouped` bit-identity; no
 cross-sample leakage in the grouped path; padding-mask correctness; RoPE table growth;
-fp32 vs fp64 attention/pooling/ODE; `eval()` being a genuine no-op. §7.
+float64 vs float32 end-to-end (identical to 4 decimals); `eval()` being a genuine
+no-op; every observer reproducing its trajectory exactly. Details in §2, §3, §5, §8.
 
 ---
 
 ## 1. Training-loop mechanics (`FlowPosterior.fit`)
+
+### E0 — `AttentionPool` is never trained. **CONFIRMED**
+
+In the default configuration (`pool="attn"`, `conditioning="xattn"`, `base="data"`) the
+pooling module receives **exactly zero gradient** and its weights are bit-identical
+before and after training:
+
+```
+--- base=data, conditioning=xattn, 2000 pairs x 4 epochs
+    encoder.attn_pool.q                max|delta| 0.000e+00
+    encoder.attn_pool.kv.weight        max|delta| 0.000e+00
+    encoder.attn_pool.kv.bias          max|delta| 0.000e+00
+    encoder.attn_pool.proj.weight      max|delta| 0.000e+00
+    encoder.attn_pool.proj.bias        max|delta| 0.000e+00
+    base_head.net.weight               max|delta| 4.063e-02      (this one does train)
+    attn_pool grad-norm^2 = 0.000e+00 ; all 5 tensors have .grad = None
+--- base=standard: identical (zero as well)
+```
+
+The mechanism is a two-line interaction:
+
+```python
+memory = self.encoder.encode(tb, mb)
+ctx    = self.encoder.pool(memory, mb)                    # attn_pool runs here
+...
+base_nll, draw, _ = self.base_head.nll(zb, ctx.detach())  # ...and the graph is cut here
+cond = self.velocity.encode_memory(memory) ...            # xattn never uses ctx
+```
+
+With cross-attention conditioning the velocity reads the **per-token memory**, so `ctx`
+has exactly one consumer — the base head — and that consumer is handed a detached
+tensor. Nothing else backpropagates into `AttentionPool`. Its 12 544 parameters
+(`q`, `kv`, `proj` for `dim_model=64`) stay at their random initialisation forever;
+`q` in particular is `torch.randn(64) * 0.02`.
+
+Two things follow.
+
+1. **The base head — the component that sets the posterior's spread — reads a
+   randomly-initialised attention pooling of the token memory.** That is the root cause
+   of E1: even a perfect readout of this `ctx` cannot recover the posterior (§E1
+   measures the ceiling at ~1.2× the true sd; the shipped head is at 2.4×).
+2. `AttentionPool`'s docstring — *"Strictly more expressive than mean-pool … which
+   matters for posterior calibration"* — is vacuous as shipped, and the `pool=` option
+   is a no-op knob: `pool="mean"` has no parameters, so the two choices differ only by a
+   fixed random projection.
+
+**Patch (one line).** Detach the *memory* instead of the *context*. That preserves the
+stated intent — the base's NLL must not shape the shared token memory — while letting
+its gradient train the pooling that it alone consumes:
+
+```python
+-  base_nll, draw, _ = self.base_head.nll(zb, ctx.detach())
++  ctx_base = self.encoder.pool(memory.detach(), mb)   # pool IS trained, encoder is not
++  base_nll, draw, _ = self.base_head.nll(zb, ctx_base)
+```
+
+`sample_batch` needs no change (it already calls `self.encoder.pool(memory, mb)`), but
+note that after this patch `ctx` is used by two different graphs, so keep the two calls
+distinct in `fit` and reuse `ctx` for nothing else.
+
+Measured effect, `linear_gaussian`, 12000/30, against the exact posterior: see the
+ablation table in §8.D.
 
 ### E1 — the base head is not converged, and it seeds 2–3.3× too much spread. **CONFIRMED**
 
@@ -132,19 +197,42 @@ the same `n_train` pairs are reshuffled and replayed for every epoch. There is n
 regeneration and (by default) no token dropout, so the only stochasticity per epoch is
 the base draw `eps` and the flow time `t`.
 
-Measured CFM loss on the training set vs on 3000–4000 freshly simulated pairs, same
-`(eps, t)` seed:
+Measured CFM loss on the training set vs on freshly simulated pairs, same `(eps, t)`
+seed, `linear_gaussian`:
 
 ```
-budget            train CFM   fresh CFM     gap
-12000 / 30 data     0.2384      0.2507     +5.1 %
-12000 / 30 standard 0.3746      0.3913     +4.5 %
+budget               train CFM   fresh CFM      gap     mean s_hat (train / fresh)
+ 1000 / 30             1.3538      1.3185     -2.6 %      0.9375 / 0.9377
+ 2000 / 30             1.1630      1.1457     -1.5 %      0.8854 / 0.8856
+ 4000 / 30             0.7948      0.7835     -1.4 %      0.8019 / 0.8019
+ 2000 / 90             0.4237      0.4357     +2.8 %      0.7991 / 0.7990
+ 8000 / 25 (CLI dflt)  0.3439      0.3460     +0.6 %      0.7405 / 0.7398
+12000 / 30             0.2384      0.2507     +5.1 %      ~0.605
+12000 / 30 standard    0.3746      0.3913     +4.5 %      --
 ```
 
-At the canonical budget the memorisation gap is ~5 %, so this is **not** the cause of a
-wide posterior. It becomes a real risk at the `examples/recover.py` default
-(`n_train=8000, epochs=25`) and at any longer schedule; see §1 table in the appendix
-for the `n_train` sweep.
+**Honest negative: memorisation is not currently the problem.** The gap swings between
+−2.6 % and +5.1 %, i.e. inside the noise of a loss dominated by its irreducible term,
+and the base head's σ̂ is identical to 4 decimals on train and fresh data. The fixed
+training set is a latent hazard (nothing in `fit` would tell you if it started to
+matter) rather than an active defect.
+
+What the same sweep *does* show is that **the base head's over-spread is a budget
+problem that barely improves with budget**. Against a true posterior sd of ≈ 0.219
+(mean over the four parameters, z-space):
+
+```
+budget       mean s_hat   s_hat / true
+ 1000 / 30      0.938        4.3x
+ 2000 / 30      0.885        4.0x
+ 4000 / 30      0.802        3.7x
+ 8000 / 25      0.740        3.4x        <- the `amortix recover` / `amortix sbc` default
+12000 / 30      0.605        2.8x
+```
+
+The CLI's `gallery` default is smaller still (`n_train=6000, epochs=20`). Every
+published gallery number was therefore produced with a base whose spread is 3–4× the
+posterior's.
 
 **Patch.** Cheap and strictly better for CPU-cheap simulators — regenerate periodically:
 
@@ -324,6 +412,87 @@ clamped:
 Z_MAX = math.sqrt(2) * torch.erfinv(torch.tensor(1.0 - 2 * _EPS)).item()   # 4.751
 outs.append(self.prior.denormalize(z.clamp(-Z_MAX, Z_MAX)))
 ```
+
+### E10 — the model cannot run in float64 at all. **CONFIRMED**
+
+```
+FlowPosterior(prob).double() ... sample_batch(tokens.double())
+  -> RuntimeError: mat1 and mat2 must have the same dtype, but got Float and Double
+```
+
+Three hard-coded dtypes:
+
+* `flow.timestep_embedding`: `torch.arange(half, dtype=torch.float32)` — the embedding
+  comes out float32 and is fed to a float64 `t_mlp`.
+* `encoder.rope_tables`: `torch.arange(0, half).float()` and `torch.arange(seq_len).float()`.
+* `encoder.SetTransformer._rope`: on growth it calls `rope_tables(T, ...)` and assigns the
+  result over the buffers — so even a model correctly cast to float64 silently reverts
+  its RoPE tables to float32 the first time it sees a long input.
+
+**Patch.** Derive the dtype from the input in all three places:
+
+```python
+freqs = torch.exp(-math.log(max_period)
+                  * torch.arange(half, dtype=t.dtype, device=t.device) / half)
+...
+def rope_tables(seq_len, head_dim, base=10000.0, dtype=torch.float32, device=None):
+    ...
+def _rope(self, T):
+    if T > self.cos.shape[0]:
+        cos, sin = rope_tables(T, self.head_dim,
+                               dtype=self.cos.dtype, device=self.cos.device)
+```
+
+Independently: `FlowPosterior.__init__` does `self.prior = problem.prior`, so the prior
+tensors are shared by reference with the problem — casting one casts the other.
+
+### E11 — the width you report depends on the integrator. **CONFIRMED**
+
+Same weights, same base draws, 40 datasets × 800 draws against the exact posterior:
+
+```
+solver / steps        std ratio   mean err   corr err   |corr| flow   (exact 0.415)
+midpoint    5           1.020      1.70 %     0.233        0.240
+midpoint   10           1.033      1.75 %     0.230        0.244
+midpoint   20           1.035      1.76 %     0.227        0.248
+midpoint   50           1.036      1.74 %     0.230        0.245
+midpoint  200           1.034      1.75 %     0.229        0.246
+euler      20           0.953      1.74 %     0.219        0.253
+rk4        20           1.029      1.75 %     0.228        0.247
+```
+
+Two conclusions:
+
+1. **The ODE discretisation is not the limiter.** Going from 5 to 200 midpoint steps
+   moves the std ratio by 1.4 pp and the correlation by 0.006. The flow is close to
+   linear in `t` — five steps already reproduce the 200-step answer — which is another
+   way of saying the learned velocity does very little reshaping.
+2. **Euler at the default 20 steps reads 8 pp narrower than midpoint** (0.953 vs 1.035)
+   on identical weights. That is the same size as the entire width error being
+   diagnosed, so any calibration number must state its solver. `sample_batch` defaults
+   to `midpoint`, `METHOD.md` describes an "RK4 sampler"; pick one and pin it.
+
+Under-correlation, by contrast, is **flat at 58–61 % of the true correlation for every
+solver and every step count** — it is a property of the learned velocity field, not of
+the integrator.
+
+### float64 vs float32, end to end — **no conclusion changes**
+
+`FlowPosterior(...).double()` cannot be run as shipped (E10), so the comparison was done
+by casting the weights, regenerating the RoPE tables in float64, and replaying
+`sample_batch`'s midpoint loop with `t` in the model dtype. Same weights, same `eps`,
+40 datasets × 800 draws, scored against the exact posterior:
+
+```
+        std_ratio   mean_err   corr_err   |corr| flow   (exact 0.4152)
+fp32      1.0350     1.755 %    0.2273       0.2479
+fp64      1.0350     1.755 %    0.2273       0.2479
+max |fp32 - fp64| over all draws = 2.54e-06   (posterior sd ~ 0.321, prior range 6.0)
+```
+
+Relative agreement 8e-06. **float32 is not the problem** — neither the probit map, nor
+the attention softmax, nor the ODE integration, nor the Gaussian NLL loses anything that
+matters. Every finding above stands unchanged in double precision.
 
 ### Everything else in fp32
 
@@ -589,4 +758,29 @@ into an un-normalised `nn.Linear` — another argument for E2's patch.
 === train() vs eval() ===
  max |diff| = 0.0 ; module tree contains no Dropout / BatchNorm / LayerNorm
 ```
+
+---
+
+## 9. Suggested order of work
+
+1. **E0** — one line (`self.encoder.pool(memory.detach(), mb)`). Un-freezes 12 544
+   parameters that the base head depends on. Nothing else changes.
+2. **E1** — make `BaseHead`/`FullBaseHead` a 2-layer MLP and give the base head its own
+   Adam group at 10× the LR. Together with (1) this is the direct attack on the width.
+3. **E2** — standardise token features from the training simulation, store the statistics
+   as buffers, apply them on every encode path. Disposes of E7 for free.
+4. **E5** — `clip_grad_norm_(…, 1.0)` and a cosine schedule; report the fresh-pair loss
+   next to the training loss so E3 stays visible.
+5. **E10 / E11** — dtype-agnostic `timestep_embedding` / `rope_tables` / `_rope`, and a
+   `torch.full((B,), i*dt, dtype=z.dtype)` in `sample_batch`; pin the solver in every
+   reported number.
+6. **E4** — non-zero adaLN gate bias (`1e-2`); cheap, and it stops wasting the first
+   epochs.
+7. **E6, E8, E3** — clamp the ODE output at the training clamp; assert instead of
+   clamping channel indices; add `resim_every`.
+
+After (1)–(3), re-measure on `linear_gaussian` against the exact posterior and on OU
+against the token-matched MCMC reference (`examples/vs_mcmc.py`) — those are the only two
+places in the repo where "too wide" is a well-posed statement.
+
 

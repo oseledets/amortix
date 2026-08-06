@@ -1,3 +1,6 @@
+# Honest scoreboard
+
+```
 honest scoreboard | budget 20000/50 | 80 datasets x 400 draws
           case | prior-only |   ridge | amortized | classical | verdict
 ------------------------------------------------------------------------------
@@ -25,5 +28,4 @@ sindy_sde
 
 prior-limited, not a defect (1): sindy_sde.c2  -- score these by SBC / distance to the true posterior, not by MAE
 POSTERIOR TOO WIDE -- the ridge locates what we leave at the prior (1): sindy_sde.c3
-
-[saved] /Users/ioseledets/work/amortix/results/SB_sindy_real.md
+```

@@ -330,7 +330,8 @@ class FlowPosterior(nn.Module):
     # --- training --------------------------------------------------------
     def fit(self, n_train: int = 12000, epochs: int = 30, batch: int = 64,
             lr: float = 3e-4, base_weight: float = 1.0, seed: int = 0,
-            token_dropout: float = 0.0, steps: int = None, verbose: bool = True):
+            token_dropout: float = 0.0, steps: int = None,
+            monitor=None, monitor_every: int = 500, verbose: bool = True):
         """Train the amortized posterior.
 
         What actually governs convergence here is the number of OPTIMIZER STEPS,
@@ -357,6 +358,13 @@ class FlowPosterior(nn.Module):
         batch, which is what makes the set encoder's size-invariance real rather
         than nominal -- a model trained at one fixed count has never been asked
         to generalise over count.
+
+        monitor: callable(self) -> float, evaluated every `monitor_every`
+        optimizer steps and appended to `self.history`. This is where the real
+        convergence signal goes: the distance between the sampled posterior and a
+        reference posterior, in full dimension (see amortix.metrics). The training
+        loss cannot serve -- most of ||v - (z1 - z0)||^2 is the irreducible
+        Var(z1 - z0 | z_t), so it can rise while the posterior keeps improving.
         """
         gen = torch.Generator().manual_seed(seed)
         torch.manual_seed(seed)
@@ -369,6 +377,7 @@ class FlowPosterior(nn.Module):
         n_batches = max(1, n_train // batch)
         if steps is not None:                       # budget stated in optimizer steps
             epochs = max(1, int(round(steps / n_batches)))
+        self.history = []
         t0 = time.time()
         for ep in range(epochs):
             perm = torch.randperm(n_train, generator=gen)
@@ -410,8 +419,17 @@ class FlowPosterior(nn.Module):
                 loss = cfm + base_weight * base_nll
                 opt.zero_grad(); loss.backward(); opt.step()
                 running += cfm.item()
-            if verbose and (ep % max(1, epochs // 10) == 0 or ep == epochs - 1):
-                print(f"  epoch {ep:3d}  step {(ep + 1) * n_batches:6d}  "
+            step_now = (ep + 1) * n_batches
+            if monitor is not None and (step_now // monitor_every >
+                                        (step_now - n_batches) // monitor_every):
+                with torch.no_grad():
+                    val = float(monitor(self))
+                self.history.append(dict(step=step_now, cfm=running / n_batches, metric=val))
+                if verbose:
+                    print(f"  step {step_now:6d}  cfm {running / n_batches:.4f}"
+                          f"  dist-to-reference {val:.4f}  ({time.time() - t0:.0f}s)")
+            elif verbose and (ep % max(1, epochs // 10) == 0 or ep == epochs - 1):
+                print(f"  epoch {ep:3d}  step {step_now:6d}  "
                       f"cfm {running / n_batches:.4f}  ({time.time() - t0:.1f}s)")
         return self
 
