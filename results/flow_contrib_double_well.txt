@@ -1,0 +1,11 @@
+
+double_well  base=data  (6000/20, SBC 150x150)
+     variant |     err |    calib | SBC | |skew| | |kurt|
+--------------------------------------------------------------
+   base only |  13.31% |    3.5pp | 3/3 |  0.171 |  0.308
+ base + flow |  13.16% |    3.1pp | 3/3 |  0.242 |  0.405
+   flow only |  13.14% |    2.6pp | 3/3 |  0.585 |  2.368
+--------------------------------------------------------------
+flow contribution: err +0.15pp, calib +0.4pp, SBC +0 params
+(|skew|,|kurt| measure departure from Gaussian: if the flow leaves them at ~0
+ the posterior is effectively Gaussian and the ODE is decorative.)

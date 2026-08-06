@@ -32,10 +32,18 @@ import torch.nn as nn
 from .encoder import SetTransformer, RMSNorm, FFN
 
 
-def timestep_embedding(t: torch.Tensor, dim: int, max_period: float = 1000.0):
+def timestep_embedding(t: torch.Tensor, dim: int, max_period: float = 1000.0,
+                       scale: float = 1000.0):
+    """Sinusoidal embedding of the flow time t.
+
+    `scale` maps our continuous t in [0,1] onto the range these frequencies were
+    designed for. Without it every argument stays below 1 radian, so the sinusoids
+    never complete a cycle and ~3/4 of the dimensions are effectively constant --
+    the velocity field then receives almost no time signal.
+    """
     half = dim // 2
     freqs = torch.exp(-math.log(max_period) * torch.arange(half, dtype=torch.float32) / half)
-    args = t[:, None] * freqs[None]
+    args = (t * scale)[:, None] * freqs[None]
     emb = torch.cat([args.cos(), args.sin()], dim=-1)
     if dim % 2:
         emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=-1)
@@ -96,22 +104,58 @@ class CrossAttention(nn.Module):
         return self.proj(out)
 
 
-class CrossBlock(nn.Module):
-    """adaLN-Zero cross-attention block (DiT-style): time modulates, params attend
-    to the full observation memory -- no single-vector bottleneck."""
+class SelfAttention(nn.Module):
+    """Attention among the parameter tokens of one posterior sample."""
 
     def __init__(self, dim, n_head):
         super().__init__()
+        self.n_head = n_head
+        self.hd = dim // n_head
+        self.qkv = nn.Linear(dim, 3 * dim)
+        self.proj = nn.Linear(dim, dim)
+
+    def forward(self, x):                        # x [N, P, dim]
+        N, P, D = x.shape
+        qkv = self.qkv(x).reshape(N, P, 3, self.n_head, self.hd)
+        q, k, v = qkv.permute(2, 0, 3, 1, 4)
+        attn = ((q @ k.transpose(-2, -1)) / (self.hd ** 0.5)).softmax(-1)
+        return self.proj((attn @ v).transpose(1, 2).reshape(N, P, D))
+
+
+class CrossBlock(nn.Module):
+    """adaLN-Zero block: parameter tokens talk to each other (self-attention),
+    then read the observation memory (cross-attention), with time modulation.
+
+    The self-attention is essential, not decorative. Without it the velocity for
+    parameter i depends only on z_i, so the field is factorized coordinate-wise --
+    and an ODE with a coordinate-wise field maps independent coordinates to
+    independent coordinates. Such a flow *cannot* produce a correlated posterior
+    from an independent base, at any budget. Attention runs within one posterior
+    sample only, so distinct samples stay independent.
+    """
+
+    def __init__(self, dim, n_head):
+        super().__init__()
+        self.n0 = RMSNorm(dim)
+        self.selfattn = SelfAttention(dim, n_head)
         self.n1 = RMSNorm(dim)
         self.cross = CrossAttention(dim, n_head)
         self.n2 = RMSNorm(dim)
         self.ffn = FFN(dim)
-        self.ada = nn.Linear(dim, 6 * dim)
+        self.ada = nn.Linear(dim, 9 * dim)
         nn.init.zeros_(self.ada.weight)          # adaLN-Zero: blocks start as identity
         nn.init.zeros_(self.ada.bias)
 
-    def forward(self, x, k, v, temb):
-        sh1, sc1, g1, sh2, sc2, g2 = self.ada(temb).chunk(6, dim=-1)
+    def forward(self, x, k, v, temb, n_param):
+        """x [B, G*P, dim]; temb [B, dim]; P = n_param parameter tokens per sample."""
+        B, GP, D = x.shape
+        G = GP // n_param
+        sh0, sc0, g0, sh1, sc1, g1, sh2, sc2, g2 = self.ada(temb).chunk(9, dim=-1)
+        # --- parameter tokens attend to each other, within each sample ---
+        h = _modulate(self.n0(x), sh0, sc0).reshape(B * G, n_param, D)
+        h = self.selfattn(h).reshape(B, GP, D)
+        x = x + g0.unsqueeze(1) * h
+        # --- parameter tokens read the observation memory ---
         x = x + g1.unsqueeze(1) * self.cross(_modulate(self.n1(x), sh1, sc1), k, v)
         x = x + g2.unsqueeze(1) * self.ffn(_modulate(self.n2(x), sh2, sc2))
         return x
@@ -143,7 +187,7 @@ class CrossCondVelocity(nn.Module):
         tok = self.param_emb.unsqueeze(0) + self.val_in(z.unsqueeze(-1))  # [B,d,dim]
         temb = self.t_mlp(timestep_embedding(t, self.t_dim))              # [B,dim]
         for blk, (k, v) in zip(self.blocks, cache):
-            tok = blk(tok, k, v, temb)
+            tok = blk(tok, k, v, temb, self.d_param)
         return self.out(self.out_norm(tok)).squeeze(-1)                   # [B,d]
 
     def forward_grouped(self, z, t, cache):
@@ -157,7 +201,7 @@ class CrossCondVelocity(nn.Module):
         tok = tok.reshape(B, G * d, -1)                                   # [B,G*d,dim]
         temb = self.t_mlp(timestep_embedding(t, self.t_dim))              # [B,dim]
         for blk, (k, v) in zip(self.blocks, cache):
-            tok = blk(tok, k, v, temb)
+            tok = blk(tok, k, v, temb, d)
         return self.out(self.out_norm(tok)).reshape(B, G, d)
 
 
@@ -177,6 +221,55 @@ class BaseHead(nn.Module):
         mu, log_s = h[:, :self.dim], h[:, self.dim:]
         log_s = log_s.clamp(-4.0, 2.0)
         return mu, torch.exp(log_s)
+
+    def nll(self, z1, ctx):
+        """Gaussian NLL of the targets under the predicted base, and a sampler."""
+        mu, s = self(ctx)
+        nll = (0.5 * ((z1 - mu) ** 2 / s ** 2 + 2 * torch.log(s))).sum(-1).mean()
+        return nll, (lambda eps: mu + s * eps), (mu, s)
+
+
+class FullBaseHead(nn.Module):
+    """Data-dependent Gaussian base with a **full covariance**: N(mu, L L^T).
+
+    The diagonal head can only seed axis-aligned spread, so any posterior
+    correlation has to be manufactured by the flow itself -- the suspected cause
+    of the SBC failures on coupled parameters (Lotka-Volterra alpha/beta, SEIR
+    beta2/gamma_d, CIR a/b, which enter the dynamics as products). Predicting a
+    Cholesky factor lets the base match the posterior's covariance directly, so
+    the flow only has to fix non-Gaussian shape.
+    """
+
+    def __init__(self, ctx_dim: int, dim: int):
+        super().__init__()
+        self.dim = dim
+        self.n_off = dim * (dim - 1) // 2
+        self.net = nn.Linear(ctx_dim, 2 * dim + self.n_off)
+        nn.init.zeros_(self.net.weight)          # start at N(0, I)
+        nn.init.zeros_(self.net.bias)
+        idx = torch.tril_indices(dim, dim, offset=-1)
+        self.register_buffer("off_i", idx[0], persistent=False)
+        self.register_buffer("off_j", idx[1], persistent=False)
+
+    def forward(self, ctx):
+        h = self.net(ctx)
+        B = h.shape[0]
+        mu = h[:, :self.dim]
+        log_d = h[:, self.dim:2 * self.dim].clamp(-4.0, 2.0)
+        off = h[:, 2 * self.dim:]
+        L = torch.zeros(B, self.dim, self.dim, dtype=h.dtype, device=h.device)
+        L[:, range(self.dim), range(self.dim)] = torch.exp(log_d)
+        if self.n_off:
+            L[:, self.off_i, self.off_j] = off
+        return mu, L
+
+    def nll(self, z1, ctx):
+        """Exact multivariate Gaussian NLL: 0.5||L^-1 (z1-mu)||^2 + log|det L|."""
+        mu, L = self(ctx)
+        u = torch.linalg.solve_triangular(L, (z1 - mu).unsqueeze(-1), upper=False)
+        logdet = torch.log(torch.diagonal(L, dim1=-2, dim2=-1)).sum(-1)
+        nll = (0.5 * (u ** 2).sum((-2, -1)) + logdet).mean()
+        return nll, (lambda eps: mu + torch.einsum("bij,bj->bi", L, eps)), (mu, L)
 
 
 class FlowPosterior(nn.Module):
@@ -200,7 +293,12 @@ class FlowPosterior(nn.Module):
         else:
             # concat conditioning: velocity MLP on [z, emb(t), pooled context]
             self.velocity = VelocityNet(self.d, dim_model, hidden=hidden, depth=depth)
-        self.base_head = BaseHead(dim_model, self.d) if base == "data" else None
+        if base == "data":
+            self.base_head = BaseHead(dim_model, self.d)          # diagonal Gaussian
+        elif base == "full":
+            self.base_head = FullBaseHead(dim_model, self.d)      # full covariance
+        else:
+            self.base_head = None                                  # plain N(0, I)
 
     # --- training --------------------------------------------------------
     def fit(self, n_train: int = 12000, epochs: int = 30, batch: int = 256,
@@ -225,10 +323,14 @@ class FlowPosterior(nn.Module):
                 memory = self.encoder.encode(tb)
                 ctx = self.encoder.pool(memory)
                 eps = torch.randn(bs, self.d, generator=gen)
-                if self.base == "data":
-                    mu, s = self.base_head(ctx)
-                    z0 = mu + s * eps
-                    base_nll = (0.5 * ((zb - mu) ** 2 / (s ** 2) + 2 * torch.log(s))).mean()
+                if self.base_head is not None:
+                    base_nll, draw, _ = self.base_head.nll(zb, ctx)
+                    # The base is trained by its NLL only. z0 is DETACHED from the
+                    # CFM term: otherwise ||v - (z1 - z0)||^2 can be reduced by
+                    # dragging z0 towards z1, i.e. the loss would pay the base to
+                    # absorb the flow's job, collapsing the regression target to
+                    # zero and leaving the velocity field with nothing to learn.
+                    z0 = draw(eps).detach()
                 else:
                     z0 = eps
                     base_nll = torch.zeros(())
@@ -264,7 +366,10 @@ class FlowPosterior(nn.Module):
             memory = self.encoder.encode(tb)                  # [B, T, dim]
             ctx = self.encoder.pool(memory)                   # [B, dim]
             eps = torch.randn(B, n, self.d, generator=gen)
-            if self.base == "data":
+            if self.base == "full":
+                mu, L = self.base_head(ctx)                   # [B,d], [B,d,d]
+                z = mu[:, None] + torch.einsum("bij,bnj->bni", L, eps)
+            elif self.base_head is not None:
                 mu, s = self.base_head(ctx)                   # [B, d]
                 z = mu[:, None] + s[:, None] * eps
             else:

@@ -22,7 +22,7 @@ def gen():
 
 
 def test_gallery_is_populated():
-    assert len(GALLERY) == 8
+    assert len(GALLERY) == 9
 
 
 @pytest.mark.parametrize("name", GALLERY)
@@ -145,3 +145,55 @@ def test_cli_cases_runs(capsys):
     out = capsys.readouterr().out
     for name in GALLERY:
         assert name in out
+
+
+def test_base_head_gets_no_gradient_from_cfm():
+    """The base must be trained by its own NLL only.
+
+    If z0 were not detached, the CFM loss could be reduced by dragging the base
+    onto the target -- paying the base to absorb the flow's job. With
+    base_weight=0 the base head must therefore receive exactly zero gradient.
+    """
+    from amortix import OrnsteinUhlenbeck
+    prob = OrnsteinUhlenbeck()
+    post = FlowPosterior(prob, base="data")
+    post.fit(n_train=256, epochs=1, base_weight=0.0, verbose=False)
+    grads = [p.grad for p in post.base_head.parameters() if p.grad is not None]
+    assert grads, "base head should still take part in the graph"
+    assert all(float(g.abs().max()) == 0.0 for g in grads), \
+        "CFM loss leaked into the base head (z0 not detached)"
+
+
+def test_velocity_couples_parameters():
+    """The velocity field must NOT be factorized across parameters.
+
+    An ODE whose velocity for parameter i depends only on z_i maps independent
+    coordinates to independent coordinates, so it can never turn an independent
+    base into a correlated posterior -- no matter the budget. This regression
+    guards the parameter self-attention that makes the field coupled.
+    """
+    from amortix.problems.linear_gaussian import make
+    prob = make()
+    d = prob.prior.dim
+    post = FlowPosterior(prob, conditioning="xattn")
+    post.fit(n_train=128, epochs=1, verbose=False)
+    memory = post.encoder.encode(prob.simulate(1)[1])
+    cache = post.velocity.encode_memory(memory)
+    z = torch.zeros(1, d, requires_grad=True)
+    v = post.velocity(z, torch.full((1,), 0.5), cache)
+    J = torch.stack([torch.autograd.grad(v[0, i], z, retain_graph=True)[0][0]
+                     for i in range(d)])
+    off = (J - torch.diag(torch.diag(J))).abs().max()
+    assert float(off) > 1e-8, "velocity is factorized across parameters"
+
+
+def test_posterior_samples_are_independent():
+    """Parameter self-attention must act within a sample, never across samples."""
+    from amortix.problems.linear_gaussian import make
+    prob = make()
+    post = FlowPosterior(prob).fit(n_train=128, epochs=1, verbose=False)
+    tk, _ = prob.observe(prob.prior.sample(1, generator=torch.Generator().manual_seed(0)))
+    a = post.sample_batch(tk, n=8, seed=3, n_steps=10)
+    b = post.sample_batch(tk, n=64, seed=3, n_steps=10)
+    # the first 8 draws must not change when 56 more are drawn alongside them
+    assert torch.allclose(a[0], b[0, :8], atol=1e-5), "samples interact with each other"
