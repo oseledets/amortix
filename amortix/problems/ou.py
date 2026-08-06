@@ -44,8 +44,16 @@ class OrnsteinUhlenbeck(SDEProblem):
         return m[:, 2:3].expand_as(x)           # constant additive diffusion [B, 1]
 
     def x0_sampler(self, m, generator=None):
-        # start at the mean so paths are stationary-ish from the outset
-        return m[:, 1:2].clone()                # [B, 1]
+        # Draw X0 from the stationary law N(mu, sigma^2 / (2 theta)).
+        #
+        # Do NOT start at X0 = mu exactly: that leaks the parameter into the very
+        # first observation, so mu becomes trivially readable and any estimator
+        # that notices (the amortized network does) appears to beat a likelihood
+        # baseline that ignores the initial condition. The stationary start keeps
+        # paths stationary from t=0 without handing mu to the network for free.
+        theta, mu, sigma = m[:, 0:1], m[:, 1:2], m[:, 2:3]
+        sd = sigma / torch.sqrt(2.0 * theta)
+        return mu + sd * torch.randn(mu.shape, generator=generator)
 
 
 # --- gallery contract -----------------------------------------------------

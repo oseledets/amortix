@@ -67,16 +67,29 @@ def calibration_error(ranks: np.ndarray, n_post: int,
 
 
 def sbc_uniformity(ranks: np.ndarray, n_post: int, n_bins: int = 20):
-    """Chi-square uniformity p-value per parameter (low p => mis-calibrated)."""
+    """Chi-square uniformity p-value per parameter (low p => mis-calibrated).
+
+    Ranks are DISCRETE: they take the n_post+1 values {0,...,n_post}. Those do not
+    spread evenly over n_bins unless n_bins divides n_post+1, so assuming a flat
+    expectation of n_sims/n_bins makes the test anti-conservative -- perfectly
+    calibrated ranks then get rejected far more often than the nominal 5% (10.7%
+    at 500x200, 47% at n_post=100). We therefore compute the exact expected
+    proportion of each bin under discrete uniformity and test against that.
+    """
     from scipy.stats import chi2
     n_sims, d = ranks.shape
+    edges = np.linspace(0, 1, n_bins + 1)
+    # exact multinomial probabilities of the attainable ranks under uniformity
+    u_all = np.arange(n_post + 1) / float(n_post)
+    exp_counts = np.histogram(u_all, bins=edges)[0] * (n_sims / (n_post + 1.0))
+    keep = exp_counts > 0
+    dof = int(keep.sum()) - 1
     u = ranks / float(n_post)
     pvals = np.zeros(d)
     for j in range(d):
-        counts, _ = np.histogram(u[:, j], bins=n_bins, range=(0, 1))
-        exp = n_sims / n_bins
-        stat = ((counts - exp) ** 2 / exp).sum()
-        pvals[j] = chi2.sf(stat, df=n_bins - 1)
+        counts = np.histogram(u[:, j], bins=edges)[0]
+        stat = (((counts - exp_counts) ** 2 / exp_counts)[keep]).sum()
+        pvals[j] = chi2.sf(stat, df=dof)
     return pvals
 
 

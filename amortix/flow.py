@@ -225,7 +225,7 @@ class BaseHead(nn.Module):
     def nll(self, z1, ctx):
         """Gaussian NLL of the targets under the predicted base, and a sampler."""
         mu, s = self(ctx)
-        nll = (0.5 * ((z1 - mu) ** 2 / s ** 2 + 2 * torch.log(s))).sum(-1).mean()
+        nll = (0.5 * ((z1 - mu) ** 2 / s ** 2 + 2 * torch.log(s))).mean()
         return nll, (lambda eps: mu + s * eps), (mu, s)
 
 
@@ -268,7 +268,7 @@ class FullBaseHead(nn.Module):
         mu, L = self(ctx)
         u = torch.linalg.solve_triangular(L, (z1 - mu).unsqueeze(-1), upper=False)
         logdet = torch.log(torch.diagonal(L, dim1=-2, dim2=-1)).sum(-1)
-        nll = (0.5 * (u ** 2).sum((-2, -1)) + logdet).mean()
+        nll = ((0.5 * (u ** 2).sum((-2, -1)) + logdet) / self.dim).mean()
         return nll, (lambda eps: mu + torch.einsum("bij,bj->bi", L, eps)), (mu, L)
 
 
@@ -324,7 +324,12 @@ class FlowPosterior(nn.Module):
                 ctx = self.encoder.pool(memory)
                 eps = torch.randn(bs, self.d, generator=gen)
                 if self.base_head is not None:
-                    base_nll, draw, _ = self.base_head.nll(zb, ctx)
+                    # The base reads a DETACHED context. Otherwise its NLL, which is
+                    # a much stronger signal than the CFM term, trains the shared
+                    # encoder 20-176x harder than the flow does, and the token
+                    # memory ends up shaped as a good linear readout for a diagonal
+                    # Gaussian instead of as information for the velocity field.
+                    base_nll, draw, _ = self.base_head.nll(zb, ctx.detach())
                     # The base is trained by its NLL only. z0 is DETACHED from the
                     # CFM term: otherwise ||v - (z1 - z0)||^2 can be reduced by
                     # dragging z0 towards z1, i.e. the loss would pay the base to

@@ -197,3 +197,23 @@ def test_posterior_samples_are_independent():
     b = post.sample_batch(tk, n=64, seed=3, n_steps=10)
     # the first 8 draws must not change when 56 more are drawn alongside them
     assert torch.allclose(a[0], b[0, :8], atol=1e-5), "samples interact with each other"
+
+
+def test_base_nll_does_not_train_the_encoder():
+    """The shared encoder must be shaped by the flow objective, not by the base.
+
+    The base NLL is a far stronger gradient signal than the CFM term; if it
+    reaches the encoder, the token memory becomes a good linear readout for a
+    diagonal Gaussian rather than information for the velocity field.
+    """
+    from amortix import OrnsteinUhlenbeck
+    prob = OrnsteinUhlenbeck()
+    post = FlowPosterior(prob, base="data")
+    m, tokens = prob.simulate(64)
+    z1 = prob.prior.normalize(m)
+    ctx = post.encoder.pool(post.encoder.encode(tokens))
+    nll, _, _ = post.base_head.nll(z1, ctx.detach())
+    nll.backward()
+    enc_grads = [p.grad for p in post.encoder.parameters() if p.grad is not None]
+    assert all(float(g.abs().max()) == 0.0 for g in enc_grads), \
+        "base NLL leaked into the encoder"
