@@ -328,21 +328,47 @@ class FlowPosterior(nn.Module):
             self.base_head = None                                  # plain N(0, I)
 
     # --- training --------------------------------------------------------
-    def fit(self, n_train: int = 12000, epochs: int = 30, batch: int = 256,
+    def fit(self, n_train: int = 12000, epochs: int = 30, batch: int = 64,
             lr: float = 3e-4, base_weight: float = 1.0, seed: int = 0,
-            token_dropout: float = 0.0, verbose: bool = True):
-        """token_dropout: fraction of observation tokens randomly masked out each
-        batch. The point of a set encoder is to accept any number of observations,
-        but a model only trained at one fixed count has never been asked to; a few
-        percent of dropout makes that property real rather than nominal."""
+            token_dropout: float = 0.0, steps: int = None, verbose: bool = True):
+        """Train the amortized posterior.
+
+        What actually governs convergence here is the number of OPTIMIZER STEPS,
+        not the number of simulations or epochs. Holding n_train=6000 and
+        epochs=20 fixed on the linear-Gaussian testbed and changing only the batch
+        size:
+
+            batch 1024 ->  100 steps -> posterior 5.46x too wide
+            batch  256 ->  460 steps -> posterior 4.17x too wide
+            batch   64 -> 1860 steps -> posterior 1.21x too wide
+
+        The old default of 256 was starving the model: a "3000 sims / 8 epochs"
+        configuration is 88 steps, which is an untrained network, and results
+        measured there say nothing about the method. Hence batch=64 by default.
+
+        `steps` overrides `epochs` and is the honest way to state a budget: the
+        number of epochs is then whatever it takes to run that many updates.
+
+        Do not judge convergence by the loss. Most of ||v - (z1 - z0)||^2 is the
+        irreducible Var(z1 - z0 | z_t); the loss can rise while the posterior
+        keeps improving. Track the distribution (examples/budget_curve.py).
+
+        token_dropout: fraction of observation tokens randomly masked out each
+        batch, which is what makes the set encoder's size-invariance real rather
+        than nominal -- a model trained at one fixed count has never been asked
+        to generalise over count.
+        """
         gen = torch.Generator().manual_seed(seed)
         torch.manual_seed(seed)
         if verbose:
-            print(f"[fit] simulating {n_train} training trajectories...")
+            print(f"[fit] simulating {n_train} training trajectories "
+                  f"({max(1, n_train // batch)} batches/epoch)...")
         m, tokens = self.problem.simulate(n_train, generator=gen)
         z1 = self.prior.normalize(m)
         opt = torch.optim.Adam(self.parameters(), lr=lr)
         n_batches = max(1, n_train // batch)
+        if steps is not None:                       # budget stated in optimizer steps
+            epochs = max(1, int(round(steps / n_batches)))
         t0 = time.time()
         for ep in range(epochs):
             perm = torch.randperm(n_train, generator=gen)
@@ -385,8 +411,8 @@ class FlowPosterior(nn.Module):
                 opt.zero_grad(); loss.backward(); opt.step()
                 running += cfm.item()
             if verbose and (ep % max(1, epochs // 10) == 0 or ep == epochs - 1):
-                print(f"  epoch {ep:3d}  cfm {running / n_batches:.4f}"
-                      f"  ({time.time() - t0:.1f}s)")
+                print(f"  epoch {ep:3d}  step {(ep + 1) * n_batches:6d}  "
+                      f"cfm {running / n_batches:.4f}  ({time.time() - t0:.1f}s)")
         return self
 
     # --- inference -------------------------------------------------------
