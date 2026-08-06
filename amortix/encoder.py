@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class RMSNorm(nn.Module):
@@ -56,14 +57,11 @@ class Attention(nn.Module):
         q, k, v = qkv.permute(2, 0, 3, 1, 4)         # each [B, H, T, Dh]
         q = apply_rope(q, cos, sin)
         k = apply_rope(k, cos, sin)
-        attn = (q @ k.transpose(-2, -1)) / (self.head_dim ** 0.5)  # [B,H,T,T]
-        if mask is not None:
-            keymask = (~mask)[:, None, None, :]      # [B,1,1,T]
-            attn = attn.masked_fill(keymask, float("-inf"))
-        attn = attn.softmax(dim=-1)
-        out = attn @ v                                # [B,H,T,Dh]
-        out = out.transpose(1, 2).reshape(B, T, D)
-        return self.proj(out)
+        # fused attention: no [B,H,T,T] score matrix is ever materialised, and the
+        # bool mask (True = attend) is applied inside the kernel
+        am = None if mask is None else mask[:, None, None, :]
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=am)   # [B,H,T,Dh]
+        return self.proj(out.transpose(1, 2).reshape(B, T, D))
 
 
 class FFN(nn.Module):
@@ -111,12 +109,9 @@ class AttentionPool(nn.Module):
         kv = self.kv(x).reshape(B, T, 2, self.n_head, self.head_dim)
         k, v = kv.permute(2, 0, 3, 1, 4)              # each [B, H, T, Dh]
         q = self.q.reshape(1, self.n_head, 1, self.head_dim).expand(B, -1, -1, -1)
-        attn = (q @ k.transpose(-2, -1)) / (self.head_dim ** 0.5)  # [B,H,1,T]
-        if mask is not None:
-            attn = attn.masked_fill((~mask)[:, None, None, :], float("-inf"))
-        attn = attn.softmax(dim=-1)
-        out = (attn @ v).reshape(B, D)                # [B, D]
-        return self.proj(out)
+        am = None if mask is None else mask[:, None, None, :]
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=am)   # [B,H,1,Dh]
+        return self.proj(out.reshape(B, D))
 
 
 class SetTransformer(nn.Module):

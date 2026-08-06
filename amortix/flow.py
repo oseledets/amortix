@@ -28,6 +28,7 @@ import time
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .encoder import SetTransformer, RMSNorm, FFN
 
@@ -66,8 +67,8 @@ def pack_tokens(token_sets):
     """
     B = len(token_sets)
     Tmax = max(t.shape[0] for t in token_sets)
-    F = token_sets[0].shape[1]
-    out = torch.zeros(B, Tmax, F, dtype=token_sets[0].dtype)
+    n_feat = token_sets[0].shape[1]
+    out = torch.zeros(B, Tmax, n_feat, dtype=token_sets[0].dtype)
     mask = torch.zeros(B, Tmax, dtype=torch.bool)
     for i, t in enumerate(token_sets):
         out[i, :t.shape[0]] = t
@@ -123,16 +124,11 @@ class CrossAttention(nn.Module):
     def forward(self, x, k, v, mask=None):       # x [B,P,dim]; k,v [b,H,T,hd]
         B, P, D = x.shape
         q = self.q(x).reshape(B, P, self.n_head, self.hd).permute(0, 2, 1, 3)
-        attn = (q @ k.transpose(-2, -1)) / (self.hd ** 0.5)      # [B,H,P,T]
-        if mask is not None:
-            # Without this, padded observation slots leak into the velocity: the
-            # encoder honoured the mask but the cross-attention ignored it, so a
-            # padded batch changed the field even though the extra slots were
-            # meant to be invisible.
-            attn = attn.masked_fill((~mask)[:, None, None, :], float("-inf"))
-        attn = attn.softmax(dim=-1)
-        out = (attn @ v).permute(0, 2, 1, 3).reshape(B, P, D)
-        return self.proj(out)
+        # The mask matters here, not only in the encoder: without it padded
+        # observation slots leak straight into the velocity field.
+        am = None if mask is None else mask[:, None, None, :]
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=am)   # [B,H,P,hd]
+        return self.proj(out.permute(0, 2, 1, 3).reshape(B, P, D))
 
 
 class SelfAttention(nn.Module):
@@ -149,8 +145,8 @@ class SelfAttention(nn.Module):
         N, P, D = x.shape
         qkv = self.qkv(x).reshape(N, P, 3, self.n_head, self.hd)
         q, k, v = qkv.permute(2, 0, 3, 1, 4)
-        attn = ((q @ k.transpose(-2, -1)) / (self.hd ** 0.5)).softmax(-1)
-        return self.proj((attn @ v).transpose(1, 2).reshape(N, P, D))
+        out = F.scaled_dot_product_attention(q, k, v)                 # [N,H,P,hd]
+        return self.proj(out.transpose(1, 2).reshape(N, P, D))
 
 
 class CrossBlock(nn.Module):
