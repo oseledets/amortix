@@ -131,15 +131,27 @@ class SetTransformer(nn.Module):
         self.blocks = nn.ModuleList([Block(dim, n_head) for _ in range(n_layer)])
         self.norm = RMSNorm(dim)
         self.attn_pool = AttentionPool(dim, n_head) if pool == "attn" else None
-        cos, sin = rope_tables(max_tokens, dim // n_head)
+        self.head_dim = dim // n_head
+        cos, sin = rope_tables(max_tokens, self.head_dim)
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
+
+    def _rope(self, T):
+        """RoPE tables for T positions, grown on demand.
+
+        The table used to be capped at the observer's token count, so any input
+        longer than that crashed -- which is why 'handles an arbitrary number of
+        observations' had never actually been exercised."""
+        if T > self.cos.shape[0]:
+            cos, sin = rope_tables(T, self.head_dim)
+            self.cos, self.sin = cos.to(self.cos.device), sin.to(self.sin.device)
+        return self.cos[:T], self.sin[:T]
 
     def encode(self, tokens, mask=None):
         """Per-token memory [B, T, dim] (no pooling) -- for cross-attention conditioning."""
         T = tokens.shape[1]
         x = self.embed(tokens)
-        cos, sin = self.cos[:T], self.sin[:T]
+        cos, sin = self._rope(T)
         for blk in self.blocks:
             x = blk(x, cos, sin, mask)
         return self.norm(x)

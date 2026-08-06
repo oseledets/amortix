@@ -50,6 +50,31 @@ def timestep_embedding(t: torch.Tensor, dim: int, max_period: float = 1000.0,
     return emb
 
 
+def pack_tokens(token_sets):
+    """Pack observation sets of DIFFERENT lengths into (tokens, mask).
+
+    `token_sets` is a list of [T_i, F] tensors. Returns a padded [B, Tmax, F]
+    batch plus a boolean [B, Tmax] validity mask. Padding is never read: the mask
+    reaches the encoder's self-attention, the pooling and the velocity's
+    cross-attention, so a dataset's posterior does not depend on how much padding
+    its neighbours in the batch needed.
+
+    (This is padding-with-masking, not kernel-level packing. True varlen packing
+    only pays off with a fused attention kernel; with a plain PyTorch matmul a
+    flat packed sequence of length sum(T_i) would cost more, not less, than the
+    padded [B, Tmax] layout.)
+    """
+    B = len(token_sets)
+    Tmax = max(t.shape[0] for t in token_sets)
+    F = token_sets[0].shape[1]
+    out = torch.zeros(B, Tmax, F, dtype=token_sets[0].dtype)
+    mask = torch.zeros(B, Tmax, dtype=torch.bool)
+    for i, t in enumerate(token_sets):
+        out[i, :t.shape[0]] = t
+        mask[i, :t.shape[0]] = True
+    return out, mask
+
+
 class VelocityNet(nn.Module):
     def __init__(self, dim: int, ctx_dim: int, t_dim: int = 64,
                  hidden: int = 256, depth: int = 3):
@@ -61,11 +86,11 @@ class VelocityNet(nn.Module):
         layers += [nn.Linear(hidden, dim)]
         self.net = nn.Sequential(*layers)
 
-    def forward(self, z, t, ctx):
+    def forward(self, z, t, ctx, mask=None):
         te = timestep_embedding(t, self.t_dim)
         return self.net(torch.cat([z, te, ctx], dim=-1))
 
-    def forward_grouped(self, z, t, ctx):
+    def forward_grouped(self, z, t, ctx, mask=None):
         """z [B, G, d], t [B], ctx [B, ctx_dim] -> [B, G, d] (G samples per dataset)."""
         B, G, d = z.shape
         te = timestep_embedding(t, self.t_dim)[:, None].expand(B, G, -1)
@@ -95,10 +120,16 @@ class CrossAttention(nn.Module):
         k, v = kv.permute(2, 0, 3, 1, 4)
         return k, v
 
-    def forward(self, x, k, v):                  # x [B,P,dim]; k,v [b,H,T,hd] (b broadcasts)
+    def forward(self, x, k, v, mask=None):       # x [B,P,dim]; k,v [b,H,T,hd]
         B, P, D = x.shape
         q = self.q(x).reshape(B, P, self.n_head, self.hd).permute(0, 2, 1, 3)
         attn = (q @ k.transpose(-2, -1)) / (self.hd ** 0.5)      # [B,H,P,T]
+        if mask is not None:
+            # Without this, padded observation slots leak into the velocity: the
+            # encoder honoured the mask but the cross-attention ignored it, so a
+            # padded batch changed the field even though the extra slots were
+            # meant to be invisible.
+            attn = attn.masked_fill((~mask)[:, None, None, :], float("-inf"))
         attn = attn.softmax(dim=-1)
         out = (attn @ v).permute(0, 2, 1, 3).reshape(B, P, D)
         return self.proj(out)
@@ -146,7 +177,7 @@ class CrossBlock(nn.Module):
         nn.init.zeros_(self.ada.weight)          # adaLN-Zero: blocks start as identity
         nn.init.zeros_(self.ada.bias)
 
-    def forward(self, x, k, v, temb, n_param):
+    def forward(self, x, k, v, temb, n_param, mask=None):
         """x [B, G*P, dim]; temb [B, dim]; P = n_param parameter tokens per sample."""
         B, GP, D = x.shape
         G = GP // n_param
@@ -156,7 +187,7 @@ class CrossBlock(nn.Module):
         h = self.selfattn(h).reshape(B, GP, D)
         x = x + g0.unsqueeze(1) * h
         # --- parameter tokens read the observation memory ---
-        x = x + g1.unsqueeze(1) * self.cross(_modulate(self.n1(x), sh1, sc1), k, v)
+        x = x + g1.unsqueeze(1) * self.cross(_modulate(self.n1(x), sh1, sc1), k, v, mask)
         x = x + g2.unsqueeze(1) * self.ffn(_modulate(self.n2(x), sh2, sc2))
         return x
 
@@ -183,14 +214,14 @@ class CrossCondVelocity(nn.Module):
     def encode_memory(self, memory):             # -> list of (k,v) per block
         return [blk.cross.kv_from(memory) for blk in self.blocks]
 
-    def forward(self, z, t, cache):
+    def forward(self, z, t, cache, mask=None):
         tok = self.param_emb.unsqueeze(0) + self.val_in(z.unsqueeze(-1))  # [B,d,dim]
         temb = self.t_mlp(timestep_embedding(t, self.t_dim))              # [B,dim]
         for blk, (k, v) in zip(self.blocks, cache):
-            tok = blk(tok, k, v, temb, self.d_param)
+            tok = blk(tok, k, v, temb, self.d_param, mask)
         return self.out(self.out_norm(tok)).squeeze(-1)                   # [B,d]
 
-    def forward_grouped(self, z, t, cache):
+    def forward_grouped(self, z, t, cache, mask=None):
         """z [B, G, d], t [B], cache from a [B, T, dim] memory -> [B, G, d].
 
         G posterior samples per dataset are folded into the query axis, so the
@@ -201,7 +232,7 @@ class CrossCondVelocity(nn.Module):
         tok = tok.reshape(B, G * d, -1)                                   # [B,G*d,dim]
         temb = self.t_mlp(timestep_embedding(t, self.t_dim))              # [B,dim]
         for blk, (k, v) in zip(self.blocks, cache):
-            tok = blk(tok, k, v, temb, d)
+            tok = blk(tok, k, v, temb, d, mask)
         return self.out(self.out_norm(tok)).reshape(B, G, d)
 
 
@@ -303,7 +334,11 @@ class FlowPosterior(nn.Module):
     # --- training --------------------------------------------------------
     def fit(self, n_train: int = 12000, epochs: int = 30, batch: int = 256,
             lr: float = 3e-4, base_weight: float = 1.0, seed: int = 0,
-            verbose: bool = True):
+            token_dropout: float = 0.0, verbose: bool = True):
+        """token_dropout: fraction of observation tokens randomly masked out each
+        batch. The point of a set encoder is to accept any number of observations,
+        but a model only trained at one fixed count has never been asked to; a few
+        percent of dropout makes that property real rather than nominal."""
         gen = torch.Generator().manual_seed(seed)
         torch.manual_seed(seed)
         if verbose:
@@ -320,8 +355,13 @@ class FlowPosterior(nn.Module):
                 idx = perm[b * batch:(b + 1) * batch]
                 zb, tb = z1[idx], tokens[idx]
                 bs = zb.shape[0]
-                memory = self.encoder.encode(tb)
-                ctx = self.encoder.pool(memory)
+                mb = None
+                if token_dropout > 0:
+                    keep = torch.rand(tb.shape[:2], generator=gen) >= token_dropout
+                    keep[:, 0] = True                          # never drop everything
+                    mb = keep
+                memory = self.encoder.encode(tb, mb)
+                ctx = self.encoder.pool(memory, mb)
                 eps = torch.randn(bs, self.d, generator=gen)
                 if self.base_head is not None:
                     # The base reads a DETACHED context. Otherwise its NLL, which is
@@ -343,7 +383,7 @@ class FlowPosterior(nn.Module):
                 zt = (1 - t)[:, None] * z0 + t[:, None] * zb
                 target = zb - z0
                 cond = self.velocity.encode_memory(memory) if self.conditioning == "xattn" else ctx
-                pred = self.velocity(zt, t, cond)
+                pred = self.velocity(zt, t, cond, mb if self.conditioning == "xattn" else None)
                 cfm = ((pred - target) ** 2).mean()
                 loss = cfm + base_weight * base_nll
                 opt.zero_grad(); loss.backward(); opt.step()
@@ -355,21 +395,25 @@ class FlowPosterior(nn.Module):
 
     # --- inference -------------------------------------------------------
     @torch.no_grad()
-    def sample_batch(self, tokens: torch.Tensor, n: int = 1000, n_steps: int = 20,
-                     seed: int = 0, chunk: int = 16, solver: str = "midpoint") -> torch.Tensor:
+    def sample_batch(self, tokens, n: int = 1000, n_steps: int = 20,
+                     seed: int = 0, chunk: int = 16, solver: str = "midpoint",
+                     mask: torch.Tensor = None) -> torch.Tensor:
         """Posterior samples for a *batch* of observations. tokens [B, T, F] -> [B, n, d].
 
         All B datasets are encoded together and their ODEs solved jointly, which is
         what makes calibration studies (hundreds of datasets) tractable: one solve
         instead of B python-loop solves. `chunk` bounds peak attention memory.
         """
+        if isinstance(tokens, (list, tuple)):                 # variable-length input
+            tokens, mask = pack_tokens([torch.as_tensor(t) for t in tokens])
         gen = torch.Generator().manual_seed(seed)
         outs = []
         for start in range(0, tokens.shape[0], chunk):
             tb = tokens[start:start + chunk]
+            mb = None if mask is None else mask[start:start + chunk]
             B = tb.shape[0]
-            memory = self.encoder.encode(tb)                  # [B, T, dim]
-            ctx = self.encoder.pool(memory)                   # [B, dim]
+            memory = self.encoder.encode(tb, mb)              # [B, T, dim]
+            ctx = self.encoder.pool(memory, mb)               # [B, dim]
             eps = torch.randn(B, n, self.d, generator=gen)
             if self.base == "full":
                 mu, L = self.base_head(ctx)                   # [B,d], [B,d,d]
@@ -382,19 +426,20 @@ class FlowPosterior(nn.Module):
             # conditioning computed once per dataset, reused across the whole solve
             grouped = self.velocity.forward_grouped
             cond = self.velocity.encode_memory(memory) if self.conditioning == "xattn" else ctx
+            vmask = mb if self.conditioning == "xattn" else None
             dt = 1.0 / n_steps
             for i in range(n_steps):
                 t = torch.full((B,), i * dt)
                 if solver == "euler":                         # 1 eval / step
-                    z = z + dt * grouped(z, t, cond)
+                    z = z + dt * grouped(z, t, cond, vmask)
                 elif solver == "midpoint":                    # 2 evals / step
-                    k1 = grouped(z, t, cond)
-                    z = z + dt * grouped(z + 0.5 * dt * k1, t + 0.5 * dt, cond)
+                    k1 = grouped(z, t, cond, vmask)
+                    z = z + dt * grouped(z + 0.5 * dt * k1, t + 0.5 * dt, cond, vmask)
                 else:                                         # rk4: 4 evals / step
-                    k1 = grouped(z, t, cond)
-                    k2 = grouped(z + 0.5 * dt * k1, t + 0.5 * dt, cond)
-                    k3 = grouped(z + 0.5 * dt * k2, t + 0.5 * dt, cond)
-                    k4 = grouped(z + dt * k3, t + dt, cond)
+                    k1 = grouped(z, t, cond, vmask)
+                    k2 = grouped(z + 0.5 * dt * k1, t + 0.5 * dt, cond, vmask)
+                    k3 = grouped(z + 0.5 * dt * k2, t + 0.5 * dt, cond, vmask)
+                    k4 = grouped(z + dt * k3, t + dt, cond, vmask)
                     z = z + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
             outs.append(self.prior.denormalize(z))
         return torch.cat(outs, dim=0)

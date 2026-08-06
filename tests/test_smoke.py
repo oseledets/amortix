@@ -218,3 +218,39 @@ def test_base_nll_does_not_train_the_encoder():
     enc_grads = [p.grad for p in post.encoder.parameters() if p.grad is not None]
     assert all(float(g.abs().max()) == 0.0 for g in enc_grads), \
         "base NLL leaked into the encoder"
+
+
+def test_padding_is_invisible():
+    """A masked-out observation slot must not affect the posterior at all.
+
+    The encoder honoured the mask but the velocity's cross-attention did not, so
+    padded slots leaked into the field; and the RoPE table was capped at the
+    observer's token count, so anything longer simply crashed. Both are guarded
+    here, including a length beyond the original cap.
+    """
+    from amortix import OrnsteinUhlenbeck
+    prob = OrnsteinUhlenbeck()
+    post = FlowPosterior(prob).fit(n_train=128, epochs=1, verbose=False)
+    tk, _ = prob.observe(prob.prior.sample(1, generator=torch.Generator().manual_seed(0)))
+    T = tk.shape[1]
+    pad = torch.randn(1, 30, tk.shape[2]) * 5.0
+    tkp = torch.cat([tk, pad], dim=1)
+    mask = torch.zeros(1, T + 30, dtype=torch.bool)
+    mask[:, :T] = True
+    a = post.sample_batch(tk, n=32, seed=3, n_steps=8)
+    b = post.sample_batch(tkp, n=32, seed=3, n_steps=8, mask=mask)
+    assert torch.allclose(a, b, atol=1e-6), "padded slots leak into the posterior"
+
+
+def test_variable_length_inputs():
+    """Observation sets of different sizes can be scored in one call."""
+    from amortix import OrnsteinUhlenbeck
+    from amortix.flow import pack_tokens
+    prob = OrnsteinUhlenbeck()
+    post = FlowPosterior(prob).fit(n_train=128, epochs=1, verbose=False)
+    tk, _ = prob.observe(prob.prior.sample(1, generator=torch.Generator().manual_seed(0)))
+    sets = [tk[0][:30], tk[0][:74], tk[0][:55]]
+    packed, mask = pack_tokens(sets)
+    assert packed.shape[1] == 74 and mask.sum() == 30 + 74 + 55
+    out = post.sample_batch(sets, n=16, seed=1, n_steps=8)
+    assert out.shape == (3, 16, prob.prior.dim) and torch.isfinite(out).all()
