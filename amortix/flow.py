@@ -23,6 +23,7 @@ dz/dt = v_theta(z, t, c) from t=0 to 1, denormalize. One ODE solve per dataset.
 """
 from __future__ import annotations
 
+import contextlib
 import math
 import time
 
@@ -31,6 +32,73 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .encoder import SetTransformer, RMSNorm, FFN
+
+
+class EMA:
+    """Exponential moving average of the weights, evaluated instead of the raw ones.
+
+    SGD on a noisy objective does not converge to a point, it *random-walks in a
+    ball* around the optimum whose radius is set by lr x gradient noise. The CFM
+    target is exceptionally noisy (most of ||v - (z1-z0)||^2 is the irreducible
+    Var(z1-z0 | z_t)), so that ball is wide and any single iterate is a lottery
+    ticket -- which is exactly the oscillating plateau seen on the monitored
+    metric. Averaging the iterates cancels the walk (Polyak-Ruppert) and lands
+    near the centre of the ball.
+
+    `decay` is ramped in as min(decay, (1+n)/(10+n)) so the average is not held
+    back by the (meaningless) initial weights during the first few hundred steps.
+    """
+
+    def __init__(self, module: nn.Module, decay: float = 0.999):
+        self.module = module
+        self.decay = decay
+        self.n = 0
+        self.shadow = {k: v.detach().clone() for k, v in module.named_parameters()}
+
+    @torch.no_grad()
+    def update(self):
+        self.n += 1
+        d = min(self.decay, (1.0 + self.n) / (10.0 + self.n))
+        for k, p in self.module.named_parameters():
+            self.shadow[k].mul_(d).add_(p.detach(), alpha=1.0 - d)
+
+    @contextlib.contextmanager
+    def averaged(self):
+        """Temporarily swap the averaged weights into the module."""
+        backup = {k: p.detach().clone() for k, p in self.module.named_parameters()}
+        with torch.no_grad():
+            for k, p in self.module.named_parameters():
+                p.copy_(self.shadow[k])
+        try:
+            yield self.module
+        finally:
+            with torch.no_grad():
+                for k, p in self.module.named_parameters():
+                    p.copy_(backup[k])
+
+    @torch.no_grad()
+    def store_in_module(self):
+        """Write the average into the module for good (end of training)."""
+        for k, p in self.module.named_parameters():
+            p.copy_(self.shadow[k])
+
+
+def lr_at(step: int, total: int, lr: float, warmup: int = 0,
+          schedule: str = "cosine", min_lr_frac: float = 0.0) -> float:
+    """Learning rate at `step` (0-based) of a `total`-step run.
+
+    Linear warmup then cosine decay to `min_lr_frac * lr`. Decaying the step size
+    shrinks the noise ball the iterates wander in; warmup keeps the first updates
+    from moving the (adaLN-zero initialised) network before Adam's second-moment
+    estimate is meaningful.
+    """
+    if warmup > 0 and step < warmup:
+        return lr * (step + 1) / warmup
+    if schedule == "cosine":
+        p = (step - warmup) / max(1, total - warmup)
+        p = min(max(p, 0.0), 1.0)
+        return lr * (min_lr_frac + (1.0 - min_lr_frac) * 0.5 * (1.0 + math.cos(math.pi * p)))
+    return lr                                        # schedule == "constant"
 
 
 def timestep_embedding(t: torch.Tensor, dim: int, max_period: float = 1000.0,
@@ -302,7 +370,7 @@ class FullBaseHead(nn.Module):
 class FlowPosterior(nn.Module):
     def __init__(self, problem, dim_model: int = 64, n_head: int = 4,
                  n_layer: int = 3, hidden: int = 256, depth: int = 3,
-                 pool: str = "attn", base: str = "data", conditioning: str = "xattn"):
+                 pool: str = "attn", base: str = "standard", conditioning: str = "xattn"):
         super().__init__()
         self.problem = problem
         self.prior = problem.prior
@@ -331,6 +399,10 @@ class FlowPosterior(nn.Module):
     def fit(self, n_train: int = 12000, epochs: int = 30, batch: int = 64,
             lr: float = 3e-4, base_weight: float = 1.0, seed: int = 0,
             token_dropout: float = 0.0, steps: int = None,
+            schedule: str = "cosine", warmup: int = 300, min_lr_frac: float = 0.0,
+            ema_decay: float = 0.999, grad_clip: float = 10.0,
+            betas=(0.9, 0.999), eps: float = 1e-8, weight_decay: float = 0.0,
+            k_pairs: int = 4, t_strat: bool = True,
             monitor=None, monitor_every: int = 500, verbose: bool = True):
         """Train the amortized posterior.
 
@@ -365,6 +437,53 @@ class FlowPosterior(nn.Module):
         reference posterior, in full dimension (see amortix.metrics). The training
         loss cannot serve -- most of ||v - (z1 - z0)||^2 is the irreducible
         Var(z1 - z0 | z_t), so it can rise while the posterior keeps improving.
+
+        --- optimization (measured on `linear_gaussian`, exact posterior known;
+        results/DEBUG_optimization.md) -------------------------------------
+
+        At a constant learning rate the monitored distance to the exact posterior
+        stops improving after ~2000 steps and then *oscillates* between 0.007 and
+        0.025 forever: the iterates random-walk in a ball around the optimum whose
+        radius is set by lr x gradient noise, and the CFM gradient is almost all
+        noise. Three knobs shrink that ball (4000 steps, 2 seeds, distance to the
+        exact posterior; baseline 0.0178):
+
+        `ema_decay` -- Polyak average of the weights, evaluated AND shipped
+            instead of the raw iterate. Alone: 0.0044 (4.1x). It does not just
+            lower the number, it makes the curve monotone -- the "plateau" was
+            never a plateau, the model was improving underneath the noise.
+            0.99 and 0.999 are equivalent; 0.9995 is slightly worse.
+        `schedule="cosine"` + `warmup` -- decays the step size to ~0 so the walk
+            contracts. Alone: 0.0075 (2.4x). It costs distance travelled, so at a
+            short budget it is worse *combined* with EMA than EMA alone; at 12000
+            steps it wins (0.0036 vs 0.0040) and, unlike a constant rate, the last
+            check is the best one -- the run actually settles.
+        `k_pairs` -- how many (t, z0) CFM pairs are drawn per *encoded batch*. The
+            observation memory is tiled, not re-encoded, so all k pairs push
+            gradients through one encoder pass and the noisiest term of the
+            gradient is averaged k times. With cosine+EMA at 4000 steps,
+            k=1/4/16 -> 0.0084 / 0.0044 / 0.0025 for 1.0x / 1.9x / 4.5x the
+            wallclock per step (pairs 2..k cost ~23% of the first). Saturates
+            around k=16; k=64 is not worth it.
+
+        Combined at 12000 steps, on 32 datasets that took part in no decision:
+        0.0023 +- 0.0005 (8 runs) against a Monte-Carlo floor of 0.00062 -- 5x
+        better than the same budget without any of this (0.0114, 3 runs).
+        Refining the ODE solver does not move it (midpoint/20 = RK4/50 to 0.5%),
+        and neither does doubling the budget, so what is left is the model.
+
+        `grad_clip` bounds a genuine blow-up (the Gaussian NLL of the base head
+        can spike) and must therefore sit ABOVE the working gradient norm, or it
+        silently becomes a learning-rate cut instead of a safety net: measured
+        median norms are 1.5-3.1 with 90th percentiles 4.3-6.4 across
+        linear_gaussian / ou / cir / stoch_lv, so the customary `1.0` fires on
+        73-100% of steps. Clipping at 1.0 / 0.5 / not at all / not at all with
+        lr halved all land inside the same seed band here (per-run 0.0017-0.0030),
+        so the default 10.0 -- above every observed norm (max 8.1) -- is chosen on
+        mechanism, not on the metric.
+        `betas`, `eps`, `weight_decay` are the usual Adam knobs.
+        `t_strat` puts one t in each 1/k-wide bin instead of k independent
+        uniforms -- measured neutral here, kept because it cannot cost anything.
         """
         gen = torch.Generator().manual_seed(seed)
         torch.manual_seed(seed)
@@ -373,16 +492,27 @@ class FlowPosterior(nn.Module):
                   f"({max(1, n_train // batch)} batches/epoch)...")
         m, tokens = self.problem.simulate(n_train, generator=gen)
         z1 = self.prior.normalize(m)
-        opt = torch.optim.Adam(self.parameters(), lr=lr)
+        opt = torch.optim.Adam(self.parameters(), lr=lr, betas=tuple(betas), eps=eps,
+                               weight_decay=weight_decay)
         n_batches = max(1, n_train // batch)
         if steps is not None:                       # budget stated in optimizer steps
             epochs = max(1, int(round(steps / n_batches)))
+        total_steps = epochs * n_batches
+        # a fixed warmup must never eat a short budget: at 4000+ steps this is the
+        # requested 300, at 500 steps it is 50
+        warmup = min(warmup, max(1, total_steps // 10))
+        ema = EMA(self, ema_decay) if ema_decay else None
+        k = max(1, int(k_pairs))
         self.history = []
+        step_now = 0
         t0 = time.time()
         for ep in range(epochs):
             perm = torch.randperm(n_train, generator=gen)
             running = 0.0
             for b in range(n_batches):
+                for group in opt.param_groups:
+                    group["lr"] = lr_at(step_now, total_steps, lr, warmup,
+                                        schedule, min_lr_frac)
                 idx = perm[b * batch:(b + 1) * batch]
                 zb, tb = z1[idx], tokens[idx]
                 bs = zb.shape[0]
@@ -393,7 +523,7 @@ class FlowPosterior(nn.Module):
                     mb = keep
                 memory = self.encoder.encode(tb, mb)
                 ctx = self.encoder.pool(memory, mb)
-                eps = torch.randn(bs, self.d, generator=gen)
+                eps_z = torch.randn(k, bs, self.d, generator=gen)
                 if self.base_head is not None:
                     # The base reads a DETACHED context. Otherwise its NLL, which is
                     # a much stronger signal than the CFM term, trains the shared
@@ -406,24 +536,52 @@ class FlowPosterior(nn.Module):
                     # dragging z0 towards z1, i.e. the loss would pay the base to
                     # absorb the flow's job, collapsing the regression target to
                     # zero and leaving the velocity field with nothing to learn.
-                    z0 = draw(eps).detach()
+                    z0 = torch.cat([draw(eps_z[j]) for j in range(k)], dim=0).detach()
                 else:
-                    z0 = eps
+                    z0 = eps_z.reshape(k * bs, self.d)
                     base_nll = torch.zeros(())
-                t = torch.rand(bs, generator=gen)
-                zt = (1 - t)[:, None] * z0 + t[:, None] * zb
-                target = zb - z0
-                cond = self.velocity.encode_memory(memory) if self.conditioning == "xattn" else ctx
-                pred = self.velocity(zt, t, cond, mb if self.conditioning == "xattn" else None)
+                # k independent (t, z0) pairs share ONE encoder pass. The memory is
+                # tiled, not re-encoded, so gradients from all k pairs accumulate
+                # into the same encoder graph.
+                zk = zb.repeat(k, 1)
+                if t_strat and k > 1:
+                    # one t per stratum [j/k, (j+1)/k) per dataset: the k pairs then
+                    # cover the whole path instead of clumping at random
+                    t = (torch.arange(k, dtype=torch.float32).repeat_interleave(bs)
+                         + torch.rand(k * bs, generator=gen)) / k
+                else:
+                    t = torch.rand(k * bs, generator=gen)
+                zt = (1 - t)[:, None] * z0 + t[:, None] * zk
+                target = zk - z0
+                if self.conditioning == "xattn":
+                    mem_k = memory if k == 1 else memory.repeat(k, 1, 1)
+                    cond = self.velocity.encode_memory(mem_k)
+                    vmask = None if mb is None else (mb if k == 1 else mb.repeat(k, 1))
+                else:
+                    cond = ctx if k == 1 else ctx.repeat(k, 1)
+                    vmask = None
+                pred = self.velocity(zt, t, cond, vmask)
                 cfm = ((pred - target) ** 2).mean()
                 loss = cfm + base_weight * base_nll
-                opt.zero_grad(); loss.backward(); opt.step()
+                opt.zero_grad(); loss.backward()
+                if grad_clip:
+                    torch.nn.utils.clip_grad_norm_(self.parameters(), grad_clip)
+                opt.step()
+                if ema is not None:
+                    ema.update()
                 running += cfm.item()
-            step_now = (ep + 1) * n_batches
-            if monitor is not None and (step_now // monitor_every >
+                step_now += 1
+            # the LAST epoch is always measured: with a decaying schedule the final
+            # stretch is where the model settles, and a run whose last check sits
+            # 1500 steps short of the end understates exactly what the decay buys
+            if monitor is not None and (ep == epochs - 1 or
+                                        step_now // monitor_every >
                                         (step_now - n_batches) // monitor_every):
                 with torch.no_grad():
-                    val = float(monitor(self))
+                    # the EMA weights are what will be shipped, so they are what
+                    # gets measured
+                    with (ema.averaged() if ema is not None else contextlib.nullcontext()):
+                        val = float(monitor(self))
                 self.history.append(dict(step=step_now, cfm=running / n_batches, metric=val))
                 if verbose:
                     print(f"  step {step_now:6d}  cfm {running / n_batches:.4f}"
@@ -431,6 +589,8 @@ class FlowPosterior(nn.Module):
             elif verbose and (ep % max(1, epochs // 10) == 0 or ep == epochs - 1):
                 print(f"  epoch {ep:3d}  step {step_now:6d}  "
                       f"cfm {running / n_batches:.4f}  ({time.time() - t0:.1f}s)")
+        if ema is not None:
+            ema.store_in_module()
         return self
 
     # --- inference -------------------------------------------------------

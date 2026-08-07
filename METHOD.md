@@ -51,14 +51,26 @@ selected state components observed (with measurement noise) at chosen times.
 
 ## 3. Encoder: transformer set → context vector (`amortix/encoder.py`)
 
-`SetTransformer`: linear embed → `n_layer` pre-norm blocks → norm → pool.
+`SetTransformer`: standardize features → embed → `n_layer` pre-norm blocks → norm →
+pool.
 - **attention** with **rotary position embeddings (RoPE)**, **RMSNorm**, **ReLU²**
   feed-forward (the arXiv:2503.01375 choices).
+- **input standardization** (`input_norm=True`, default): running per-feature
+  mean/variance over valid tokens, frozen at evaluation. Observers emit tokens in
+  physical units that differ by orders of magnitude between features (`t/horizon ~ 1`
+  next to a quadratic-variation cue `Δx² ~ 1e-4`), and the pre-norm blocks otherwise
+  see a residual stream scaled by the largest feature.
 - pooling: **attention pooling (PMA)** — a learned query attends over the tokens
-  (`pool="attn"`, default). This replaced mean-pooling, which bottlenecked the
-  summary and hurt per-parameter calibration.
+  (`pool="attn"`, default). ⚠️ Under the default `conditioning="xattn"` this module
+  **receives no gradient**: the velocity reads the token memory and the base head
+  reads a *detached* context, so the pool stays at its random initialization. The A/B
+  that chose PMA over mean-pooling was run under `concat`, where the pool is trained.
 
-Output: a single context vector `c` summarizing the dataset (any token count).
+Output: the per-token memory (what the velocity reads) plus a single context vector
+`c` (what the base head reads). Measured on the exact-posterior testbed, the memory
+carries the sufficient statistic ~13× better than the pooled context — but replacing
+the pooling does *not* improve the posterior; see
+[`results/DEBUG_encoder.md`](results/DEBUG_encoder.md).
 
 ## 4. Parameter space: probit normalization (`amortix/prior.py`)
 
