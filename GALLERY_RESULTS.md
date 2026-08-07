@@ -1,60 +1,86 @@
-# amortix gallery — amortized flow-matching posterior vs classical SOTA
+# amortix gallery — the honest scoreboard
 
-> ⚠️ **Stale relative to the current engine.** These numbers were measured on
-> 2026-06-26 with mean-pool encoding, affine normalization, a standard N(0,I)
-> base and `concat` conditioning. The defaults have since changed (probit
-> normalization, attention pooling, data-dependent base, `xattn` conditioning)
-> and the **accuracy** table below has not been re-measured — re-run
-> `uv run python examples/gallery.py` to refresh it.
->
-> The **calibration** claims in this file ("well-calibrated in 8/8", based on
-> `cov90 ∈ [80,97]%`) were later shown to be too weak a test: strict SBC gives
-> 17/29 parameters passing. See [`CALIBRATION.md`](CALIBRATION.md).
+Re-measured on the fixed engine. Reproduce with
 
-Reproduce: `python examples/gallery.py` (uniform budget: 6000 sims, 20 epochs,
-40 held-out test datasets per case, 600 posterior draws). All errors are mean
-absolute error as **% of the prior range**; `post.std` is the posterior standard
-deviation in the same units; `cov90` is the empirical coverage of the central
-90% posterior interval (calibrated ≈ 90%).
+```bash
+uv run python examples/scoreboard.py --n_train 40000 --steps 12000 --n_test 100 --n_post 400
+```
 
-| case | kind | dim | tokens | amort | post.std | SOTA | baseline | cov90 | winner |
-|---|---|---|---|---|---|---|---|---|---|
-| OU | SDE-1D (validation) | 3 | 74 | **12.2%** | 13.6% | 13.3% | exact MLE | 89% | amort |
-| SEIRD | ODE-5D (epidemiology) | 5 | 40 | **21.7%** | 26.2% | 24.6% | nonlinear LS | 92% | amort |
-| GBM | SDE-1D (finance) | 2 | 100 | 11.7% | 13.6% | 11.7% | exact MLE | 90% | tie |
-| CIR | SDE-1D (rates/vol) | 3 | 74 | 13.9% | 17.8% | **11.0%** | Euler pseudo-MLE | 97% | SOTA |
-| Double-well | SDE-1D (bistable) | 3 | 116 | **14.6%** | 16.3% | 20.7% | Kramers–Moyal LS | 87% | amort |
-| Stoch. Lotka–Volterra | SDE-2D (ecology) | 4 | 180 | 16.3% | 20.8% | **8.1%** | deterministic NLS | 90% | SOTA |
-| FitzHugh–Nagumo | ODE-2D (neuroscience) | 4 | 25 | **13.4%** | 19.6% | 19.7% | nonlinear LS | 94% | amort |
-| **SINDy-SDE** | SDE-1D (nonparam drift) | 5 | 125 | **18.0%** | 20.1% | 32.4% | SINDy / Kramers–Moyal | 89% | amort |
+40 000 simulations, 12 000 optimizer steps, 100 held-out datasets × 400 posterior
+draws per case. Errors are mean absolute error of the posterior mean, as **% of
+the prior range**.
 
-**Headline:** amortized wins/ties on point accuracy in **5/8** cases and is
-**well-calibrated in 8/8** (cov90 in 87–97%). Training all eight ≈ 608 s on CPU;
-amortized inference ≈ **119 ms / dataset** (then reusable for any new dataset).
+Every number must be read against the two controls, or it means nothing:
 
-## What the pattern means (honest read)
+* **prior-only** — ignore the data, predict the prior mean. Exactly 25% by
+  construction for a uniform prior.
+* **ridge** — a degree-2 ridge on ~20 hand-written summary statistics; a closed-form
+  convex estimator, the cheapest serious attempt. Neural machinery that does not
+  beat this earns nothing.
 
-- **amortix wins where the target is drift / structure / an intractable
-  likelihood.** SEIRD epidemic rates, the double-well drift shape (+6 pp over
-  Kramers–Moyal), FitzHugh–Nagumo (+6 pp over NLS), and especially the
-  **nonparametric drift discovery (SINDy-SDE): 18.0% vs 32.4%, ~1.8× better** —
-  the classical least-squares library fit degrades badly on the higher-order
-  coefficients (c1/c2/c3 errors 38–56%) where amortix exploits the prior.
-- **Classical wins only the easy, closed-form parameter.** The diffusion level
-  σ is estimated near-exactly by quadratic variation from the full fine path
-  (GBM 1.8%, CIR 1.6%, double-well 2.2%), because the classical estimator sees
-  all 500 fine increments whereas amortix sees only the 50-token fast channel.
-  This is a **data-budget artifact, not a method limit** — wider fast channels
-  or more paths close it.
-- **Low-noise regimes favor deterministic fitting.** Stochastic Lotka–Volterra
-  uses small multiplicative noise (s=0.05), so deterministic NLS fits the
-  near-clean path almost exactly; amortix trades a little point accuracy for a
-  full calibrated posterior + instant inference.
-- **Calibration holds everywhere** (err ≈ post.std, cov90 ≈ 90%): the amortized
-  posterior reports honest uncertainty in every case, which the single-point
-  classical baselines cannot.
+| case | prior-only | ridge | **amortized** | classical | verdict |
+|---|---|---|---|---|---|
+| linear_gaussian | 24.19% | 18.24% | **4.25%** | 4.19% | beats ridge |
+| ou | 24.84% | 11.12% | **8.90%** | 8.45% | beats ridge |
+| seir | 24.83% | 19.97% | **14.24%** | 24.04% | beats ridge |
+| gbm | 24.84% | 10.04% | 10.48% | 11.23% | tie |
+| cir | 24.14% | 11.06% | **8.27%** | 8.50% | beats ridge |
+| double_well | 24.14% | 14.02% | **11.01%** | 11.76% | beats ridge |
+| stoch_lv | 24.19% | 11.18% | **4.95%** | 9.83% | beats ridge |
+| fhn | 24.19% | 15.50% | **10.10%** | 11.57% | beats ridge |
+| sindy_sde | 24.83% | 16.83% | 16.90% | 28.46% | tie |
 
-## Per-case parameter detail
-See the bottom of `python examples/gallery.py` output for per-parameter
-`amort% / post.std% / SOTA%`. Weakly-identified parameters (OU θ, CIR a, SEIRD
-α, SINDy c3) correctly show the widest posteriors.
+**Beats the ridge control in 7/9; the two remaining are ties** (10.48 vs 10.04 and
+16.90 vs 16.83). **Beats the classical estimator in 7/9.** The two exceptions are
+the right ones: on `linear_gaussian` the "classical" column *is* the Bayes optimum,
+and we sit 1.4% above it; on `ou` the classical estimator reads 500 increments to
+our 74 tokens.
+
+## What the aggregate hides
+
+**`stoch_lv` is the clearest win**: 4.95% against 9.83% for the classical fit, with
+posterior contraction of 3.6–5.8× on all four parameters. This is the case whose
+correlated parameters used to fail SBC, before the velocity field was fixed.
+
+**Where we lose, it is one parameter, not the method.** On `gbm` we *win* on the
+diffusion (σ 3.79% vs the ridge's 5.31%) and lose on the notoriously hard drift
+(μ 17.18% vs 14.77%). On `sindy_sde` we win σ (5.17% vs 6.04%), c₂ is honestly
+prior-limited (contraction 1.04×, the ridge cannot beat the prior there either),
+and the aggregate is dragged down by c₃ — flagged **WIDTH WRONG**: the ridge
+locates it while our posterior stays near the prior. That is a real defect and the
+one place on this board still worth attacking.
+
+## Against the previous numbers
+
+Every case improved over the numbers this file used to publish:
+
+| case | old | new |
+|---|---|---|
+| ou | 12.2% | 8.90% |
+| seir | 21.7% | 14.24% |
+| gbm | 11.7% | 10.48% |
+| cir | 13.9% | 8.27% |
+| double_well | 14.6% | 11.01% |
+| stoch_lv | 16.3% | **4.95%** |
+| fhn | 13.4% | 10.10% |
+| sindy_sde | 18.0% | 16.90% |
+
+Not a like-for-like comparison, and deliberately so: the old numbers were measured
+on a broken engine (a velocity field factorized across parameters, a degenerate
+time embedding, ~88–460 optimizer steps) *and* on problems that leaked — OU handed
+the network μ through `X0 = μ`, CIR handed it `b`, and `stoch_lv`'s observer showed
+only 40% of the horizon its baseline was fitted on. Those are fixed; OU is now the
+canonical two-parameter process. See [`CALIBRATION.md`](CALIBRATION.md) and
+`results/CRITIC_*.md`.
+
+## The caveat that still stands
+
+For the SDE cases the classical estimators consume the **full fine path**
+(500–1000 increments) while the network sees only its token set (73–122 points), a
+5–9× information advantage. Restricted to the observed points every one of them
+lands on the Cramér–Rao floor. So our wins there are over an advantaged opponent —
+and so is the single loss on `ou`. Information parity is not yet implemented; see
+`results/CRITIC_baselines.md`.
+
+Accuracy is only half the claim. For calibration — whether the posterior *widths*
+are right, not just its centre — see [`CALIBRATION.md`](CALIBRATION.md).

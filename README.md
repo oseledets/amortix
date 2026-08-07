@@ -156,37 +156,28 @@ for stiff/multi-D systems; the velocity net / probability path are isolated.
 
 ## Use-case gallery
 
-Each case is a self-contained `Problem` (simulator + prior + SOTA baseline). Run
-the whole benchmark with `python examples/gallery.py`; full results +
-interpretation in [`GALLERY_RESULTS.md`](GALLERY_RESULTS.md). Under a uniform
-budget the amortized posterior **wins/ties on accuracy in 5/8 cases**, with
-~119 ms amortized inference per dataset.
+Nine cases, each a self-contained `Problem` (simulator + prior + classical
+baseline). Re-measured on the fixed engine — 40 000 simulations, 12 000 optimizer
+steps, 100 held-out datasets per case. Mean absolute error of the posterior mean,
+as % of the prior range; full table and caveats in
+[`GALLERY_RESULTS.md`](GALLERY_RESULTS.md).
 
-> ⚠️ **These accuracy numbers are from the original engine** (mean-pool encoder,
-> affine normalization, standard base, `concat` conditioning) and have **not been
-> re-measured** since the calibration work changed the defaults to probit
-> normalization + attention pooling + data-dependent base + `xattn` conditioning.
-> Treat them as indicative, not current — re-run `examples/gallery.py` to refresh.
->
-> On **calibration**, an earlier claim of "calibrated in 8/8" was based only on
-> `cov90 ∈ [80,97]%`, which is too weak a test. Strict SBC says otherwise:
-> **17/29 parameters pass** rank-uniformity. Coverage is usable everywhere
-> (cov50 45–63%, cov90 86–92%), but strict calibration on correlated /
-> multimodal / weakly-identified parameters is **not** solved. See
-> [`CALIBRATION.md`](CALIBRATION.md) and [`METHOD.md`](METHOD.md) §9.
+| case | prior-only | ridge control | **amortized** | classical |
+|---|---|---|---|---|
+| linear_gaussian (exact posterior known) | 24.19% | 18.24% | **4.25%** | 4.19% ← Bayes optimum |
+| ou | 24.84% | 11.12% | **8.90%** | 8.45% |
+| seir | 24.83% | 19.97% | **14.24%** | 24.04% |
+| gbm | 24.84% | 10.04% | 10.48% | 11.23% |
+| cir | 24.14% | 11.06% | **8.27%** | 8.50% |
+| double_well | 24.14% | 14.02% | **11.01%** | 11.76% |
+| stoch_lv | 24.19% | 11.18% | **4.95%** | 9.83% |
+| fhn | 24.19% | 15.50% | **10.10%** | 11.57% |
+| sindy_sde | 24.83% | 16.83% | 16.90% | 28.46% |
 
-| case | type | params | SOTA baseline | amort vs SOTA | status |
-|------|------|--------|---------------|--------------|--------|
-| `OrnsteinUhlenbeck` | SDE-1D | θ, μ, σ | exact MLE | 12.2% vs 13.3% | ✅ |
-| `GeometricBrownianMotion` | SDE-1D (finance) | μ, σ | exact MLE | 11.7% vs 11.7% | ✅ |
-| `CIR` | SDE-1D (rates) | a, b, σ | Euler pseudo-MLE | 13.9% vs 11.0% | ✅ |
-| `DoubleWell` | SDE-1D (bistable) | θ₁, θ₂, σ | Kramers–Moyal | 14.6% vs 20.7% | ✅ |
-| `StochasticLotkaVolterra` | SDE-2D (ecology) | α, β, δ, γ | deterministic NLS | 16.3% vs 8.1% | ✅ |
-| `PolynomialDriftSDE` | SDE-1D (nonparam drift) | c₀…c₃, σ | SINDy / Kramers–Moyal | **18.0% vs 32.4%** | ✅ |
-| `FitzHughNagumo` | ODE-2D (neuron) | a, b, ε, I | nonlinear LS | 13.4% vs 19.7% | ✅ |
-| `SEIRD` | ODE-5D (epidemic) | 5 rates | nonlinear LS | 21.7% vs 24.6% | ✅ |
-| 2D Darcy flow | PDE | 16D (KL) | — | — | 📋 |
-| itaconic-acid kinetics | ODE | kinetic | regression | — | 📋 |
+Beats the ridge control in 7/9 (the other two are ties) and the classical
+estimator in 7/9. On the one case where the exact posterior is computable we land
+within 1.4% of the Bayes optimum, and the sampled posterior matches the exact one
+to 1.6× the Monte-Carlo floor.
 
 See [`USECASES.md`](USECASES.md) for a cited catalog (~22) of real-world
 applications this engine targets (gravitational waves, neuroscience, cosmology,

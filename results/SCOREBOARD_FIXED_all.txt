@@ -1,0 +1,202 @@
+honest scoreboard | 40000 sims, 12000 steps | 100 datasets x 400 draws
+          case | prior-only |   ridge | amortized | classical | verdict
+------------------------------------------------------------------------------
+linear_gaussian |     24.19% |  18.24% |     4.25% |     4.19% | beats ridge
+            ou |     24.84% |  11.12% |     8.90% |     8.45% | beats ridge
+# Honest scoreboard
+
+```
+honest scoreboard | 40000 sims, 12000 steps | 100 datasets x 400 draws
+          case | prior-only |   ridge | amortized | classical | verdict
+------------------------------------------------------------------------------
+           cir |     24.14% |  11.06% |     8.27% |     8.50% | beats ridge
+------------------------------------------------------------------------------
+amortized beats the ridge control in 1/1 cases
+
+--- per parameter: prior-only / ridge / amortized | contraction | verdict ---
+contraction = prior sd / posterior sd (1.0 = the posterior IS the prior).
+A wide posterior is NOT a failure: where the likelihood is flat the correct
+posterior is the prior. What a flat posterior does mean is that error-to-truth
+is capped at the prior's 25% and says nothing about method quality there.
+The ridge control disambiguates the two flat cases:
+  PRIOR-LIMITED - flat, and the ridge cannot do better either
+                  => near-prior is the right answer; judge it by SBC, not MAE
+  WIDTH WRONG   - flat, but the ridge locates the parameter
+                  => the true posterior is narrow and ours is not: a real error
+
+cir
+            a:  22.29% /  20.37% /  15.42% |  1.44x  
+            b:  24.18% /   6.86% /   4.62% |  5.33x  
+        sigma:  25.95% /   5.95% /   4.77% |  4.89x  
+
+```
+# Honest scoreboard
+
+```
+honest scoreboard | 40000 sims, 12000 steps | 100 datasets x 400 draws
+          case | prior-only |   ridge | amortized | classical | verdict
+------------------------------------------------------------------------------
+   double_well |     24.14% |  14.02% |    11.01% |    11.76% | beats ridge
+------------------------------------------------------------------------------
+amortized beats the ridge control in 1/1 cases
+
+--- per parameter: prior-only / ridge / amortized | contraction | verdict ---
+contraction = prior sd / posterior sd (1.0 = the posterior IS the prior).
+A wide posterior is NOT a failure: where the likelihood is flat the correct
+posterior is the prior. What a flat posterior does mean is that error-to-truth
+is capped at the prior's 25% and says nothing about method quality there.
+The ridge control disambiguates the two flat cases:
+  PRIOR-LIMITED - flat, and the ridge cannot do better either
+                  => near-prior is the right answer; judge it by SBC, not MAE
+  WIDTH WRONG   - flat, but the ridge locates the parameter
+                  => the true posterior is narrow and ours is not: a real error
+
+double_well
+       theta1:  22.29% /  20.28% /  15.11% |  1.53x  
+       theta2:  24.18% /  16.09% /  12.78% |  1.82x  
+        sigma:  25.95% /   5.69% /   5.13% |  4.57x  
+
+```
+# Honest scoreboard
+
+```
+honest scoreboard | 40000 sims, 12000 steps | 100 datasets x 400 draws
+          case | prior-only |   ridge | amortized | classical | verdict
+------------------------------------------------------------------------------
+           fhn |     24.19% |  15.50% |    10.10% |    11.57% | beats ridge
+------------------------------------------------------------------------------
+amortized beats the ridge control in 1/1 cases
+
+--- per parameter: prior-only / ridge / amortized | contraction | verdict ---
+contraction = prior sd / posterior sd (1.0 = the posterior IS the prior).
+A wide posterior is NOT a failure: where the likelihood is flat the correct
+posterior is the prior. What a flat posterior does mean is that error-to-truth
+is capped at the prior's 25% and says nothing about method quality there.
+The ridge control disambiguates the two flat cases:
+  PRIOR-LIMITED - flat, and the ridge cannot do better either
+                  => near-prior is the right answer; judge it by SBC, not MAE
+  WIDTH WRONG   - flat, but the ridge locates the parameter
+                  => the true posterior is narrow and ours is not: a real error
+
+fhn
+            a:  26.15% /  15.06% /  13.15% |  1.89x  
+            b:  24.09% /  20.97% /  14.15% |  1.65x  
+          eps:  23.64% /   8.82% /   2.33% |  8.81x  
+            I:  22.87% /  17.16% /  10.78% |  2.07x  
+
+```
+# Honest scoreboard
+
+```
+honest scoreboard | 40000 sims, 12000 steps | 100 datasets x 400 draws
+          case | prior-only |   ridge | amortized | classical | verdict
+------------------------------------------------------------------------------
+           gbm |     24.84% |  10.04% |    10.48% |    11.23% | loses to ridge
+------------------------------------------------------------------------------
+amortized beats the ridge control in 0/1 cases
+
+--- per parameter: prior-only / ridge / amortized | contraction | verdict ---
+contraction = prior sd / posterior sd (1.0 = the posterior IS the prior).
+A wide posterior is NOT a failure: where the likelihood is flat the correct
+posterior is the prior. What a flat posterior does mean is that error-to-truth
+is capped at the prior's 25% and says nothing about method quality there.
+The ridge control disambiguates the two flat cases:
+  PRIOR-LIMITED - flat, and the ridge cannot do better either
+                  => near-prior is the right answer; judge it by SBC, not MAE
+  WIDTH WRONG   - flat, but the ridge locates the parameter
+                  => the true posterior is narrow and ours is not: a real error
+
+gbm
+           mu:  24.74% /  14.77% /  17.18% |  1.48x  
+        sigma:  24.95% /   5.31% /   3.79% |  5.66x  
+
+```
+# Honest scoreboard
+
+```
+honest scoreboard | 40000 sims, 12000 steps | 100 datasets x 400 draws
+          case | prior-only |   ridge | amortized | classical | verdict
+------------------------------------------------------------------------------
+          seir |     24.83% |  19.97% |    14.24% |    24.04% | beats ridge
+------------------------------------------------------------------------------
+amortized beats the ridge control in 1/1 cases
+
+--- per parameter: prior-only / ridge / amortized | contraction | verdict ---
+contraction = prior sd / posterior sd (1.0 = the posterior IS the prior).
+A wide posterior is NOT a failure: where the likelihood is flat the correct
+posterior is the prior. What a flat posterior does mean is that error-to-truth
+is capped at the prior's 25% and says nothing about method quality there.
+The ridge control disambiguates the two flat cases:
+  PRIOR-LIMITED - flat, and the ridge cannot do better either
+                  => near-prior is the right answer; judge it by SBC, not MAE
+  WIDTH WRONG   - flat, but the ridge locates the parameter
+                  => the true posterior is narrow and ours is not: a real error
+
+seir
+        beta1:  24.30% /  16.49% /  11.52% |  2.10x  
+        beta2:  23.36% /  21.68% /  12.88% |  1.82x  
+        alpha:  24.76% /  21.64% /  23.25% |  1.08x  PRIOR-LIMITED
+      gamma_r:  28.16% /  17.78% /  14.68% |  1.61x  
+      gamma_d:  23.56% /  22.26% /   8.83% |  2.52x  
+
+prior-limited, not a defect (1): seir.alpha  -- score these by SBC / distance to the true posterior, not by MAE
+```
+# Honest scoreboard
+
+```
+honest scoreboard | 40000 sims, 12000 steps | 100 datasets x 400 draws
+          case | prior-only |   ridge | amortized | classical | verdict
+------------------------------------------------------------------------------
+     sindy_sde |     24.83% |  16.83% |    16.90% |    28.46% | loses to ridge
+------------------------------------------------------------------------------
+amortized beats the ridge control in 0/1 cases
+
+--- per parameter: prior-only / ridge / amortized | contraction | verdict ---
+contraction = prior sd / posterior sd (1.0 = the posterior IS the prior).
+A wide posterior is NOT a failure: where the likelihood is flat the correct
+posterior is the prior. What a flat posterior does mean is that error-to-truth
+is capped at the prior's 25% and says nothing about method quality there.
+The ridge control disambiguates the two flat cases:
+  PRIOR-LIMITED - flat, and the ridge cannot do better either
+                  => near-prior is the right answer; judge it by SBC, not MAE
+  WIDTH WRONG   - flat, but the ridge locates the parameter
+                  => the true posterior is narrow and ours is not: a real error
+
+sindy_sde
+           c0:  24.30% /  14.48% /  14.35% |  1.80x  
+           c1:  23.36% /  18.99% /  15.46% |  1.47x  
+           c2:  24.76% /  23.22% /  22.96% |  1.04x  PRIOR-LIMITED
+           c3:  28.16% /  21.44% /  26.55% |  1.04x  WIDTH WRONG
+        sigma:  23.56% /   6.04% /   5.17% |  4.25x  
+
+prior-limited, not a defect (1): sindy_sde.c2  -- score these by SBC / distance to the true posterior, not by MAE
+POSTERIOR TOO WIDE -- the ridge locates what we leave at the prior (1): sindy_sde.c3
+```
+# Honest scoreboard
+
+```
+honest scoreboard | 40000 sims, 12000 steps | 100 datasets x 400 draws
+          case | prior-only |   ridge | amortized | classical | verdict
+------------------------------------------------------------------------------
+      stoch_lv |     24.19% |  11.18% |     4.95% |     9.83% | beats ridge
+------------------------------------------------------------------------------
+amortized beats the ridge control in 1/1 cases
+
+--- per parameter: prior-only / ridge / amortized | contraction | verdict ---
+contraction = prior sd / posterior sd (1.0 = the posterior IS the prior).
+A wide posterior is NOT a failure: where the likelihood is flat the correct
+posterior is the prior. What a flat posterior does mean is that error-to-truth
+is capped at the prior's 25% and says nothing about method quality there.
+The ridge control disambiguates the two flat cases:
+  PRIOR-LIMITED - flat, and the ridge cannot do better either
+                  => near-prior is the right answer; judge it by SBC, not MAE
+  WIDTH WRONG   - flat, but the ridge locates the parameter
+                  => the true posterior is narrow and ours is not: a real error
+
+stoch_lv
+        alpha:  26.15% /  12.86% /   6.34% |  3.73x  
+         beta:  24.09% /   9.91% /   4.22% |  5.74x  
+        delta:  23.64% /   9.36% /   3.47% |  5.83x  
+        gamma:  22.87% /  12.59% /   5.79% |  3.58x  
+
+```

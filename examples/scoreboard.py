@@ -35,6 +35,8 @@ def main():
     ap.add_argument("cases", nargs="*", default=GALLERY)
     ap.add_argument("--n_train", type=int, default=12000)
     ap.add_argument("--epochs", type=int, default=40)
+    ap.add_argument("--steps", type=int, default=None,
+                    help="optimizer steps -- the honest budget unit; overrides epochs")
     ap.add_argument("--n_test", type=int, default=100)
     ap.add_argument("--n_post", type=int, default=400)
     ap.add_argument("--out", type=str, default="results/SCOREBOARD.md")
@@ -47,7 +49,8 @@ def main():
         print(s, flush=True)
         lines.append(s)
 
-    emit(f"honest scoreboard | budget {args.n_train}/{args.epochs} | "
+    budget = f"{args.steps} steps" if args.steps else f"{args.epochs} epochs"
+    emit(f"honest scoreboard | {args.n_train} sims, {budget} | "
          f"{args.n_test} datasets x {args.n_post} draws")
     emit(f"{'case':>14} | {'prior-only':>10} | {'ridge':>7} | {'amortized':>9} | "
          f"{'classical':>9} | verdict")
@@ -59,7 +62,7 @@ def main():
         rng = (prob.prior.high - prob.prior.low).numpy()
 
         post = FlowPosterior(prob).fit(n_train=args.n_train, epochs=args.epochs,
-                                       verbose=False)
+                                       steps=args.steps, verbose=False)
         gen = torch.Generator().manual_seed(123)
         m_true = prob.prior.sample(args.n_test, generator=gen)
         tokens, traj = prob.observe(m_true, generator=gen)
