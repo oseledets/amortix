@@ -29,6 +29,8 @@ def main():
                     help="case names (default: all gallery cases)")
     ap.add_argument("--n_train", type=int, default=10000)
     ap.add_argument("--epochs", type=int, default=35)
+    ap.add_argument("--steps", type=int, default=None,
+                    help="optimizer steps -- the honest budget unit")
     ap.add_argument("--n_sims", type=int, default=300)
     ap.add_argument("--n_post", type=int, default=150)
     ap.add_argument("--conditioning", type=str, default="xattn",
@@ -40,8 +42,9 @@ def main():
     cases = args.cases if args.cases else GALLERY
 
     print("=" * 84)
-    print(f"GALLERY CALIBRATION  --  attn-pool + data-base + conditioning={args.conditioning}, SBC")
-    print(f"cases={list(cases)} | budget n_train={args.n_train}, epochs={args.epochs}, "
+    print(f"GALLERY CALIBRATION  --  current defaults, conditioning={args.conditioning}, SBC")
+    budget = f"{args.steps} steps" if args.steps else f"{args.epochs} epochs"
+    print(f"cases={list(cases)} | {args.n_train} sims, {budget}, "
           f"SBC {args.n_sims}x{args.n_post}")
     print("=" * 84)
     rows = []
@@ -49,8 +52,9 @@ def main():
         print(f"... {name}", flush=True)
         mod = importlib.import_module(f"amortix.problems.{name}")
         prob = mod.make()
-        post = FlowPosterior(prob, pool="attn", base="data", conditioning=args.conditioning)
-        post.fit(n_train=args.n_train, epochs=args.epochs, verbose=False)
+        post = FlowPosterior(prob, conditioning=args.conditioning)
+        post.fit(n_train=args.n_train, epochs=args.epochs, steps=args.steps,
+                 verbose=False)
         res = run_sbc(post, prob, n_sims=args.n_sims, n_post=args.n_post, seed=0)
         ranks = res["ranks"]
         pvals = sbc_uniformity(ranks, args.n_post)

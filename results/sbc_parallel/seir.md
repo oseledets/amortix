@@ -1,0 +1,15 @@
+# Gallery calibration (attn-pool + data-base)
+
+cases=['seir'] | n_train=40000 epochs=35 SBC 500x200
+
+```
+
+        case | dim | calib-err |  SBC pass | mean cov50 | mean cov90
+--------------------------------------------------------------------
+        seir |   5 |      1.3pp | 5/5       |        49% |        90%
+--------------------------------------------------------------------
+SBC-pass parameters: 5/5  |  mean calib-err: 1.3pp  (target: low err, cov50~50%, cov90~90%)
+
+--- per-parameter SBC-p (p>0.05 = calibrated) ---
+          seir: beta1:0.51  beta2:0.33  alpha:0.07  gamma_r:0.70  gamma_d:0.20
+```

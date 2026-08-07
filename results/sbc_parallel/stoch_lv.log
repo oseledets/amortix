@@ -1,0 +1,17 @@
+====================================================================================
+GALLERY CALIBRATION  --  current defaults, conditioning=xattn, SBC
+cases=['stoch_lv'] | 40000 sims, 12000 steps, SBC 500x200
+====================================================================================
+... stoch_lv
+
+        case | dim | calib-err |  SBC pass | mean cov50 | mean cov90
+--------------------------------------------------------------------
+    stoch_lv |   4 |      1.4pp | 3/4       |        51% |        89%
+--------------------------------------------------------------------
+SBC-pass parameters: 3/4  |  mean calib-err: 1.4pp  (target: low err, cov50~50%, cov90~90%)
+
+--- per-parameter SBC-p (p>0.05 = calibrated) ---
+      stoch_lv: alpha:0.00  beta:0.21  delta:0.52  gamma:0.19
+
+[saved] /Users/ioseledets/work/amortix/results/sbc_parallel/stoch_lv.md
+[saved] /Users/ioseledets/work/amortix/results/sbc_parallel/stoch_lv.json

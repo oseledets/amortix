@@ -48,29 +48,49 @@ tests/            smoke tests (contract + install)
 ## Status — what is solid, what is not
 
 **Solid**
-- Core engine works across 8 cases (SDE 1D/2D, ODE 2D/5D, nonparametric drift).
-- Every case ships a competent classical baseline for honest comparison.
-- Reproducible environment (`uv.lock`, `.python-version`), smoke-tested.
-- The method wins clearly where the target is drift / structure / an intractable
-  likelihood — most strikingly nonparametric drift discovery (SINDy-SDE:
-  18.0% vs 32.4% for classical SINDy/Kramers–Moyal).
+- **Verified against a known answer.** On `linear_gaussian` the posterior is
+  analytic; we reproduce it to 1.6× the Monte-Carlo sampling floor and land within
+  1.4% of the Bayes optimum. The CFM core was separately checked against the
+  closed-form optimal velocity field (5.6–8.5% agreement, correlation 0.871 vs an
+  exact 0.850).
+- **Accuracy**: beats the ridge control in 7/9 cases (2 ties) and the classical
+  estimator in 7/9 — see [`GALLERY_RESULTS.md`](GALLERY_RESULTS.md).
+- **Calibration**: 29/32 parameters pass strict SBC, mean calibration error 1.3pp,
+  coverage 48–52% / 89–92% against nominal 50/90 — see
+  [`CALIBRATION.md`](CALIBRATION.md).
+- An MCMC gold standard exists for the cases with a tractable likelihood
+  (`amortix/mcmc.py`), and every comparison reports its Monte-Carlo floor.
+- Reproducible environment (`uv.lock`, `.python-version`), 37 tests.
 
 **Not solid — open work**
-1. **Strict calibration on hard posteriors.** SBC: 17/29 parameters pass.
-   Failures cluster on correlated (stoch-LV α/β), multimodal (double-well θ₂) and
-   weakly-identified (CIR a/b, FHN I) parameters. Coverage is usable
-   (cov50 45–63%, cov90 86–92%) — it is rank-uniformity that fails.
-   *Leading suspect:* the data-dependent base is a **diagonal** Gaussian and
-   cannot seed posterior correlations. First thing to try: low-rank / correlated
-   / mixture base.
-2. **`GALLERY_RESULTS.md` accuracy numbers are stale** — measured on the old
-   engine (mean-pool, affine norm, standard base, concat). Re-run
-   `examples/gallery.py` to refresh before quoting them anywhere.
-3. **No CI, no packaging to PyPI**, single-author code, CPU-only (no GPU path
-   exercised).
-4. **Not ported yet:** 2D Darcy flow (the paper's PDE case), Heston (the core
-   already supports correlated noise via `corr_chol`), the bioprocess case from
+1. **Dependence structure is under-shrunk.** Correlations come out right in sign
+   and structure but attenuated 10–40% (on the exact-posterior testbed: −0.640
+   against a true −0.710, 0.349 against 0.415). This single defect is what the
+   three remaining SBC failures are — `stoch_lv` alpha (which enters as a product
+   with beta), `linear_gaussian` m2/m4, and `gbm` sigma — and it is also the 1.6×
+   gap to the Monte-Carlo floor. Everything else on the calibration board passes.
+2. **Baselines are not information-matched.** For the SDE cases the classical
+   estimators read the full 500–1000-point path while the network sees 73–122
+   tokens, a 5–9× advantage. Restricted to the observed points they all land on
+   the Cramér–Rao floor. Our wins there are over an advantaged opponent, and so is
+   the single loss on OU. See `results/CRITIC_baselines.md`.
+3. **CPU-bound.** 623 ms/optimizer-step single-threaded for a 483K-parameter model
+   on 74 tokens — dispatch overhead, not arithmetic. Batch 256 costs the same per
+   step as 64, so at a step-denominated budget the larger batch is free variance
+   reduction (re-measure on an idle machine before changing the default).
+   `torch.compile` and a GPU path are both untried.
+4. **No CI, not on PyPI.**
+5. **Not ported:** 2D Darcy flow (the paper's PDE case), Heston (the core already
+   supports correlated noise via `corr_chol`), the bioprocess case from
    arXiv:2604.22496.
+
+**How to read any number here.** Never quote an accuracy figure without the
+prior-only control (25% by construction) and the ridge control beside it, and
+never quote a calibration figure without an accuracy one: a posterior that returns
+the prior passes SBC *and* passes `cov90 in [80,97]%`. Budget is denominated in
+optimizer steps, never epochs, and convergence is judged by the distance to a
+reference posterior, never by the loss — most of the CFM loss is irreducible
+variance and it can rise while the posterior improves.
 
 ## Reproducing the headline runs
 
