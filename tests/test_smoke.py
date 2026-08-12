@@ -269,3 +269,134 @@ def test_plain_base_is_default():
     from amortix import OrnsteinUhlenbeck
     post = FlowPosterior(OrnsteinUhlenbeck())
     assert post.base == "standard" and post.base_head is None
+
+
+def test_wdiff_embed_trains_and_samples():
+    """embed='wdiff': learnable warped-increment embedding is wired end-to-end.
+
+    The warp parameter must exist, receive gradient, and the posterior must
+    sample finite. Warped-increment embeddings are the universal alternative
+    to hand-crafting a log-coordinate observer: on raw-price GBM they take
+    sigma's SBC from p=0.002 to p=0.876 (wdiff) / p=0.283 (wbasis) at
+    production budget (see WarpDiffEmbed's docstring).
+    """
+    from amortix import OrnsteinUhlenbeck
+    prob = OrnsteinUhlenbeck()
+    post = FlowPosterior(prob, dim_model=32, depth=2, embed="wdiff")
+    assert post.encoder.in_norm is None
+    assert any(n.endswith("embed.raw_s") for n, _ in post.named_parameters())
+    post.fit(n_train=128, epochs=1, batch=32, verbose=False)
+    g = post.encoder.embed.raw_s.grad
+    assert g is not None and torch.isfinite(g).all()
+    _, tok = prob.simulate(2)
+    out = post.sample_batch(tok, n=8, seed=0, n_steps=8)
+    assert out.shape == (2, 8, prob.prior.dim) and torch.isfinite(out).all()
+
+
+def test_auto_embed_resolution():
+    """embed='auto' (the default): universal learnable warped-increment
+    embedding (wbasis) for PathObserver problems, plain linear elsewhere.
+
+    The package's design position is universal architectures over manual
+    feature engineering: no problem ships a hand-crafted observer transform;
+    scale handling lives in the learnable embedding. The MonotoneWarp's
+    octave coefficients must exist and receive gradient.
+    """
+    import torch.nn as nn
+    from amortix import OrnsteinUhlenbeck
+    from amortix.encoder import WarpDiffEmbed
+    from amortix.problems.linear_gaussian import make as make_lg
+
+    post = FlowPosterior(OrnsteinUhlenbeck(), dim_model=32, depth=2)
+    assert isinstance(post.encoder.embed, WarpDiffEmbed)
+    assert post.encoder.embed.kind == "basis"
+    post.fit(n_train=128, epochs=1, batch=32, verbose=False)
+    g = post.encoder.embed.warp.raw_c.grad
+    assert g is not None and torch.isfinite(g).all()
+
+    post_lg = FlowPosterior(make_lg(), dim_model=32, depth=2)
+    assert isinstance(post_lg.encoder.embed, nn.Linear)
+
+
+def test_wpair_trope_variable_designs():
+    """embed='wpair' + rope='time': the variable-design configuration.
+
+    A problem may return (m, tokens, mask) from simulate() -- every dataset
+    its own K -- and the posterior must sample finite for small designs.
+    NOTE: wpair's consecutive-difference features fix the input contract to
+    "sorted by t"; order invariance is a property of pointwise embeddings
+    with rope='time', not of wpair.
+    """
+    import torch as th
+    from amortix import OrnsteinUhlenbeck
+
+    class OUVarDesign(OrnsteinUhlenbeck):
+        def simulate(self, n, generator=None):
+            m = self.prior.sample(n, generator)
+            traj = self.simulate_paths(m, generator)
+            K = 24
+            tokens = th.zeros(n, K, 6)
+            mask = th.zeros(n, K, dtype=th.bool)
+            g = generator or th.Generator()
+            for i in range(n):
+                k = int(th.randint(4, K + 1, (1,), generator=g))
+                idx = th.randperm(self.observer.n_steps, generator=g)[:k].add(1).sort().values
+                tokens[i, :k, 0] = idx.float() * self.observer.dt_sim / self.observer.horizon
+                tokens[i, :k, 1] = traj[i, idx, 0]
+                mask[i, :k] = True
+            return m, tokens, mask
+
+    prob = OUVarDesign()
+    post = FlowPosterior(prob, dim_model=32, depth=2, embed="wpair", rope="time")
+    post.fit(n_train=96, epochs=1, batch=32, verbose=False)
+    gen = torch.Generator().manual_seed(3)
+    m = prob.prior.sample(1, generator=gen)
+    traj = prob.simulate_paths(m, generator=gen)
+    idx = torch.randperm(prob.observer.n_steps, generator=gen)[:9].add(1).sort().values
+    t = idx.float() * prob.observer.dt_sim / prob.observer.horizon
+    x = traj[0, idx, 0]
+    z = torch.zeros_like(x)
+    tok = torch.stack([t, x, z, z, z, z], dim=-1)
+    out = post.sample_batch([tok], n=16, seed=0, n_steps=8)
+    assert out.shape == (1, 16, prob.prior.dim) and torch.isfinite(out).all()
+
+
+def test_design_zoo_end_to_end():
+    """Every design-zoo case simulates finite trajectories, trains one step
+    under the canonical fresh-design recipe with package defaults
+    (embed/rope by the class rule), and samples finite posteriors for a
+    small variable-length design."""
+    from amortix.problems.design_zoo import DESIGN_ZOO
+    from amortix.encoder import PointEmbed, SetCondPairEmbed
+
+    for name, C in DESIGN_ZOO.items():
+        prob = C()
+        m, raw = prob.simulate(4)
+        assert torch.isfinite(raw).all(), name
+        post = FlowPosterior(prob, dim_model=32, depth=2)
+        expected = (SetCondPairEmbed if getattr(prob, "markov_observed", False)
+                    else PointEmbed)
+        assert isinstance(post.encoder.embed, expected), name
+        post.fit(n_train=32, epochs=1, batch=16, verbose=False,
+                 retokenize=prob.make_retokenizer())
+        gen = torch.Generator().manual_seed(0)
+        k = prob.k_min + 4
+        tidx, cidx = prob.sample_design(gen, k)
+        tok = prob.tokens_for(raw[0], tidx, cidx, gen)
+        out = post.sample_batch([tok], n=8, seed=0, n_steps=6)
+        assert out.shape == (1, 8, prob.prior.dim), name
+        assert torch.isfinite(out).all(), name
+
+
+def test_design_sbc_runs():
+    """sbc_design produces finite p-values on a tiny run."""
+    import numpy as np
+    from amortix.designs import sbc_design
+    from amortix.problems.design_zoo import PharmacoKineticsDesign
+
+    prob = PharmacoKineticsDesign()
+    post = FlowPosterior(prob, dim_model=32, depth=2)
+    post.fit(n_train=32, epochs=1, batch=16, verbose=False,
+             retokenize=prob.make_retokenizer())
+    p = sbc_design(post, prob, n_sims=24, n_post=20, seed=0)
+    assert p.shape == (3,) and np.isfinite(p).all()

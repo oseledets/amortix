@@ -76,6 +76,225 @@ class FeatureNorm(nn.Module):
         return (x - self.mean) * scale
 
 
+class MonotoneWarp(nn.Module):
+    """Fully learnable monotone odd warp: linear part + octave bank of
+    signed-log1p basis functions,
+
+        w(v) = c0 * v + sum_k ck * sign(v) * log1p(|v| / s_k),
+
+    with ck, c0 >= 0 via softplus (monotone by construction) and the scales
+    s_k ALSO learnable (in log space, initialized on an octave grid
+    2^-3..2^4). The family contains the identity, log-like compression at any
+    scale, and their mixtures — and log shapes sit in the initialization basin
+    at every octave simultaneously, so no hand-picked scale remains. That
+    basin property is load-bearing: a learnable Yeo-Johnson warp, which also
+    contains log but initializes at the identity, never moves off it (sigma
+    bias +0.451 vs +0.483 raw)."""
+
+    def __init__(self, n_scales: int = 8, lo: float = -3.0, hi: float = 4.0):
+        super().__init__()
+        octaves = torch.linspace(lo, hi, n_scales) * 0.6931471805599453
+        self.log_s = nn.Parameter(octaves)
+        self.raw_c = nn.Parameter(torch.zeros(n_scales))
+        self.raw_c0 = nn.Parameter(torch.tensor(0.0))
+
+    def forward(self, v):
+        s = self.log_s.exp()
+        basis = torch.sign(v)[..., None] * torch.log1p(v.abs()[..., None] / s)
+        c = F.softplus(self.raw_c)
+        c0 = F.softplus(self.raw_c0)
+        return c0 * v + (basis * c).sum(-1)
+
+
+class WarpDiffEmbed(nn.Module):
+    """Learnable warped-increment token embedding for scale-varying series.
+
+    Recomputes each token's increment IN a learnably warped coordinate,
+        dw = w(x + dx) - w(x),
+    and embeds [t, w(x), dw, dw^2, log10 dt, comp] instead of the raw token.
+    The warp is a per-value bijection (no information loss). The essential
+    point is WHERE the increment is taken: warping dx separately from x (a
+    per-feature transform) leaves a residual bias that grows with training
+    budget; differencing in the warped coordinate does not.
+
+    Two warp families:
+      kind="basis" (default, embed="wbasis"): MonotoneWarp — the fully
+        learnable octave mixture, no scale hyperparameter at all.
+      kind="slog" (embed="wdiff"): single signed-log1p with one learnable
+        scale s; contains the hand-crafted log-price observer as s -> 0 and
+        the identity as s -> inf.
+
+    Measured on raw-price GBM (the worst floating-scale case in the gallery),
+    sigma SBC at production budget (n_train=40000, steps=12000, 500x200):
+    raw tokens p=0.002; per-feature slog p=0.014 (fails — its screen-level
+    +0.024 sd residual grows with budget); wdiff p=0.876; wbasis p=0.283;
+    fully-convolutional wconv (learnable taps, no hand square) p=0.130. The
+    hand-crafted log-price observer reference is p=0.812. Structure buys
+    calibration margin monotonically; every warp-then-difference variant
+    passes. ou/cir verified unaffected.
+
+    Assumes the 6-feature PathObserver token layout [t, x, dx, dx^2, res, cid].
+    """
+
+    def __init__(self, n_features: int, dim: int, kind: str = "basis"):
+        super().__init__()
+        if n_features != 6:
+            raise ValueError(
+                "warped-increment embed expects the 6-feature PathObserver "
+                f"token layout [t, x, dx, dx^2, res, cid]; got {n_features}")
+        self.kind = kind
+        if kind == "basis":
+            self.warp = MonotoneWarp(n_scales=8)
+        elif kind == "slog":
+            self.raw_s = nn.Parameter(torch.zeros(1))  # softplus -> s ~ 0.69
+        else:
+            raise ValueError(kind)
+        self.norm = FeatureNorm(n_features)
+        self.proj = nn.Linear(n_features, dim)
+
+    def _w(self, v):
+        if self.kind == "basis":
+            return self.warp(v)
+        s = F.softplus(self.raw_s) + 1e-6
+        return torch.sign(v) * torch.log1p(v.abs() / s)
+
+    def forward(self, tokens, mask=None):             # tokens [B, T, 6]
+        t, x, dx, dx2, res, cid = tokens.unbind(-1)
+        wx = self._w(x)
+        dw = self._w(x + dx) - wx
+        f = torch.stack([t, wx, dw, dw * dw, res, cid], dim=-1)
+        return self.proj(self.norm(f, mask))
+
+
+class PointEmbed(nn.Module):
+    """Bare-point embedding for variable designs on NON-Markov-observed
+    series (ODE + observation noise, hidden states, multi-sensor PDE): the
+    likelihood factorizes over single points given the parameters, so the
+    sufficient token is [t, w(y), design-metadata, channel] with a learnable
+    monotone warp on the value; all temporal/spatial structure is learned by
+    the t-RoPE attention. Measured winners on FHN / Hodgkin-Huxley / PK /
+    Fisher-KPP (see CALIBRATION.md). Select with embed="wpoint"."""
+
+    takes_mask = True
+
+    def __init__(self, n_features: int, dim: int):
+        super().__init__()
+        self.warp = MonotoneWarp(8, lo=-3.0, hi=4.0)
+        self.norm = FeatureNorm(4)
+        self.proj = nn.Linear(4, dim)
+
+    def forward(self, tokens, mask=None):
+        t = tokens[..., 0]
+        y = tokens[..., 1]
+        meta = tokens[..., 4]
+        chan = tokens[..., 5]
+        f = torch.stack([t, self.warp(y), meta, chan], dim=-1)
+        return self.proj(self.norm(f, mask))
+
+
+class SetCondPairEmbed(nn.Module):
+    """The measured-best universal embedding for variable designs on
+    Markov-observed series: WarpPairEmbed's warped-increment features with
+    (a) log-compression of the heavy-tail-prone channels (jump outliers
+    become additive; near-identity on clean diffusions since log1p(x)≈x for
+    small x) and (b) LEARNED set conditioning: a masked pool over the
+    features computes a per-dataset context, an MLP maps it to per-channel
+    scale/shift applied AFTER FeatureNorm (zero-init => exactly the robust
+    base at start). Duel result on Merton (heavy tails, floating jump
+    threshold): matches hand median-scaling (+0.13 vs +0.09 posterior-sd,
+    sr 1.25 vs 1.33) with zero hand statistics. Three correctness rules,
+    each paid for with a found bug: zero-init (right basin), norm BEFORE
+    modulation (else the learned gain re-creates representation drift), and
+    the mask must reach set-level statistics (padding otherwise dilutes the
+    context differently in padded vs packed inference paths).
+    Select with embed="wfilm"."""
+
+    takes_mask = True
+
+    def __init__(self, n_features: int, dim: int):
+        super().__init__()
+        self.warp_x = MonotoneWarp(8, lo=-3.0, hi=4.0)
+        self.warp_t = MonotoneWarp(8, lo=-9.0, hi=0.0)
+        self.norm = FeatureNorm(6)
+        self.proj = nn.Linear(6, dim)
+        self.cond = nn.Sequential(nn.Linear(12, 32), nn.GELU(),
+                                  nn.Linear(32, 12))
+        nn.init.zeros_(self.cond[-1].weight)
+        nn.init.zeros_(self.cond[-1].bias)
+
+    def forward(self, tokens, mask=None):
+        t = tokens[..., 0]
+        x = tokens[..., 1]
+        wx = self.warp_x(x)
+        dw = torch.zeros_like(wx)
+        dw[:, 1:] = wx[:, 1:] - wx[:, :-1]
+        dt = torch.zeros_like(t)
+        dt[:, 1:] = (t[:, 1:] - t[:, :-1]).clamp_min(0.0)
+        g = self.warp_t(dt)
+        first = torch.zeros_like(t)
+        first[:, 0] = 1.0
+        dwc = torch.sign(dw) * torch.log1p(dw.abs())
+        qv = torch.log1p(dw * dw)
+        f = torch.stack([t, wx, dwc, qv, g, first], dim=-1)
+        w = torch.ones_like(t) if mask is None else mask.float()
+        wsum = w.sum(1, keepdim=True).clamp_min(1.0)
+        fmean = (f * w[..., None]).sum(1) / wsum
+        famean = (f.abs() * w[..., None]).sum(1) / wsum
+        ctx = torch.cat([fmean, famean], dim=-1)
+        fn = self.norm(f, mask)
+        gb = self.cond(ctx)
+        gamma, beta = gb[:, :6], gb[:, 6:]
+        fn = fn * (1.0 + gamma[:, None, :]) + beta[:, None, :]
+        return self.proj(fn)
+
+
+class WarpPairEmbed(nn.Module):
+    """Bare-point token embedding for VARIABLE observation designs.
+
+    Input contract: tokens are (t, x) pairs -- feature 0 = time normalized to
+    ~[0,1], feature 1 = value -- sorted by t, valid-first when padded. K may
+    differ per dataset (fit's (m, tokens, mask) protocol). The embedding forms
+    consecutive differences in learnably warped coordinates of BOTH axes:
+
+        dw_i = w_x(x_i) - w_x(x_{i-1})     (value axis, MonotoneWarp)
+        g_i  = w_t(t_i - t_{i-1})          (time axis, log-like MonotoneWarp:
+                                            dividing by the gap becomes a
+                                            subtraction in warped coordinates)
+
+    Token i -> [t_i, w_x(x_i), dw_i, dw_i^2, g_i, first_flag].
+
+    Measured on design-amortized raw GBM (K ~ log-uniform[2,128] in training,
+    eval at K=5/9/20/100 vs exact per-design posteriors, B=96): bias ~0 at
+    every K with width ratios 1.02/1.02/1.02/1.27 (best of all arms; bare
+    points without pair features are also unbiased but 1.05-1.95x wide).
+    Combine with rope="time" -- ordinal RoPE encodes a lie (equal spacing) on
+    irregular designs and its positional layout becomes a train/eval contract
+    that is easy to violate (this exact bug produced spurious +1..+3 sd
+    "biases" before being found).
+    """
+
+    def __init__(self, n_features: int, dim: int):
+        super().__init__()
+        self.warp_x = MonotoneWarp(8, lo=-3.0, hi=4.0)
+        self.warp_t = MonotoneWarp(8, lo=-9.0, hi=0.0)   # gaps ~1e-3..1
+        self.norm = FeatureNorm(6)
+        self.proj = nn.Linear(6, dim)
+
+    def forward(self, tokens, mask=None):
+        t = tokens[..., 0]
+        x = tokens[..., 1]
+        wx = self.warp_x(x)
+        dw = torch.zeros_like(wx)
+        dw[:, 1:] = wx[:, 1:] - wx[:, :-1]
+        dt = torch.zeros_like(t)
+        dt[:, 1:] = (t[:, 1:] - t[:, :-1]).clamp_min(0.0)
+        g = self.warp_t(dt)
+        first = torch.zeros_like(t)
+        first[:, 0] = 1.0
+        f = torch.stack([t, wx, dw, dw * dw, g, first], dim=-1)
+        return self.proj(self.norm(f, mask))
+
+
 def rope_tables(seq_len: int, head_dim: int, base: float = 10000.0):
     half = head_dim // 2
     inv_freq = 1.0 / (base ** (torch.arange(0, half).float() / half))
@@ -87,11 +306,35 @@ def rope_tables(seq_len: int, head_dim: int, base: float = 10000.0):
 
 
 def apply_rope(x, cos, sin):
-    # x: [B, H, T, Dh]; cos/sin: [T, Dh]
+    # x: [B, H, T, Dh]; cos/sin: [T, Dh] (ordinal) or [B, T, Dh] (continuous)
     half = x.shape[-1] // 2
     x1, x2 = x[..., :half], x[..., half:]
     rot = torch.cat([-x2, x1], dim=-1)
+    if cos.dim() == 3:                                # per-batch continuous phases
+        return x * cos[:, None] + rot * sin[:, None]
     return x * cos[None, None] + rot * sin[None, None]
+
+
+def time_rope_tables(t, head_dim, f_min=0.25, f_max=500.0):
+    """Continuous RoPE phases from the actual observation times.
+
+    Ordinal RoPE keys the slot index, which on an irregular design encodes a
+    lie (equal spacing) and makes the positional layout a train/eval contract.
+    Rotating by the physical time instead puts the TRUE relative gap
+    t_i - t_j into the attention phases at a geometric bank of frequencies,
+    and restores genuine permutation invariance: the phase follows the point,
+    not its place in the list.
+
+    t: [B, T] times normalized to ~[0, 1]. Frequencies span periods 1/f_max
+    (grid resolution) .. 1/f_min (multiples of the horizon).
+    """
+    half = head_dim // 2
+    k = torch.arange(half, dtype=torch.float32, device=t.device)
+    freqs = f_min * (f_max / f_min) ** (k / max(half - 1, 1))
+    ang = 2.0 * torch.pi * t[..., None] * freqs        # [B, T, half]
+    cos = torch.cat([ang.cos(), ang.cos()], dim=-1)    # [B, T, head_dim]
+    sin = torch.cat([ang.sin(), ang.sin()], dim=-1)
+    return cos, sin
 
 
 class Attention(nn.Module):
@@ -216,7 +459,22 @@ class SetTransformer(nn.Module):
         self.use_rope = rope
         self.ctx_dim = (pool_dim or dim) if pool == "attn" else dim
         self.in_norm = FeatureNorm(n_features) if input_norm else None
-        if embed == "mlp":
+        if embed in ("wdiff", "wbasis"):
+            # the warp must see RAW features (its own FeatureNorm runs after
+            # the warp), so the input normalization is disabled for it
+            self.in_norm = None
+            self.embed = WarpDiffEmbed(n_features, dim,
+                                       kind="slog" if embed == "wdiff" else "basis")
+        elif embed == "wpair":
+            self.in_norm = None
+            self.embed = WarpPairEmbed(n_features, dim)
+        elif embed == "wfilm":
+            self.in_norm = None
+            self.embed = SetCondPairEmbed(n_features, dim)
+        elif embed == "wpoint":
+            self.in_norm = None
+            self.embed = PointEmbed(n_features, dim)
+        elif embed == "mlp":
             h = embed_hidden or 4 * dim
             self.embed = nn.Sequential(nn.Linear(n_features, h), nn.GELU(),
                                        nn.Linear(h, dim))
@@ -227,7 +485,7 @@ class SetTransformer(nn.Module):
         self.attn_pool = (AttentionPool(dim, n_head, n_query, pool_dim)
                           if pool == "attn" else None)
         self.head_dim = dim // n_head
-        if rope:
+        if rope is True:
             cos, sin = rope_tables(max_tokens, self.head_dim)
             self.register_buffer("cos", cos, persistent=False)
             self.register_buffer("sin", sin, persistent=False)
@@ -248,10 +506,22 @@ class SetTransformer(nn.Module):
     def encode(self, tokens, mask=None):
         """Per-token memory [B, T, dim] (no pooling) -- for cross-attention conditioning."""
         T = tokens.shape[1]
+        raw_t = tokens[..., 0]               # feature 0 is normalized time (contract)
         if self.in_norm is not None:
             tokens = self.in_norm(tokens, mask)
-        x = self.embed(tokens)
-        cos, sin = self._rope(T)
+        if (isinstance(self.embed, (WarpDiffEmbed, WarpPairEmbed))
+                or getattr(self.embed, "takes_mask", False)):
+            # any embedding with internal normalization or SET-level context
+            # must see the mask: without it, padded zero-slots dilute
+            # per-dataset statistics in the padded path but not in the packed
+            # path, silently making the two inference paths inequivalent
+            x = self.embed(tokens, mask)
+        else:
+            x = self.embed(tokens)
+        if self.use_rope == "time":
+            cos, sin = time_rope_tables(raw_t, self.head_dim)
+        else:
+            cos, sin = self._rope(T)
         for blk in self.blocks:
             x = blk(x, cos, sin, mask)
         return self.norm(x)

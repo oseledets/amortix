@@ -23,6 +23,9 @@ from .problems.stoch_lv import StochasticLotkaVolterra
 from .problems.fhn import FitzHughNagumo
 from .problems.sindy_sde import PolynomialDriftSDE
 
+from .designs import DesignProblem, DesignObserver, sbc_design
+from .problems.design_zoo import DESIGN_ZOO
+
 __all__ = [
     "BoxUniform",
     "SDEProblem",
@@ -45,4 +48,8 @@ __all__ = [
     "StochasticLotkaVolterra",
     "FitzHughNagumo",
     "PolynomialDriftSDE",
+    "DesignProblem",
+    "DesignObserver",
+    "sbc_design",
+    "DESIGN_ZOO",
 ]

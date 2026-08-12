@@ -111,7 +111,8 @@ def timestep_embedding(t: torch.Tensor, dim: int, max_period: float = 1000.0,
     the velocity field then receives almost no time signal.
     """
     half = dim // 2
-    freqs = torch.exp(-math.log(max_period) * torch.arange(half, dtype=torch.float32) / half)
+    freqs = torch.exp(-math.log(max_period)
+                      * torch.arange(half, dtype=torch.float32, device=t.device) / half)
     args = (t * scale)[:, None] * freqs[None]
     emb = torch.cat([args.cos(), args.sin()], dim=-1)
     if dim % 2:
@@ -324,63 +325,60 @@ class BaseHead(nn.Module):
         return nll, (lambda eps: mu + s * eps), (mu, s)
 
 
-class FullBaseHead(nn.Module):
-    """Data-dependent Gaussian base with a **full covariance**: N(mu, L L^T).
-
-    The diagonal head can only seed axis-aligned spread, so any posterior
-    correlation has to be manufactured by the flow itself -- the suspected cause
-    of the SBC failures on coupled parameters (Lotka-Volterra alpha/beta, SEIR
-    beta2/gamma_d, CIR a/b, which enter the dynamics as products). Predicting a
-    Cholesky factor lets the base match the posterior's covariance directly, so
-    the flow only has to fix non-Gaussian shape.
-    """
-
-    def __init__(self, ctx_dim: int, dim: int):
-        super().__init__()
-        self.dim = dim
-        self.n_off = dim * (dim - 1) // 2
-        self.net = nn.Linear(ctx_dim, 2 * dim + self.n_off)
-        nn.init.zeros_(self.net.weight)          # start at N(0, I)
-        nn.init.zeros_(self.net.bias)
-        idx = torch.tril_indices(dim, dim, offset=-1)
-        self.register_buffer("off_i", idx[0], persistent=False)
-        self.register_buffer("off_j", idx[1], persistent=False)
-
-    def forward(self, ctx):
-        h = self.net(ctx)
-        B = h.shape[0]
-        mu = h[:, :self.dim]
-        log_d = h[:, self.dim:2 * self.dim].clamp(-4.0, 2.0)
-        off = h[:, 2 * self.dim:]
-        L = torch.zeros(B, self.dim, self.dim, dtype=h.dtype, device=h.device)
-        L[:, range(self.dim), range(self.dim)] = torch.exp(log_d)
-        if self.n_off:
-            L[:, self.off_i, self.off_j] = off
-        return mu, L
-
-    def nll(self, z1, ctx):
-        """Exact multivariate Gaussian NLL: 0.5||L^-1 (z1-mu)||^2 + log|det L|."""
-        mu, L = self(ctx)
-        u = torch.linalg.solve_triangular(L, (z1 - mu).unsqueeze(-1), upper=False)
-        logdet = torch.log(torch.diagonal(L, dim1=-2, dim2=-1)).sum(-1)
-        nll = ((0.5 * (u ** 2).sum((-2, -1)) + logdet) / self.dim).mean()
-        return nll, (lambda eps: mu + torch.einsum("bij,bj->bi", L, eps)), (mu, L)
-
-
 class FlowPosterior(nn.Module):
     def __init__(self, problem, dim_model: int = 64, n_head: int = 4,
                  n_layer: int = 3, hidden: int = 256, depth: int = 3,
-                 pool: str = "attn", base: str = "standard", conditioning: str = "xattn"):
+                 pool: str = "attn", base: str = "standard", conditioning: str = "xattn",
+                 embed: str = "auto", rope="auto"):
+        """Non-default option values are kept as REPRODUCIBLE CONTROLS for the
+        measurements in CALIBRATION.md, not as recommendations: base="data"
+        loses to the plain N(0,I) source 1.75x on the exact-posterior testbed;
+        conditioning="concat" underperforms dense cross-attention; ordinal
+        rope=True on variable designs turns the token layout into a fragile
+        train/eval contract. The defaults encode everything this repository
+        has measured to be right."""
         super().__init__()
         self.problem = problem
         self.prior = problem.prior
         self.d = self.prior.dim
         self.base = base
         self.conditioning = conditioning
+        from .designs import DesignProblem
+        is_design = isinstance(problem, DesignProblem)
+        if embed == "auto":
+            # SDE problems tokenize [t, x, dx, dx^2, res, cid] (PathObserver);
+            # for them the default is the universal learnable warped-increment
+            # embedding, which handles floating multiplicative scale with no
+            # hand-crafted observer transforms (see WarpDiffEmbed).
+            # Variable-design problems (DesignProblem) default to the
+            # set-conditioned pair embedding, the measured best across the
+            # design zoos (see SetCondPairEmbed / CALIBRATION.md). Other
+            # observers (ODE/time-series, custom layouts) get the plain
+            # linear embedding.
+            from .sde import PathObserver
+            if is_design:
+                # class rule, verified from both sides (CALIBRATION.md):
+                # consecutive-pair structure is sufficient iff the observed
+                # process is Markov; otherwise bare points are the correct
+                # (and measured-best) token.
+                embed = ("wfilm" if getattr(problem, "markov_observed", False)
+                         else "wpoint")
+            elif isinstance(problem.observer, PathObserver):
+                embed = "wbasis"
+            else:
+                embed = "linear"
+        self.embed_mode = embed
+        if rope == "auto":
+            # ordinal RoPE is only meaningful when every dataset shares one
+            # fixed token layout. rope="time" (continuous phases from the
+            # actual observation times, feature 0) is the honest choice for
+            # variable/irregular designs.
+            rope = "time" if is_design else True
         self.encoder = SetTransformer(
             n_features=problem.observer.N_FEATURES,
             dim=dim_model, n_head=n_head, n_layer=n_layer,
             max_tokens=problem.observer.n_tokens + 8, pool=pool,
+            embed=embed, rope=rope,
         )
         if conditioning == "xattn":
             # dense conditioning: velocity cross-attends to the token memory
@@ -390,8 +388,6 @@ class FlowPosterior(nn.Module):
             self.velocity = VelocityNet(self.d, dim_model, hidden=hidden, depth=depth)
         if base == "data":
             self.base_head = BaseHead(dim_model, self.d)          # diagonal Gaussian
-        elif base == "full":
-            self.base_head = FullBaseHead(dim_model, self.d)      # full covariance
         else:
             self.base_head = None                                  # plain N(0, I)
 
@@ -403,8 +399,24 @@ class FlowPosterior(nn.Module):
             ema_decay: float = 0.999, grad_clip: float = 10.0,
             betas=(0.9, 0.999), eps: float = 1e-8, weight_decay: float = 0.0,
             k_pairs: int = 4, t_strat: bool = True,
-            monitor=None, monitor_every: int = 500, verbose: bool = True):
+            monitor=None, monitor_every: int = 500, verbose: bool = True,
+            device: str = "auto", retokenize=None):
         """Train the amortized posterior.
+
+        device: "auto" uses CUDA when available (simulation stays on CPU; the
+        model and training batches move to the device), otherwise stays where
+        the model is. RNG is kept on CPU generators for cross-device
+        reproducibility of the data stream; per-batch noise is copied over.
+
+        retokenize: callable (raw_batch, generator) -> (tokens, mask). When
+        given, problem.simulate(n) must return (m, raw) with the RAW
+        trajectories, and every optimizer step draws FRESH observation designs
+        from them: one simulation serves unboundedly many designs, each
+        trajectory is seen with a different subset every step (kills the
+        design<->dataset co-adaptation of the fixed-design protocol), and the
+        subset is drawn BEFORE tokenization, so consecutive-difference
+        embeddings (wpair) stay exact. This is the training mode for
+        all-subset amortization / downstream optimal experimental design.
 
         What actually governs convergence here is the number of OPTIMIZER STEPS,
         not the number of simulations or epochs. Holding n_train=6000 and
@@ -490,8 +502,38 @@ class FlowPosterior(nn.Module):
         if verbose:
             print(f"[fit] simulating {n_train} training trajectories "
                   f"({max(1, n_train // batch)} batches/epoch)...")
-        m, tokens = self.problem.simulate(n_train, generator=gen)
+        sim = self.problem.simulate(n_train, generator=gen)
+        data_mask = None
+        raw = None
+        if retokenize is not None:
+            if token_dropout:
+                raise ValueError("token_dropout is meaningless with retokenize")
+            m, raw = sim[0], sim[1]
+            tokens = None
+        elif len(sim) == 3:
+            # variable-design problems: simulate() -> (m, tokens, mask) with
+            # valid tokens first and padding masked out. Design amortization
+            # then lives in the DATA (every dataset its own K), which keeps
+            # embeddings that difference consecutive tokens correct.
+            m, tokens, data_mask = sim
+            if token_dropout:
+                raise ValueError(
+                    "token_dropout cannot be combined with a variable-design "
+                    "problem (its mask already defines the design; dropping "
+                    "more tokens would break embeddings that difference "
+                    "consecutive observations)")
+        else:
+            m, tokens = sim
         z1 = self.prior.normalize(m)
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else None
+        dev = torch.device(device) if device else next(self.parameters()).device
+        self.to(dev)
+        z1 = z1.to(dev)
+        if tokens is not None:
+            tokens = tokens.to(dev)
+        if data_mask is not None:
+            data_mask = data_mask.to(dev)
         opt = torch.optim.Adam(self.parameters(), lr=lr, betas=tuple(betas), eps=eps,
                                weight_decay=weight_decay)
         n_batches = max(1, n_train // batch)
@@ -514,16 +556,40 @@ class FlowPosterior(nn.Module):
                     group["lr"] = lr_at(step_now, total_steps, lr, warmup,
                                         schedule, min_lr_frac)
                 idx = perm[b * batch:(b + 1) * batch]
-                zb, tb = z1[idx], tokens[idx]
+                zb = z1[idx]
                 bs = zb.shape[0]
-                mb = None
-                if token_dropout > 0:
+                if retokenize is not None:
+                    tb, mb = retokenize(raw[idx], gen)
+                    tb, mb = tb.to(dev), mb.to(dev)
+                else:
+                    tb = tokens[idx]
+                    mb = None if data_mask is None else data_mask[idx]
+                if token_dropout == "design":
+                    # design amortization: every example keeps K_i ~ log-uniform
+                    # in [2, T] randomly chosen tokens, so ONE network learns
+                    # p(m | any observation design) -- 5 points or 100, dense or
+                    # sparse -- instead of the single design the observer emits.
+                    T = tb.shape[1]
+                    u = torch.rand(bs, generator=gen)
+                    ki = (2.0 * (T / 2.0) ** u).long().clamp(2, T)     # [bs]
+                    r = torch.rand(bs, T, generator=gen)
+                    kth = r.sort(dim=1).values.gather(1, (ki - 1)[:, None])
+                    keep = r <= kth                                     # K_i kept
+                    # COMPACT kept tokens to the front (stable order): the
+                    # encoder uses RoPE over token positions, and inference
+                    # packs a K-point design contiguously from position 0 --
+                    # training must present the same positional geometry, or
+                    # sparse designs are out-of-distribution at eval.
+                    order = torch.argsort(~keep, dim=1, stable=True)
+                    tb = tb.gather(1, order[..., None].expand_as(tb).to(dev))
+                    mb = keep.gather(1, order).to(dev)
+                elif token_dropout > 0:
                     keep = torch.rand(tb.shape[:2], generator=gen) >= token_dropout
                     keep[:, 0] = True                          # never drop everything
-                    mb = keep
+                    mb = keep.to(dev)
                 memory = self.encoder.encode(tb, mb)
                 ctx = self.encoder.pool(memory, mb)
-                eps_z = torch.randn(k, bs, self.d, generator=gen)
+                eps_z = torch.randn(k, bs, self.d, generator=gen).to(dev)
                 if self.base_head is not None:
                     # The base reads a DETACHED context. Otherwise its NLL, which is
                     # a much stronger signal than the CFM term, trains the shared
@@ -539,7 +605,7 @@ class FlowPosterior(nn.Module):
                     z0 = torch.cat([draw(eps_z[j]) for j in range(k)], dim=0).detach()
                 else:
                     z0 = eps_z.reshape(k * bs, self.d)
-                    base_nll = torch.zeros(())
+                    base_nll = torch.zeros((), device=dev)
                 # k independent (t, z0) pairs share ONE encoder pass. The memory is
                 # tiled, not re-encoded, so gradients from all k pairs accumulate
                 # into the same encoder graph.
@@ -551,6 +617,7 @@ class FlowPosterior(nn.Module):
                          + torch.rand(k * bs, generator=gen)) / k
                 else:
                     t = torch.rand(k * bs, generator=gen)
+                t = t.to(dev)
                 zt = (1 - t)[:, None] * z0 + t[:, None] * zk
                 target = zk - z0
                 if self.conditioning == "xattn":
@@ -607,18 +674,16 @@ class FlowPosterior(nn.Module):
         if isinstance(tokens, (list, tuple)):                 # variable-length input
             tokens, mask = pack_tokens([torch.as_tensor(t) for t in tokens])
         gen = torch.Generator().manual_seed(seed)
+        dev = next(self.parameters()).device
         outs = []
         for start in range(0, tokens.shape[0], chunk):
-            tb = tokens[start:start + chunk]
-            mb = None if mask is None else mask[start:start + chunk]
+            tb = tokens[start:start + chunk].to(dev)
+            mb = None if mask is None else mask[start:start + chunk].to(dev)
             B = tb.shape[0]
             memory = self.encoder.encode(tb, mb)              # [B, T, dim]
             ctx = self.encoder.pool(memory, mb)               # [B, dim]
-            eps = torch.randn(B, n, self.d, generator=gen)
-            if self.base == "full":
-                mu, L = self.base_head(ctx)                   # [B,d], [B,d,d]
-                z = mu[:, None] + torch.einsum("bij,bnj->bni", L, eps)
-            elif self.base_head is not None:
+            eps = torch.randn(B, n, self.d, generator=gen).to(dev)
+            if self.base_head is not None:
                 mu, s = self.base_head(ctx)                   # [B, d]
                 z = mu[:, None] + s[:, None] * eps
             else:
@@ -629,7 +694,7 @@ class FlowPosterior(nn.Module):
             vmask = mb if self.conditioning == "xattn" else None
             dt = 1.0 / n_steps
             for i in range(n_steps):
-                t = torch.full((B,), i * dt)
+                t = torch.full((B,), i * dt, device=dev)
                 if solver == "euler":                         # 1 eval / step
                     z = z + dt * grouped(z, t, cond, vmask)
                 elif solver == "midpoint":                    # 2 evals / step
@@ -641,7 +706,7 @@ class FlowPosterior(nn.Module):
                     k3 = grouped(z + 0.5 * dt * k2, t + 0.5 * dt, cond, vmask)
                     k4 = grouped(z + dt * k3, t + dt, cond, vmask)
                     z = z + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
-            outs.append(self.prior.denormalize(z))
+            outs.append(self.prior.denormalize(z.cpu()))
         return torch.cat(outs, dim=0)
 
     def sample(self, tokens: torch.Tensor, n: int = 2000, n_steps: int = 20,

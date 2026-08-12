@@ -34,8 +34,35 @@ N_STEPS = 500          # horizon = 5 "years"
 CLAMP = 1e-8
 
 
+class LogPathObserver(PathObserver):
+    """Reference observer that tokenizes log(S) rather than S.
+
+    Kept as the exact-sufficient-statistic BENCHMARK, not the default: dx
+    becomes the exact log-return and dx^2 the exact per-step quadratic
+    variation. The default pipeline instead keeps raw-price tokens and relies
+    on the universal learnable warped-increment embedding (embed="wdiff",
+    resolved automatically for PathObserver problems), which reaches the same
+    calibration (sigma SBC p=0.876 vs 0.812 for this observer at production
+    budget) with no hand-coded features. Use `make_logprice()` when you want
+    the analytic reference to compare a learned representation against.
+    """
+
+    def tokens_from_traj(self, traj: torch.Tensor) -> torch.Tensor:
+        if traj.dim() == 2:
+            traj = traj.unsqueeze(-1)
+        return super().tokens_from_traj(traj.clamp_min(CLAMP).log())
+
+
 class GeometricBrownianMotion(SDEProblem):
-    """dS = mu S dt + sigma S dW with S0 = 1, recover (mu, sigma)."""
+    """dS = mu S dt + sigma S dW with S0 = 1, recover (mu, sigma).
+
+    Tokens are RAW price increments; the floating multiplicative scale of S is
+    handled by the default universal embedding (embed="auto" -> "wdiff"), not
+    by a hand-crafted observer transform. Measured (K=96, vs the exact
+    closed-form posterior): raw tokens + linear embed biased sigma by +0.483
+    posterior-sd (SBC p=0.002 at production budget); raw tokens + wdiff is
+    -0.010 sd, SBC p=0.876.
+    """
 
     state_dim = 1
 

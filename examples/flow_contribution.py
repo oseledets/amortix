@@ -1,7 +1,7 @@
 """How much work does the flow actually do?
 
 The data-dependent base already predicts the posterior's mean (and, with
-base="full", its covariance). If the flow adds nothing on top, we are really
+its predicted spread). If the flow adds nothing on top, we are really
 doing amortized Gaussian regression with a decorative ODE -- which would also
 mean any SBC "win" came from Gaussianizing the posterior, exactly the wrong
 thing for multimodal problems.
@@ -33,7 +33,7 @@ def base_only(post, tokens, n, seed=0, chunk=16):
         B = tb.shape[0]
         ctx = post.encoder.pool(post.encoder.encode(tb))
         eps = torch.randn(B, n, post.d, generator=gen)
-        if post.base == "full":
+        if False:  # full-covariance base was removed (measured dead end)
             mu, L = post.base_head(ctx)
             z = mu[:, None] + torch.einsum("bij,bnj->bni", L, eps)
         elif post.base_head is not None:
@@ -69,7 +69,7 @@ def score(draws, m_true, rng, tag, prior=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("case")
-    ap.add_argument("--base", default="data", choices=["standard", "data", "full"])
+    ap.add_argument("--base", default="data", choices=["standard", "data"])
     ap.add_argument("--n_train", type=int, default=8000)
     ap.add_argument("--epochs", type=int, default=25)
     ap.add_argument("--n_sims", type=int, default=200)
