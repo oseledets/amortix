@@ -99,11 +99,18 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--arms", type=str, default="amortix,npe,mcmc",
-                    help="comma list from {amortix,npe,npe_log,npe_ret,mcmc}; npe_log "
+                    help="comma list from {amortix,npe,npe_log,npe_ret,fmpe,fmpe_ret,mcmc}; npe_log "
                          "gives NPE hand log-transformed prices -- the manual "
                          "feature engineering amortix's learnable warp replaces")
+    ap.add_argument("--device", type=str, default="cpu",
+                    choices=["cpu", "cuda", "auto"],
+                    help="device for amortix and the sbi arms (MCMC is "
+                         "numpy/CPU regardless); timings are only comparable "
+                         "within one device")
     ap.add_argument("--save", type=str, default="results/BASELINE_NPE.json")
     args = ap.parse_args()
+    if args.device == "auto":
+        args.device = "cuda" if torch.cuda.is_available() else "cpu"
     if args.quick:
         args.n_train, args.steps, args.n_test, args.n_draw, args.n_mcmc = \
             2000, 600, 24, 500, 1
@@ -127,7 +134,7 @@ def main():
     print("[setup] exact references ready", flush=True)
 
     report = dict(n_train=args.n_train, steps=args.steps, n_test=args.n_test,
-                  n_draw=args.n_draw, device="cpu",
+                  n_draw=args.n_draw, device=args.device,
                   torch_threads=torch.get_num_threads())
     arms = set(args.arms.split(","))
 
@@ -138,7 +145,7 @@ def main():
         n_par = sum(p.numel() for p in post.parameters())
         t0 = time.time()
         post.fit(n_train=args.n_train, steps=args.steps, seed=args.seed,
-                 verbose=False)
+                 verbose=False, device=args.device)
         t_train_amx = time.time() - t0
         t0 = time.time()
         amx = post.sample_batch(tokens_test, n=args.n_draw, seed=0).numpy()
@@ -155,29 +162,30 @@ def main():
                                  inf_ms_per_ds=1e3 * t_inf_amx / args.n_test,
                                  inf_ms_single=1e3 * t_one_amx, **res_amx)
 
-    # ---- sbi NPE (raw prices and/or hand log-transformed prices) ------------
-    def run_npe(tag, transform):
+    # ---- sbi arms: NPE (MAF, MLE) and FMPE (flow matching), any input -------
+    def run_sbi_arm(tag, transform, method="NPE"):
         import sbi
-        from sbi.inference import NPE
+        import sbi.inference as sbi_inf
         from sbi.utils import BoxUniform as SbiBox
 
         sbi_prior = SbiBox(low=prob.prior.low.float(),
-                           high=prob.prior.high.float())
+                           high=prob.prior.high.float(), device=args.device)
         gen2 = torch.Generator().manual_seed(args.seed + 1)
         theta = prob.prior.sample(args.n_train, gen2)
         x_tr = transform(prob.simulate_paths(theta, gen2)[:, x_idx, 0])
         t0 = time.time()
-        inf = NPE(prior=sbi_prior)                 # package defaults throughout
+        inf = getattr(sbi_inf, method)(prior=sbi_prior,   # package defaults
+                                       device=args.device)
         de = inf.append_simulations(theta.float(), x_tr.float()) \
                 .train(show_train_summary=False)
-        npe_post = inf.build_posterior(de)
+        arm_post = inf.build_posterior(de)
         t_train = time.time() - t0
         n_par = sum(p.numel() for p in de.parameters())
-        xt = transform(x_test)
+        xt = transform(x_test).float().to(args.device)
         t0 = time.time()
         smp = np.stack([
-            npe_post.sample((args.n_draw,), x=xt[i].float(),
-                            show_progress_bars=False).numpy()
+            arm_post.sample((args.n_draw,), x=xt[i],
+                            show_progress_bars=False).cpu().numpy()
             for i in range(args.n_test)])
         t_inf = time.time() - t0
         res = score(smp, exact, names)
@@ -198,11 +206,15 @@ def main():
                           prepend=torch.zeros(xl.shape[0], 1)).contiguous()
 
     if "npe" in arms:
-        run_npe("npe", lambda x: x.contiguous())
+        run_sbi_arm("npe", lambda x: x.contiguous())
     if "npe_log" in arms:
-        run_npe("npe_log", lambda x: x.clamp_min(1e-8).log().contiguous())
+        run_sbi_arm("npe_log", lambda x: x.clamp_min(1e-8).log().contiguous())
     if "npe_ret" in arms:
-        run_npe("npe_ret", to_returns)
+        run_sbi_arm("npe_ret", to_returns)
+    if "fmpe" in arms:
+        run_sbi_arm("fmpe", lambda x: x.contiguous(), method="FMPE")
+    if "fmpe_ret" in arms:
+        run_sbi_arm("fmpe_ret", to_returns, method="FMPE")
 
     # ---- per-dataset exact-likelihood MCMC (cost scale only) ----------------
     if "mcmc" in arms:
