@@ -451,9 +451,10 @@ about 50 minutes; the fixed-design gallery cases train in 8--45 minutes on a lap
 RNG so that changing the device cannot silently change results --- and batched inference drops to
 $72$\,ms per dataset ($135$\,ms for a single one). The tiny external models gain nothing from the GPU:
 \texttt{sbi}'s default MAF actually trains $6\times$ \emph{slower} there ($190$\,s vs $29$\,s; at this
-size the regime is kernel-launch-bound), and the accuracy verdicts of the table are unchanged on GPU
-(raw-price NPE $\sigma$ width $2.48$, FMPE $2.30$). Per-arm JSON for both devices is under
-\texttt{results/}.
+size the regime is kernel-launch-bound), and the accuracy verdicts of the table replicate on GPU with
+fresh seeds (raw-price NPE $\sigma$ width $2.48$, FMPE $2.30$, BayesFlow coupling $1.80$; BayesFlow on
+log-returns again overconfident, widths $0.40$--$0.72$) --- the failures are properties of the setups, not
+of a device or a seed. Per-arm JSON for both devices is under \texttt{results/}.
 
 \section{Failure anatomy: one disease, three guises}
 \label{sec:anatomy}
