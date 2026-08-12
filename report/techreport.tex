@@ -1,0 +1,253 @@
+\documentclass[10pt]{article}
+\usepackage[a4paper,margin=2.6cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+
+\newcommand{\amortix}{\texttt{amortix}}
+\title{\textbf{Amortix: amortized Bayesian parameter recovery\\ for dynamical systems via conditional flow matching}\\[2mm]
+\large Technical report, v0.1}
+\author{Ivan Oseledets}
+\date{August 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\amortix\ is a small PyTorch package that trains a single conditional-flow-matching (CFM) posterior
+$p(m \mid \mathcal{D})$ over the parameters $m$ of a dynamical system (ODE, SDE, or PDE), amortized both over
+datasets and --- in its design-amortized mode --- over \emph{observation designs}: one network answers
+$p(m \mid \text{any } K \text{ points } (t_i, x_i))$ for $K$ from a handful to near-continuous monitoring.
+The emphasis throughout is on universal, learnable components in place of per-problem feature engineering,
+and on an evaluation protocol whose instrument of record is comparison against exact or validated-MCMC
+reference posteriors rather than simulation-based calibration (SBC) alone. On a fixed-design gallery of nine
+systems, 31/32 parameters pass SBC with mean calibration error 1.3\,pp; on a design-amortized zoo of six
+further systems (Heston, Merton jump--diffusion, H\'enon--Heiles, Hodgkin--Huxley, pharmacokinetics,
+Fisher--KPP reaction--diffusion), every observed defect either has a learnable architectural cure or lies on a
+measured compute-budget curve (Merton width excess $\propto 1/\text{budget}$: $1.246 \to 1.120 \to 1.059$;
+Fisher--KPP along-ridge bias $\sim \text{budget}^{-1/2}$: $+0.41 \to +0.23 \to +0.14$ posterior-sd). We
+document three recurring guises of one conditioning disease of set encoders --- floating input scale,
+cardinality blindness, heavy tails --- each cured by a learnable module, and record that in three
+hand-crafted-versus-learned duels the learned counterpart matched the hand fix every time.
+\end{abstract}
+
+\section{Scope and method}
+
+The method follows amortized simulation-based inference with flow matching
+\cite{oseledets2025,followup2026,lipman2023}. A prior $p(m)$ over box-constrained parameters and a simulator
+producing observation tokens define the training distribution. Parameters are mapped to
+$z_1 = \Phi^{-1}(\text{cdf}_{\text{prior}}(m))$ (probit normalization), and a velocity field
+$v_\theta(z, t, \mathcal{D})$ is trained on the linear path $z_t = (1-t) z_0 + t z_1$, $z_0 \sim \mathcal{N}(0, I)$,
+with loss $\| v_\theta - (z_1 - z_0) \|^2$. Sampling integrates the ODE with 20 midpoint steps; an
+exponential moving average of the weights is used at evaluation.
+
+The conditioning network is a small transformer encoder over observation tokens (default $d=64$, 3 blocks);
+the velocity network applies parameter self-attention with adaLN-Zero modulation \cite{peebles2023} by the
+flow time and pooled context (3 blocks). The default model has $\approx 4.8\times 10^5$ parameters and is
+deliberately small: capacity was measured \emph{not} to be the accuracy lever (Sec.~\ref{sec:budget}).
+
+Two regimes are supported. \emph{Fixed designs}: every dataset shares one observation grid.
+\emph{Design amortization} (\texttt{DesignProblem}): each dataset carries its own set of observation times
+(and, for PDEs, sensor locations), and the network is trained so that a single model is coherent across all
+subsets of one measured series --- the training mode required for downstream sequential refinement and
+optimal experimental design.
+
+\section{Universal set embeddings and the class rule}
+\label{sec:embed}
+
+The package's central architectural commitment is that observation tokens are embedded by \emph{learnable,
+problem-agnostic} modules; every hand-crafted feature that ever appeared during development was raced
+against a learnable counterpart and retired.
+
+\paragraph{Learnable monotone warp.} All embeddings share \texttt{MonotoneWarp}: a positive mixture over an
+octave bank of signed-$\log(1+|x|/s)$ scales. It contains the identity and the logarithm in its span, and ---
+critically --- in its \emph{initialization basin}: a Yeo--Johnson layer also contains the logarithm
+(at $\lambda = 0$) but gradient descent never reached it. Hypothesis-class membership is not findability.
+
+\paragraph{Embeddings.} For fixed designs: \texttt{wdiff}/\texttt{wbasis} (warped values and increments,
+with a learnable basis mixture). For design amortization the resolution rule is:
+\begin{itemize}
+  \item \texttt{wfilm} (\texttt{SetCondPairEmbed}) when the \emph{observed} process is Markov: tokens are
+  sorted-consecutive-pair features $[t, w(x), \Delta w, \Delta w^2, w_t(\Delta t), \text{first}]$ ---
+  exactly the arguments of the Markov likelihood factorization $\prod_i p(x_{i+1} \mid x_i; m)$ --- log-compressed
+  before normalization and modulated by a masked-pool set context via zero-initialized per-channel FiLM.
+  \item \texttt{wpoint} (\texttt{PointEmbed}) otherwise (hidden state, non-Markov observations): bare points
+  $[t, w(y), \text{meta}, \text{chan}]$.
+\end{itemize}
+The class boundary is the Markovianity of the observed process, and it was verified in \emph{both}
+directions: a pair model transfers cleanly across Markov systems (GBM$\to$OU), while on Heston (hidden
+volatility) the pair stencil's advantage disappears --- parity, not degradation.
+
+\paragraph{Continuous-time rotary attention.} On irregular designs, ordinal RoPE constitutes a hidden
+train/test contract on token \emph{positions}: training with subsampled tokens left at spread positions
+while inference packs contiguously produced systematic $+1..+3$ posterior-sd biases with no code being
+``wrong''. \texttt{rope="time"} derives attention phases from physical time with a geometric frequency
+bank, restoring true permutation invariance (verified to float precision, $10^{-8}$).
+
+\paragraph{Cardinality.} Softmax attention normalizes --- it computes means, and means erase the sample
+size $N$ that governs posterior width. Encoder forensics (ridge regression from the pooled context onto
+known sufficient statistics) localized width failures exactly where $R^2(\log N)$ dropped
+(0.985 for pairs vs.\ 0.498 for edge-value attention). The cure is metadata, not process knowledge: a
+$\log K$ feature or two learned register tokens; ordinal RoPE's once-mysterious dense-design advantage is
+explained by contiguous packing smuggling the count through the maximal position.
+
+\section{Canonical training recipe}
+\label{sec:recipe}
+
+The recipe that closed the dense-design tail, measured causally on GBM/OU/FHN:
+\begin{enumerate}
+  \item \textbf{Fresh designs each optimizer step}: every step re-draws each trajectory's observation subset
+  from its full simulated grid (\texttt{fit(retokenize=...)}). Design memorization becomes impossible; one
+  simulation serves unboundedly many designs. Fixed designs with a long budget close the dense tail but
+  overfit into sparse-design overconfidence (width ratio down to 0.86).
+  \item \textbf{Mix-$K$ law}: 50\% log-uniform over $[K_{\min}, K_{\max}]$ + 50\% uniform over the dense half.
+  Alone this halves the dense excess (GBM $1.27 \to 1.14$, OU $1.34 \to 1.14$, FHN dense-$K$ SBC
+  $p{=}0.000 \to 0.54$).
+  \item \textbf{Budget scaling}: data and steps are scaled proportionally (constant $\approx$38 epochs).
+\end{enumerate}
+Result on GBM: sigma width ratio $1.06/1.06/1.05/1.07$ at $K = 5/9/20/100$ against the exact per-design
+posterior.
+
+\section{Evaluation protocol: SBC is the screen, exact references are the record}
+\label{sec:protocol}
+
+SBC \cite{talts2018} at practical sizes ($300$--$500$ simulations) is \emph{provably} blind to width ratios
+up to $\approx 1.3$, and its per-cell p-values flicker between retrains when residual biases sit at
+$0.1$--$0.2$ posterior-sd. It also passes a posterior that merely returns the prior. \amortix\ therefore uses
+a two-instrument protocol:
+\begin{itemize}
+  \item \textbf{Screen}: SBC over mixed designs plus fixed-$K$ buckets (\texttt{sbc\_design}).
+  \item \textbf{Record}: signed centre bias and width ratio against an exact or validated reference posterior
+  on the \emph{same} observed points --- closed-form where available (GBM, linear-Gaussian), otherwise
+  adaptive Metropolis with the exact-likelihood factories shipped in the package (Poisson-mixture for
+  Merton, log-normal Bateman for pharmacokinetics, PDE-solve Gaussian for Fisher--KPP). Chains are
+  validated by multi-start agreement before being trusted; the MCMC references used below were checked to
+  worst mean discrepancy $0.099$ posterior-sd and width ratios $0.91$--$1.03$ against closed forms where
+  both exist.
+\end{itemize}
+Twice during development the two instruments \emph{contradicted} each other, and both times the
+contradiction exposed a real bug (a padded-mask harness error; an ordinal-RoPE positional contract). Two
+disagreeing instruments are worth more than either.
+
+A third layer of the protocol is \textbf{encoder forensics}: ridge regression from the pooled context onto
+the known sufficient statistics of the problem separates extraction failures from downstream (flow-side)
+failures. In the Merton autopsy the failing arm encoded the robust statistics \emph{better} than the healthy
+arm ($R^2 = 0.967$ on truncated realized variance) --- the information was extracted; the failure was a
+drifting input representation.
+
+\section{Results}
+
+\subsection{Fixed-design gallery (nine systems)}
+
+31/32 parameters pass SBC ($p > 0.05$), mean calibration error 1.3\,pp; the single miss is
+\texttt{stoch\_lv} $\beta$ at $p = 0.04$, at the threshold. Cases: linear-Gaussian (exact-posterior sanity),
+OU, GBM, CIR, double-well, stochastic Lotka--Volterra, FitzHugh--Nagumo, SEIR, SINDy-SDE. Posterior
+information extraction (width vs.\ the exact reference where available) reaches 89--90\% on the closed-form
+cases.
+
+\subsection{Design-amortized zoo (six systems)}
+
+All on the canonical recipe of Sec.~\ref{sec:recipe}; verdicts by the protocol of Sec.~\ref{sec:protocol}.
+
+\begin{center}
+\begin{tabular}{@{}lllp{6.6cm}@{}}
+\toprule
+case & dim($m$) & embed & verdict \\
+\midrule
+Heston & 5 & wpoint & all 25 SBC cells pass; pair-vs-point parity confirms the class boundary \\
+Merton jump--diffusion & 5 & wfilm & 25/25 after log-compression + FiLM; residual width on the budget curve (Sec.~\ref{sec:budget}) \\
+H\'enon--Heiles \cite{lubich2013} & 3 & wpoint & 3/3 mixed and every $K$-bucket down to $K{=}6$; sparse aliasing yields honest width, not miscalibration \\
+Hodgkin--Huxley & 4 & wpoint & 4/4 mixed; one dense cell ($g_K$ at $K{=}84$) shows the budget signature \\
+Pharmacokinetics & 3 & wpoint & 3/3 mixed; at $K{=}6$ blood draws, unbiased ($-0.01..{-}0.06$\,sd) at widths $1.09$--$1.33$ vs.\ exact-likelihood MCMC \\
+Fisher--KPP (PDE) & 2 & wpoint & ridge geometry $D \cdot r \approx \text{const}$; along-ridge bias on a $\text{budget}^{-1/2}$ curve (Sec.~\ref{sec:budget}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Budget curves: residuals are a price list, not an open problem}
+\label{sec:budget}
+
+Two independent residuals were driven down by scaling training budget (data and steps together) at fixed
+capacity:
+
+\begin{center}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+ & $\times 1$ budget & $\times 3$ & $\times 6$ \\
+\midrule
+Merton width excess (hardest cell) & $0.246$ & $0.120$ & $0.059$ \\
+Fisher--KPP along-ridge bias $q$ (sd) & $+0.41$ & $+0.23$ & $+0.14$ \\
+Fisher--KPP front-speed bias $c$ (sd) & $-0.21$ & $-0.14$ & $-0.075$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Merton's width excess decays $\propto 1/\text{budget}$; KPP's along-ridge bias decays
+$\sim \text{budget}^{-1/2}$ --- the weakly identified direction (weakest CFM gradient signal) converges
+last, with no wall. Capacity is \emph{not} the lever: doubling width and depth at $\times 3$ budget gave
+$1.103$ vs.\ $1.120$; solver refinement (RK4/60 vs.\ midpoint/20) gave nothing. At $\times 6$ the hardest
+statistic of the zoo extracts 89\% of the available information, indistinguishable from the closed-form
+dense cells.
+
+\section{Failure anatomy: one disease, three guises}
+
+Every hard failure across three zoos reduced to the \emph{conditioning of the set encoder's input}, in
+three guises, each cured by a learnable module:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+guise & symptom & learnable cure \\
+\midrule
+floating multiplicative scale & GBM $\sigma$ bias $+0.48$\,sd & \texttt{MonotoneWarp} octave mixture \\
+cardinality blindness & widths $1.5$--$2.5\times$ at dense $K$ & $\log K$ metadata / register tokens \\
+heavy tails (jumps) & $\Delta w^2$ sd $3.1\times 10^4$; drifting norm & log1p compression + FiLM \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Three duels of a hand fix against a universal learned counterpart (log-coordinate; input cardinality;
+robust per-dataset scaling vs.\ learned set-conditioned FiLM: $+0.094 \pm 0.054$ vs.\ $+0.127 \pm 0.055$,
+statistically indistinguishable) ended $3{:}0$ for ``the learned module matches'' --- with the same pattern
+each time: \emph{the hand fix locates the mechanism and the initialization basin; the learnable module
+placed in that basin is what ships.} The FiLM module needed three correctness conditions, each found the
+hard way: zero-initialization (start at the working base), normalize-before-modulate (the reverse re-creates
+the representation drift it cures; measured feature sd 1093), and honest masks (set statistics must never
+see padding --- a bug caught only because SBC and the exact probe disagreed).
+
+\section{Baselines}
+
+Every claim is read against a three-tier ladder (see \texttt{BASELINES.md} in the repository):
+\textbf{Tier 0} --- controls: prior-mean (exactly 25\% mean absolute error under a uniform prior) and a
+degree-2 ridge regression on $\sim$20 summary statistics; these also unmask prior-returning posteriors that
+SBC passes. \textbf{Tier 1} --- classical per-case estimators shipped as \texttt{sota()} per problem: exact
+MLE (OU, GBM), Euler pseudo-MLE (CIR), Kramers--Moyal/SINDy regression, multi-start nonlinear least squares,
+exact posterior mean (linear-Gaussian). \textbf{Tier 2} --- reference posteriors (closed-form or validated
+exact-likelihood MCMC), the instrument of record. \textbf{Tier 3} --- external context: BayesFlow
+\cite{radev2020}, the \texttt{sbi} package, and the \texttt{sbibm} benchmark \cite{lueckmann2021}, with
+which the Hodgkin--Huxley and ecology/epidemiology cases overlap by design. \amortix's differentiators are
+the SDE-first zoo with real numerical solvers, variable-design amortization, and the exact-reference
+evaluation harness.
+
+\section{Limitations and outlook}
+
+(i) Residual widths and ridge biases are on measured budget curves; sharpening is a compute price list.
+(ii) SBC power limits mean small residuals require exact references; systems with no tractable likelihood
+inherit the weaker screen. (iii) Optimal experimental design is the natural next step --- the fresh-design
+training mode already makes $p(m \mid S)$ coherent across subsets $S$ of one measured series --- but is
+deliberately deferred. (iv) Real-data studies with posterior predictive checks are not yet included.
+
+\begin{thebibliography}{9}
+\bibitem{oseledets2025} Amortized parameter recovery for dynamical systems. arXiv:2503.01375.
+\bibitem{followup2026} Follow-up on amortized recovery with flow matching. arXiv:2604.22496.
+\bibitem{lipman2023} Y.~Lipman et al. Flow Matching for Generative Modeling. ICLR 2023.
+\bibitem{talts2018} S.~Talts et al. Validating Bayesian inference algorithms with simulation-based calibration. arXiv:1804.06788.
+\bibitem{lueckmann2021} J.-M.~Lueckmann et al. Benchmarking simulation-based inference. AISTATS 2021.
+\bibitem{radev2020} S.~Radev et al. BayesFlow: Learning complex stochastic models with invertible neural networks. IEEE TNNLS 2020.
+\bibitem{peebles2023} W.~Peebles, S.~Xie. Scalable diffusion models with transformers. ICCV 2023.
+\bibitem{lubich2013} C.~Lubich, I.~Oseledets, B.~Vandereycken. Time integration of tensor trains. SIAM J.\ Numer.\ Anal.\ 2015.
+\end{thebibliography}
+
+\end{document}

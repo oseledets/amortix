@@ -1,8 +1,10 @@
-.venv/
-__pycache__/
-*.pyc
 *.egg-info/
-dist/
+*.pyc
+.claude/worktrees/
 .ipynb_checkpoints/
 .pytest_cache/
-.claude/worktrees/
+.venv/
+__pycache__/
+dist/
+report/*.aux
+results/*.log

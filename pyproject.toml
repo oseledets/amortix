@@ -13,8 +13,13 @@ authors = [{ name = "Ivan Oseledets", email = "ivan.oseledets@gmail.com" }]
 keywords = ["simulation-based-inference", "flow-matching", "sde", "bayesian", "amortized-inference"]
 classifiers = [
     "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
 ]
 dependencies = ["torch>=2.0", "numpy", "scipy"]
 
@@ -32,4 +37,5 @@ dev = ["pytest>=8.4.2"]
 packages = ["amortix"]
 
 [tool.hatch.build.targets.sdist]
-include = ["amortix", "examples", "tests", "*.md"]
+include = ["amortix", "examples", "tests", "/*.md", "LICENSE", "report/techreport.pdf"]
+exclude = ["results", "examples/*.png"]
