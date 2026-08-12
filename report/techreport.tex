@@ -24,7 +24,8 @@ We consider the inverse problem of recovering the parameters of a dynamical syst
 PDE --- from noisy observations of its trajectory at a finite set of time points, in the Bayesian setting:
 the answer is the posterior distribution over parameters, not a point estimate. The \amortix\ package
 implements an \emph{amortized} solver: a single neural network is trained once, on simulated
-(parameters, data) pairs, and thereafter produces posterior samples for any new dataset in milliseconds,
+(parameters, data) pairs, and thereafter produces thousands of posterior samples for any new dataset in a
+fraction of a second,
 with no likelihood evaluations and no per-dataset optimization. The generative engine is conditional flow
 matching: the network learns a velocity field that transports a standard Gaussian onto the posterior,
 conditioned on the data. A single trained model handles \emph{any number and placement of observation
@@ -35,8 +36,14 @@ protocol, and summarizes benchmark results on fifteen systems, including a stoch
 a hidden state, a jump-diffusion, the Hodgkin--Huxley neuron, a pharmacokinetic model, and a
 reaction--diffusion PDE. On the fixed-design benchmark, 31 of 32 parameters across nine systems pass strict
 calibration tests; on the variable-design zoo, posteriors agree with exact-likelihood references up to
-residuals that decay smoothly with training compute. We also document, in plain language, the three failure
-modes we encountered --- all traceable to the conditioning of the encoder's input --- and their cures.
+residuals that decay smoothly with training compute. A measured head-to-head against neural posterior
+estimation from the \texttt{sbi} package at equal simulation budget and default settings makes the case for
+the architecture: on raw prices NPE misses the volatility by $+0.45$ posterior-sd at $2.6\times$ the correct
+width --- exactly the failure our conditioning analysis predicts --- while this model is statistically
+indistinguishable from the exact posterior on the same data; we also report training and inference
+wall-clock for both, and for exact-likelihood MCMC. Finally we document, in plain language, the three
+failure modes we encountered --- all traceable to the conditioning of the encoder's input --- and their
+cures.
 \end{abstract}
 
 \section{Problem setup}
@@ -57,13 +64,45 @@ sensors of a PDE field are read). The goal is the posterior
   p(m \mid \D) \;\propto\; p(\D \mid m)\, p(m).
 \end{equation}
 
-Two features make this hard for classical machinery. First, for most systems above the likelihood
-$p(\D \mid m)$ is intractable or expensive: it requires integrating out the latent path between
-observations. Second, we want the answer \emph{fast and repeatedly}: in calibration studies, in sequential
-experiments, and in design-of-experiments loops, the posterior must be evaluated for thousands of datasets
-and for many candidate subsets of measurement points.
+\subsection{What makes this hard}
+\label{sec:hard}
 
-\paragraph{Amortization.} Simulation-based (likelihood-free) inference sidesteps both issues. Sampling from
+It is worth being explicit about the difficulties, because each one below defeated at least one plausible
+architecture during development, and the design choices of Secs.~\ref{sec:arch}--\ref{sec:recipe} are
+answers to them, not aesthetics.
+
+\begin{enumerate}
+  \item \textbf{The likelihood is intractable or expensive.} For SDEs observed at gaps, $p(\D \mid m)$
+  integrates over the latent path between observations; for models with hidden states (stochastic
+  volatility, gating variables of a neuron) even the observed-process transition density is unavailable.
+  Classical estimators exist per problem, but each is a bespoke derivation.
+  \item \textbf{The answer is a distribution, and its \emph{width} must be right.} A point estimate can be
+  checked against the truth; a posterior claims a full uncertainty statement, and the failure modes are
+  asymmetric: an overconfident posterior (too narrow) is silently wrong in the way that matters most for
+  downstream decisions. Verifying width requires reference posteriors or calibration tests, and the
+  standard calibration test has limited statistical power (Sec.~\ref{sec:protocol}) --- so even
+  \emph{knowing} that you failed is nontrivial.
+  \item \textbf{One network must serve all designs.} Under design amortization the same weights answer
+  $p(m \mid S)$ for $K = 5$ irregular points and for $K = 100$ dense ones. The posterior width is governed
+  by $K$, yet the natural set architecture (normalized attention) is provably poor at communicating set
+  size (Sec.~\ref{sec:arch}); and the training distribution over designs becomes a modeling decision with
+  measurable consequences (Sec.~\ref{sec:recipe}).
+  \item \textbf{Conditioning of the raw data.} Multiplicative processes float over an order of magnitude of
+  scale; jump-diffusions produce squared-increment features with standard deviation $3 \times 10^4$ next to
+  signals of order $10^{-2}$; the useful coordinate (e.g.\ the logarithm) differs per problem and must be
+  \emph{found}, not prescribed. Every hard failure we encountered traced to this (Sec.~\ref{sec:anatomy}).
+  \item \textbf{Weak identifiability.} Real posteriors have ridges: in the reaction--diffusion problem only
+  the combination $2\sqrt{Dr}$ (the front speed) is sharply determined, and the flow's residual error
+  concentrates precisely along the flat direction, where the training gradient is weakest
+  (Sec.~\ref{sec:budget}).
+  \item \textbf{Fast and repeated inference.} Calibration studies, sequential experiments, and
+  design-of-experiments loops evaluate posteriors for thousands of datasets and candidate designs; a
+  per-dataset MCMC or optimization in the loop is the bottleneck this method exists to remove
+  (Sec.~\ref{sec:cost}).
+\end{enumerate}
+
+\paragraph{Amortization.} Simulation-based (likelihood-free) inference addresses difficulties 1 and 6
+directly (the rest are what the rest of this report is about). Sampling from
 the joint is easy --- draw $m_j \sim p(m)$, simulate the system, apply the observation channel --- and
 yields training pairs $(m_j, \D_j)$. A conditional generative model $q_\theta(m \mid \D)$ trained on these
 pairs approximates the posterior \emph{for every dataset simultaneously}: the cost of inference is moved
@@ -285,7 +324,7 @@ Heston stochastic volatility & 5 & point & all 25 SBC cells pass; pair tokens gi
 Merton jump-diffusion & 5 & pair & 25/25 after the heavy-tail cure of Sec.~\ref{sec:anatomy}; residual width on the budget curve below \\
 H\'enon--Heiles oscillator \cite{lubich2013} & 3 & point & calibrated at every $K$ down to $6$; sparse designs yield honestly wide posteriors, not miscalibration \\
 Hodgkin--Huxley neuron & 4 & point & calibrated on mixed designs; one dense-design cell shows the budget signature \\
-Pharmacokinetics (Bateman) & 3 & point & at $K = 6$ blood draws: bias $-0.01$ to $-0.06$ sd, widths $1.09$--$1.33$ vs.\ exact-likelihood MCMC --- calibrated clinical-regime inference in milliseconds \\
+Pharmacokinetics (Bateman) & 3 & point & at $K = 6$ blood draws: bias $-0.01$ to $-0.06$ sd, widths $1.09$--$1.33$ vs.\ exact-likelihood MCMC --- calibrated clinical-regime inference in a fraction of a second \\
 Fisher--KPP reaction--diffusion PDE & 2 & point & posterior concentrates on the ridge $D \cdot r \approx \text{const}$; the residual along-ridge bias decays with budget (below) \\
 \bottomrule
 \end{tabular}
@@ -315,6 +354,67 @@ last, with no wall. Two negative controls complete the picture: doubling network
 budget changes almost nothing ($1.103$ vs.\ $1.120$), and refining the sampling ODE solver (RK4 with 60
 steps vs.\ midpoint with 20) changes nothing at all. Remaining inaccuracy is a compute price list, not an
 open problem.
+
+\section{Computational cost, and a measured head-to-head with \texttt{sbi}}
+\label{sec:cost}
+
+Claims about speed and about other packages should be measured, not asserted. We ran the directly
+comparable amortized method --- neural posterior estimation (NPE) as implemented in the \texttt{sbi}
+package (v0.27), the reference implementation used by the community benchmark \cite{lueckmann2021} --- on
+the one problem where the ground truth is beyond argument: geometric Brownian motion with the package's
+fixed design (95 observed grid values), scored against the exact closed-form posterior. Both learners
+received the \emph{same simulation budget} (20\,000 draws from the same prior and simulator), both ran
+with their default hyperparameters and their own stopping rules, on the same CPU (Apple M-series laptop).
+Accuracy is measured on 200 test datasets: signed bias of the posterior mean in units of the exact
+posterior's standard deviation, and the width ratio (method sd / exact sd). Inference draws 2\,000
+posterior samples per dataset. The script is \texttt{examples/baseline\_npe.py}; per-arm JSON is under
+\texttt{results/}.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lrrcc@{}}
+\toprule
+method (input given to it) & train & inference & $\mu$: bias / width & $\sigma$: bias / width \\
+\midrule
+\amortix\ CFM, raw prices (defaults) & $488$\,s & $426$\,ms & $+0.00$ / $1.00$ & $-0.00$ / $1.05$ \\
+\texttt{sbi} NPE, raw prices (defaults) & $29$\,s & $13$\,ms & $-0.02$ / $1.06$ & $+0.45 \pm 0.19$ / $2.64$ \\
+\texttt{sbi} NPE, hand log-prices & $34$\,s & $12$\,ms & $-0.04$ / $1.01$ & $+0.32 \pm 0.17$ / $2.29$ \\
+\texttt{sbi} NPE, hand log-returns & $10$\,s & $13$\,ms & $+0.07$ / $1.07$ & $+0.13 \pm 0.10$ / $1.44$ \\
+exact-likelihood MCMC & --- & $42$\,ms & \multicolumn{2}{c}{exact up to chain error (bias $-0.04$ / $+0.01$)} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Three readings of this table, in decreasing order of importance.
+
+\paragraph{Accuracy at defaults.} \amortix\ is statistically indistinguishable from the exact posterior on
+both parameters. Default NPE misses the volatility badly: $+0.45$\,sd bias at $2.6\times$ the correct
+width. The mechanism is precisely guise~1 of Sec.~\ref{sec:anatomy} --- raw prices have a floating
+multiplicative scale, and z-scoring (NPE's default preprocessing) cannot fix a per-dataset scale;
+\texttt{sbi} itself prints a warning about ``extreme outliers \dots\ precision loss during z-scoring'' on
+this data. This is not a defect of NPE as a method; it is what happens to \emph{any} conditional density
+estimator whose input representation is left to defaults on multiplicative data.
+
+\paragraph{The hand-engineering ladder.} Giving NPE progressively more of the analytically known answer
+--- log-prices, then per-gap log-returns (the exact coordinates of the likelihood factorization) ---
+improves it monotonically, yet even the log-return arm leaves the volatility $44\%$ too wide at this
+budget: the conditioner must still assemble the quadratic variation internally. With fully hand-derived
+sufficient statistics NPE would presumably close the gap --- but that regime requires having already
+solved the inference problem analytically, which is exactly the dependence this package exists to remove.
+\amortix\ reaches the exact posterior \emph{from raw prices}, because the learnable axis map and the
+increment-based pair tokens of Sec.~\ref{sec:arch} discover those coordinates during training.
+
+\paragraph{Cost, honestly.} At these defaults NPE trains $\sim 17\times$ faster and samples $\sim
+30\times$ faster than \amortix, and on this particular problem --- a tractable likelihood, a single dataset
+--- plain MCMC costs $42$\,ms and is exact: nothing amortized is worth it there. The amortized method earns
+its training bill when (a) no tractable likelihood exists (the stochastic-volatility, neuron, and most zoo
+cases), (b) thousands of datasets or candidate designs must be processed (calibration studies and
+design-of-experiments loops; \amortix\ encodes and integrates whole batches jointly), and (c) the input
+representation must not be a per-problem decision --- the first reading above priced that decision at a
+$+0.45$\,sd bias. For scale on modern hardware: one variable-design zoo case at base budget (20\,000
+simulations, 12\,000 steps, the $\approx 5 \times 10^5$-parameter model) trains in 8--12 minutes on a
+single H200 GPU; the $\times 6$-budget runs behind the sharpest numbers of Sec.~\ref{sec:budget} take
+about 50 minutes; the fixed-design gallery cases train in 8--45 minutes on a laptop CPU.
 
 \section{Failure anatomy: one disease, three guises}
 \label{sec:anatomy}
@@ -368,9 +468,10 @@ Every claim is read against a ladder of comparisons (shipped in the package; det
   (linear-Gaussian).
   \item \textbf{Reference posteriors.} Closed forms and validated exact-likelihood MCMC
   (Sec.~\ref{sec:protocol}) --- the instrument of record.
-  \item \textbf{External context.} BayesFlow \cite{radev2020}, the \texttt{sbi} package, and the
+  \item \textbf{External packages.} BayesFlow \cite{radev2020}, the \texttt{sbi} package, and the
   \texttt{sbibm} benchmark suite \cite{lueckmann2021}, with which our Hodgkin--Huxley and
-  ecology/epidemiology cases deliberately overlap. The differentiators of \amortix\ are the SDE-first
+  ecology/epidemiology cases deliberately overlap; the measured head-to-head with \texttt{sbi}'s NPE is
+  Sec.~\ref{sec:cost} and ships as \texttt{examples/baseline\_npe.py}. The differentiators of \amortix\ are the SDE-first
   problem zoo with real numerical solvers, single-model variable-design amortization, and the
   exact-reference evaluation harness.
 \end{itemize}

@@ -59,12 +59,38 @@ Measured rule of thumb: SBC at 300–500 simulations misses width ratios up to
 ~1.3 and its per-cell p-values flicker when residual biases sit at 0.1–0.2
 posterior-sd. SBC is the *screen*; Tier 2 is the *record*.
 
-## Tier 3 — external methods (context, not gating)
+## Tier 3 — external packages (measured, not just cited)
 
-For positioning against the wider SBI field: BayesFlow and the `sbi` package
-implement neighbouring amortized methods (NPE and friends); `sbibm`
-(Lueckmann et al., 2021) is the community benchmark suite — our
-Hodgkin–Huxley, Lotka–Volterra and SIR-family cases overlap with it by
-design. This repository's differentiators are the SDE-first zoo with real
-numerical solvers, variable-design amortization (p(m | any K points)), and
-the exact-reference evaluation harness above.
+`sbi` implements NPE — the directly comparable amortized method — and is the
+reference implementation behind the `sbibm` community benchmark (Lueckmann
+et al., 2021), with which our Hodgkin–Huxley, Lotka–Volterra and SIR-family
+cases overlap by design. The head-to-head is measured, not asserted:
+`examples/baseline_npe.py` trains both on the SAME simulation budget with
+each package's defaults and scores both against the exact GBM posterior
+(200 test datasets; bias in exact-posterior sd / width ratio; sbi 0.27,
+20k sims, one laptop CPU):
+
+| arm | train | inference/dataset | mu bias/width | sigma bias/width |
+|---|---|---|---|---|
+| amortix CFM, raw prices | 488 s | 426 ms | +0.00 / 1.00 | −0.00 / 1.05 |
+| sbi NPE, raw prices | 29 s | 13 ms | −0.02 / 1.06 | **+0.45 / 2.64** |
+| sbi NPE, hand log-prices | 34 s | 12 ms | −0.04 / 1.01 | +0.32 / 2.29 |
+| sbi NPE, hand log-returns | 10 s | 13 ms | +0.07 / 1.07 | +0.13 / 1.44 |
+| exact-likelihood MCMC | — | 42 ms | (exact) | (exact) |
+
+Readings: (1) at defaults amortix matches the exact posterior; NPE fails
+sigma by the floating-scale mechanism (sbi's own z-scoring warning fires) —
+the failure CALIBRATION.md's conditioning analysis predicts. (2) Hand-feeding
+NPE progressively better coordinates (log, then log-returns) improves it
+monotonically but even the sufficient-statistic-adjacent input leaves sigma
+44% too wide — the representation problem is the method gap, not the flow
+family. (3) Cost honesty: NPE trains and samples much faster at these
+defaults, and on tractable-likelihood single-dataset problems plain MCMC
+(42 ms, exact) beats everything amortized; amortix earns its bill when no
+likelihood exists, when thousands of datasets/designs are processed in
+batch, and when input representation must not be a per-problem decision.
+Reproduce with:
+
+```bash
+uv run --with sbi python examples/baseline_npe.py --arms amortix,npe,npe_log,npe_ret,mcmc
+```
