@@ -406,7 +406,14 @@ increment-based pair tokens of Sec.~\ref{sec:arch} discover those coordinates du
 
 \paragraph{Cost, honestly.} At these defaults NPE trains $\sim 17\times$ faster and samples $\sim
 30\times$ faster than \amortix, and on this particular problem --- a tractable likelihood, a single dataset
---- plain MCMC costs $42$\,ms and is exact: nothing amortized is worth it there. The amortized method earns
+--- plain MCMC costs $42$\,ms and is exact: nothing amortized is worth it there. But read the MCMC row for
+what it is: it exists only because GBM's likelihood is a three-line Gaussian formula, which is precisely why
+GBM was chosen to referee the two \emph{learned} methods. Transplanted to the rest of the zoo, the row
+changes character. For the reaction--diffusion problem one likelihood evaluation is one PDE solve (measured:
+$16$\,ms), so one MCMC dataset costs $\approx 3$ minutes of PDE solving against the network's half-second
+--- a $\sim 400\times$ gap that multiplies over every dataset and every candidate design. And for the
+stochastic-volatility and neuron models the row does not exist at all: there is no likelihood formula to
+evaluate, at any price. The amortized method earns
 its training bill when (a) no tractable likelihood exists (the stochastic-volatility, neuron, and most zoo
 cases), (b) thousands of datasets or candidate designs must be processed (calibration studies and
 design-of-experiments loops; \amortix\ encodes and integrates whole batches jointly), and (c) the input
