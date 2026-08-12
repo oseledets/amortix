@@ -36,14 +36,16 @@ protocol, and summarizes benchmark results on fifteen systems, including a stoch
 a hidden state, a jump-diffusion, the Hodgkin--Huxley neuron, a pharmacokinetic model, and a
 reaction--diffusion PDE. On the fixed-design benchmark, 31 of 32 parameters across nine systems pass strict
 calibration tests; on the variable-design zoo, posteriors agree with exact-likelihood references up to
-residuals that decay smoothly with training compute. A measured head-to-head against neural posterior
-estimation from the \texttt{sbi} package at equal simulation budget and default settings makes the case for
-the architecture: on raw prices NPE misses the volatility by $+0.45$ posterior-sd at $2.6\times$ the correct
-width --- exactly the failure our conditioning analysis predicts --- while this model is statistically
-indistinguishable from the exact posterior on the same data; we also report training and inference
-wall-clock for both, and for exact-likelihood MCMC. Finally we document, in plain language, the three
-failure modes we encountered --- all traceable to the conditioning of the encoder's input --- and their
-cures.
+residuals that decay smoothly with training compute. A measured head-to-head at equal simulation budget
+against four external engines from three codebases --- \texttt{sbi}'s NPE and FMPE, BayesFlow~2's coupling
+and flow-matching networks, and a port of the Simformer --- makes the case for the architecture: on raw
+prices all four miss the volatility (posterior widths $1.9$--$3.2\times$ the correct value, exactly the
+failure our conditioning analysis predicts), and even hand-fed the analytically correct coordinates their
+outcomes scatter between too-wide, overconfident, and biased --- while this model is statistically
+indistinguishable from the exact posterior working from raw data. Training and inference wall-clock is
+reported for every arm on CPU and on an H200 GPU, alongside exact-likelihood MCMC. Finally we document, in
+plain language, the three failure modes we encountered --- all traceable to the conditioning of the
+encoder's input --- and their cures.
 \end{abstract}
 
 \section{Problem setup}
@@ -371,44 +373,64 @@ posterior samples per dataset. The script is \texttt{examples/baseline\_npe.py};
 \texttt{results/}.
 
 \begin{center}
-\small
+\footnotesize
 \begin{tabular}{@{}lrrcc@{}}
 \toprule
 method (input given to it) & train & inference & $\mu$: bias / width & $\sigma$: bias / width \\
 \midrule
 \amortix\ CFM, raw prices (defaults) & $488$\,s & $426$\,ms & $+0.00$ / $1.00$ & $-0.00$ / $1.05$ \\
-\texttt{sbi} NPE, raw prices (defaults) & $29$\,s & $13$\,ms & $-0.02$ / $1.06$ & $+0.45 \pm 0.19$ / $2.64$ \\
+\texttt{sbi} NPE (MAF), raw prices & $29$\,s & $13$\,ms & $-0.02$ / $1.06$ & $+0.45 \pm 0.19$ / $2.64$ \\
 \texttt{sbi} NPE, hand log-prices & $34$\,s & $12$\,ms & $-0.04$ / $1.01$ & $+0.32 \pm 0.17$ / $2.29$ \\
 \texttt{sbi} NPE, hand log-returns & $10$\,s & $13$\,ms & $+0.07$ / $1.07$ & $+0.13 \pm 0.10$ / $1.44$ \\
+\texttt{sbi} FMPE (flow matching), raw prices & $27$\,s & $370$\,ms & $-0.03$ / $1.03$ & $+0.20 \pm 0.16$ / $2.46$ \\
+\texttt{sbi} FMPE, hand log-returns & $17$\,s & $333$\,ms & $+0.01$ / $1.03$ & $-0.02 \pm 0.07$ / $1.09$ \\
+BayesFlow~2 coupling, raw prices & $384$\,s & $4$\,ms & $-0.04$ / $0.95$ & $-0.13 \pm 0.11$ / $1.85$ \\
+BayesFlow~2 coupling, hand log-returns & $459$\,s & $6$\,ms & $-0.01$ / $\mathbf{0.42}$ & $-0.15 \pm 0.05$ / $\mathbf{0.54}$ \\
+BayesFlow~2 flow matching, raw prices & $220$\,s & $2220$\,ms & $+0.06$ / $1.00$ & $-0.36 \pm 0.11$ / $1.99$ \\
+BayesFlow~2 flow matching, hand log-returns & $296$\,s & $2311$\,ms & $-0.04$ / $\mathbf{0.46}$ & $-0.30 \pm 0.06$ / $0.85$ \\
+Simformer$^{\ast}$, raw prices & $591$\,s & $1057$\,ms & $-0.04$ / $1.08$ & $-0.30 \pm 0.20$ / $3.16$ \\
+Simformer$^{\ast}$, hand log-returns & $548$\,s & $\sim 10^3$\,ms & $-0.08$ / $1.10$ & $\mathbf{-0.48} \pm 0.02$ / $1.36$ \\
 exact-likelihood MCMC & --- & $42$\,ms & \multicolumn{2}{c}{exact up to chain error (bias $-0.04$ / $+0.01$)} \\
 \bottomrule
 \end{tabular}
+
+{\footnotesize $^{\ast}$Simformer \cite{gloeckler2024} is research code, not a packaged tool: we ported its
+authors' minimal example (transformer--diffusion over the joint, random condition masks, their
+architecture and SDE settings, full 75k-step training) and ran it on an H200 GPU; its timing rows are
+therefore not device-comparable with the rest, its accuracy rows are.}
 \end{center}
 
 Three readings of this table, in decreasing order of importance.
 
 \paragraph{Accuracy at defaults.} \amortix\ is statistically indistinguishable from the exact posterior on
-both parameters. Default NPE misses the volatility badly: $+0.45$\,sd bias at $2.6\times$ the correct
-width. The mechanism is precisely guise~1 of Sec.~\ref{sec:anatomy} --- raw prices have a floating
-multiplicative scale, and z-scoring (NPE's default preprocessing) cannot fix a per-dataset scale;
-\texttt{sbi} itself prints a warning about ``extreme outliers \dots\ precision loss during z-scoring'' on
-this data. This is not a defect of NPE as a method; it is what happens to \emph{any} conditional density
-estimator whose input representation is left to defaults on multiplicative data.
+both parameters. \emph{Four} different external engines given raw prices --- an autoregressive flow, two
+flow-matching implementations, and a joint transformer--diffusion --- all miss the volatility badly
+(widths $1.85$--$3.16$), and the mechanism is precisely guise~1 of Sec.~\ref{sec:anatomy}: raw prices have
+a floating multiplicative scale, and global z-scoring (the default preprocessing of all of them) cannot fix
+a per-dataset scale; \texttt{sbi} itself prints a warning about ``extreme outliers \dots\ precision loss
+during z-scoring'' on this data. This is not a defect of those methods; it is what happens to \emph{any}
+conditional density estimator whose input representation is left to defaults on multiplicative data.
 
-\paragraph{The hand-engineering ladder.} Giving NPE progressively more of the analytically known answer
---- log-prices, then per-gap log-returns (the exact coordinates of the likelihood factorization) ---
-improves it monotonically, yet even the log-return arm leaves the volatility $44\%$ too wide at this
-budget: the conditioner must still assemble the quadratic variation internally. With fully hand-derived
-sufficient statistics NPE would presumably close the gap --- but that regime requires having already
-solved the inference problem analytically, which is exactly the dependence this package exists to remove.
-\amortix\ reaches the exact posterior \emph{from raw prices}, because the learnable axis map and the
-increment-based pair tokens of Sec.~\ref{sec:arch} discover those coordinates during training.
+\paragraph{Hand-fed coordinates are a lottery; a learned representation is not.} Give each external arm
+the per-gap log-returns --- the exact coordinates of the likelihood factorization, i.e.\ the analytically
+known answer to the representation problem --- and the outcomes \emph{scatter in every failure direction}:
+\texttt{sbi} NPE stays $44\%$ too wide; \texttt{sbi} FMPE gets it essentially right ($1.09$; at fixed
+input, flow matching beats the autoregressive flow $1.09$ vs $1.44$ --- independent evidence for the CFM
+engine choice); both BayesFlow arms flip to \emph{overconfidence} (widths $0.42$--$0.85$ --- the silently
+dangerous direction); the Simformer port lands $-0.48$\,sd biased at $1.36\times$ width. None of these
+defects announces itself --- each was only visible against the exact reference, and SBC at practical sizes
+would reliably catch none of them (Sec.~\ref{sec:protocol}). \amortix\ reaches the exact posterior
+\emph{from raw prices}: the learnable axis map and increment-based pair tokens of Sec.~\ref{sec:arch}
+discover the log-return coordinates during training instead of receiving them, and the calibration
+machinery that verifies the result ships with the package. One fairness note: every external arm ran at
+its package defaults with our budget; a specialist could doubtless tune each better --- but ``requires a
+specialist per problem'' is precisely the dependence being measured.
 
 \paragraph{Cost, honestly.} At these defaults NPE trains $\sim 17\times$ faster and samples $\sim
 30\times$ faster than \amortix, and on this particular problem --- a tractable likelihood, a single dataset
 --- plain MCMC costs $42$\,ms and is exact: nothing amortized is worth it there. But read the MCMC row for
 what it is: it exists only because GBM's likelihood is a three-line Gaussian formula, which is precisely why
-GBM was chosen to referee the two \emph{learned} methods. Transplanted to the rest of the zoo, the row
+GBM was chosen to referee the \emph{learned} methods. Transplanted to the rest of the zoo, the row
 changes character. For the reaction--diffusion problem one likelihood evaluation is one PDE solve (measured:
 $16$\,ms), so one MCMC dataset costs $\approx 3$ minutes of PDE solving against the network's half-second
 --- a $\sim 400\times$ gap that multiplies over every dataset and every candidate design. And for the
@@ -422,6 +444,16 @@ $+0.45$\,sd bias. For scale on modern hardware: one variable-design zoo case at 
 simulations, 12\,000 steps, the $\approx 5 \times 10^5$-parameter model) trains in 8--12 minutes on a
 single H200 GPU; the $\times 6$-budget runs behind the sharpest numbers of Sec.~\ref{sec:budget} take
 about 50 minutes; the fixed-design gallery cases train in 8--45 minutes on a laptop CPU.
+
+\paragraph{On a data-center GPU.} The same benchmark script rerun on one H200 GPU
+(\texttt{--device cuda}): \amortix\ trains in $232$\,s ($2.1\times$ over the laptop) with posteriors
+\emph{bit-identical} to the CPU run --- the package deliberately keeps all stochastic generation on a CPU
+RNG so that changing the device cannot silently change results --- and batched inference drops to
+$72$\,ms per dataset ($135$\,ms for a single one). The tiny external models gain nothing from the GPU:
+\texttt{sbi}'s default MAF actually trains $6\times$ \emph{slower} there ($190$\,s vs $29$\,s; at this
+size the regime is kernel-launch-bound), and the accuracy verdicts of the table are unchanged on GPU
+(raw-price NPE $\sigma$ width $2.48$, FMPE $2.30$). Per-arm JSON for both devices is under
+\texttt{results/}.
 
 \section{Failure anatomy: one disease, three guises}
 \label{sec:anatomy}
@@ -475,10 +507,16 @@ Every claim is read against a ladder of comparisons (shipped in the package; det
   (linear-Gaussian).
   \item \textbf{Reference posteriors.} Closed forms and validated exact-likelihood MCMC
   (Sec.~\ref{sec:protocol}) --- the instrument of record.
-  \item \textbf{External packages.} BayesFlow \cite{radev2020}, the \texttt{sbi} package, and the
-  \texttt{sbibm} benchmark suite \cite{lueckmann2021}, with which our Hodgkin--Huxley and
-  ecology/epidemiology cases deliberately overlap; the measured head-to-head with \texttt{sbi}'s NPE is
-  Sec.~\ref{sec:cost} and ships as \texttt{examples/baseline\_npe.py}. The differentiators of \amortix\ are the SDE-first
+  \item \textbf{External packages.} The two maintained general-purpose toolkits are \texttt{sbi}
+  \cite{sbi2024} and BayesFlow~2 \cite{radev2020}; the community benchmark is \texttt{sbibm}
+  \cite{lueckmann2021}, with which our Hodgkin--Huxley and ecology/epidemiology cases deliberately overlap
+  (JAX users have \texttt{sbijax}; astrophysics has \texttt{swyft}). The measured head-to-heads are in
+  Sec.~\ref{sec:cost} and ship as \texttt{examples/baseline\_npe.py} and \texttt{baseline\_bayesflow.py}. The closest \emph{architecture} to ours in the literature is
+  the Simformer \cite{gloeckler2024}: a transformer--diffusion model over the joint of parameters and data
+  that also targets arbitrary conditionals and unstructured observations. It is research code rather than a
+  packaged tool, and it models the full joint where we amortize only the posterior over designs --- but its
+  existence corroborates the direction: token-based set encoders with continuous-time conditioning are the
+  right substrate for inference with variable observations. The differentiators of \amortix\ are the SDE-first
   problem zoo with real numerical solvers, single-model variable-design amortization, and the
   exact-reference evaluation harness.
 \end{itemize}
@@ -525,6 +563,10 @@ Validating Bayesian inference algorithms with simulation-based calibration. arXi
 Benchmarking simulation-based inference. AISTATS 2021.
 \bibitem{radev2020} S.~Radev, U.~Mertens, A.~Voss, L.~Ardizzone, U.~K\"othe.
 BayesFlow: Learning complex stochastic models with invertible neural networks. IEEE TNNLS 2020.
+\bibitem{sbi2024} J.~Boelts et al. sbi reloaded: a toolkit for simulation-based inference workflows.
+arXiv:2411.17337.
+\bibitem{gloeckler2024} M.~Gloeckler, M.~Deistler, C.~Weilbach, F.~Wood, J.~Macke.
+All-in-one simulation-based inference. ICML 2024.
 \bibitem{peebles2023} W.~Peebles, S.~Xie. Scalable diffusion models with transformers. ICCV 2023.
 \bibitem{lubich2013} C.~Lubich, I.~Oseledets, B.~Vandereycken.
 Time integration of tensor trains. SIAM J.\ Numer.\ Anal.\ 53(2), 2015.

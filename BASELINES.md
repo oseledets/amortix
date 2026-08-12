@@ -73,24 +73,45 @@ each package's defaults and scores both against the exact GBM posterior
 | arm | train | inference/dataset | mu bias/width | sigma bias/width |
 |---|---|---|---|---|
 | amortix CFM, raw prices | 488 s | 426 ms | +0.00 / 1.00 | −0.00 / 1.05 |
-| sbi NPE, raw prices | 29 s | 13 ms | −0.02 / 1.06 | **+0.45 / 2.64** |
+| sbi NPE (MAF), raw prices | 29 s | 13 ms | −0.02 / 1.06 | **+0.45 / 2.64** |
 | sbi NPE, hand log-prices | 34 s | 12 ms | −0.04 / 1.01 | +0.32 / 2.29 |
 | sbi NPE, hand log-returns | 10 s | 13 ms | +0.07 / 1.07 | +0.13 / 1.44 |
+| sbi FMPE, raw prices | 27 s | 370 ms | −0.03 / 1.03 | +0.20 / 2.46 |
+| sbi FMPE, hand log-returns | 17 s | 333 ms | +0.01 / 1.03 | −0.02 / 1.09 |
+| BayesFlow 2 coupling, raw prices | 384 s | 4 ms | −0.04 / 0.95 | −0.13 / 1.85 |
+| BayesFlow 2 coupling, hand log-returns | 459 s | 6 ms | −0.01 / **0.42** | −0.15 / **0.54** |
+| BayesFlow 2 flow matching, raw prices | 220 s | 2220 ms | +0.06 / 1.00 | −0.36 / 1.99 |
+| BayesFlow 2 flow matching, hand log-returns | 296 s | 2311 ms | −0.04 / **0.46** | −0.30 / 0.85 |
+| Simformer (port*), raw prices | 591 s | 1057 ms | −0.04 / 1.08 | −0.30 / 3.16 |
+| Simformer (port*), hand log-returns | 548 s | ~1000 ms | −0.08 / 1.10 | **−0.48** / 1.36 |
 | exact-likelihood MCMC | — | 42 ms | (exact) | (exact) |
 
-Readings: (1) at defaults amortix matches the exact posterior; NPE fails
+\* Simformer (Gloeckler et al., ICML 2024) is research code: we ported its
+authors' minimal example (joint transformer-diffusion, their architecture
+and settings, full 75k-step training) and ran it on an H200 GPU — timing
+rows not device-comparable, accuracy rows are.
+
+Readings: (1) at defaults amortix matches the exact posterior; FOUR external
+engines on raw prices (MAF / two flow matchings / joint diffusion) all fail
 sigma by the floating-scale mechanism (sbi's own z-scoring warning fires) —
 the failure CALIBRATION.md's conditioning analysis predicts. (2) Hand-feeding
-NPE progressively better coordinates (log, then log-returns) improves it
-monotonically but even the sufficient-statistic-adjacent input leaves sigma
-44% too wide — the representation problem is the method gap, not the flow
-family. (3) Cost honesty: NPE trains and samples much faster at these
-defaults, and on tractable-likelihood single-dataset problems plain MCMC
-(42 ms, exact) beats everything amortized; amortix earns its bill when no
-likelihood exists, when thousands of datasets/designs are processed in
-batch, and when input representation must not be a per-problem decision.
-Reproduce with:
+the exact likelihood coordinates (log-returns) makes the outcomes SCATTER,
+not converge: NPE stays 44% wide, FMPE is fine (1.09 — flow matching beats
+MAF at fixed input), BayesFlow flips to overconfidence (0.42–0.85, the
+dangerous direction), Simformer's port lands −0.48 sd biased. None of these
+announces itself; each is visible only against the exact reference. The
+representation problem is the method gap, and amortix solves it *learnably*,
+from raw data. (3) Cost honesty: the small externals train and sample
+faster at these defaults, and on tractable-likelihood single-dataset
+problems plain MCMC (42 ms, exact) beats everything amortized; amortix earns
+its bill when no likelihood exists, when thousands of datasets/designs are
+processed in batch, and when input representation must not be a per-problem
+decision. On an H200 GPU amortix trains 2.1× faster with bit-identical
+posteriors (CPU-RNG design) and 72 ms/dataset batched inference; per-arm
+JSON for both devices is in results/. Reproduce with:
 
 ```bash
-uv run --with sbi python examples/baseline_npe.py --arms amortix,npe,npe_log,npe_ret,mcmc
+uv run --with sbi python examples/baseline_npe.py --arms amortix,npe,npe_log,npe_ret,fmpe,fmpe_ret,mcmc
+KERAS_BACKEND=torch uv run --with bayesflow python examples/baseline_bayesflow.py --input raw
+KERAS_BACKEND=torch uv run --with bayesflow python examples/baseline_bayesflow.py --input returns
 ```
