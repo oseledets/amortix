@@ -1,6 +1,12 @@
 # amortix gallery — the honest scoreboard
 
-Re-measured on the fixed engine. Reproduce with
+Re-measured on the fixed engine. **The accuracy numbers below predate the
+universal learnable embedding** (`embed="auto"` → wbasis on all SDE cases; see
+[`CALIBRATION.md`](CALIBRATION.md)) — they were measured with the plain linear
+embedding and, for `gbm`, before its sigma centre bias (+0.48 posterior-sd)
+was removed. Calibration is fully re-verified on the new defaults (31/32);
+accuracy has not been re-measured since and likely understates the current
+engine on `gbm`, `sindy_sde`, and `stoch_lv`. Reproduce with
 
 ```bash
 uv run python examples/scoreboard.py --n_train 40000 --steps 12000 --n_test 100 --n_post 400

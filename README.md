@@ -47,7 +47,7 @@ Until it is on PyPI, point those at the repo or a built wheel, e.g.
 ```bash
 uv run amortix recover ou                  # train + benchmark one case vs exact MLE
 uv run amortix sbc ou                      # strict calibration check (SBC)
-uv run amortix gallery                     # all 8 cases vs their classical baselines
+uv run amortix gallery                     # all 9 fixed-design cases vs classical baselines
 ```
 
 ```python
@@ -82,6 +82,33 @@ near-optimal here: it carries a +31% small-sample bias in theta.
 New numbers will be published only alongside the controls described below.
 
 ---
+
+## Variable observation designs (design amortization)
+
+Beyond fixed observation grids, `amortix` trains a single network for
+**p(m | any K observation points)** — arbitrary times (and sensors), from a
+handful of points to near-continuous monitoring:
+
+```python
+from amortix import FlowPosterior, DESIGN_ZOO
+
+prob = DESIGN_ZOO["pk"]()                    # pharmacokinetics: irregular blood draws
+post = FlowPosterior(prob)                   # embed/rope resolve by a verified class rule
+post.fit(n_train=20000, steps=12000, retokenize=prob.make_retokenizer())
+samples = post.sample_batch([tokens_for_your_6_points], n=2000)
+```
+
+The design zoo (`amortix.problems.design_zoo`) ships Heston, Merton
+jump-diffusion, Hénon–Heiles, Hodgkin–Huxley, pharmacokinetics and a
+Fisher–KPP reaction–diffusion PDE, each with exact-likelihood factories for
+reference probes where tractable. The canonical training recipe (fresh
+designs every optimizer step + the mix-K law + budget per the measured price
+curves), the embedding class rule (Markov-observed → set-conditioned pairs,
+otherwise bare points), and the full experimental chronicle are in
+[CALIBRATION.md](CALIBRATION.md). What to compare against — three tiers of
+baselines from prior-only controls to validated reference posteriors — is in
+[BASELINES.md](BASELINES.md); a compact English summary of the whole study is
+in [report/techreport.pdf](report/techreport.pdf).
 
 ## Reading any number in this repo
 
@@ -147,7 +174,7 @@ FlowPosterior      = SetTransformer encoder + CFM velocity net + ODE sampler
 | `encoder.py`  | `SetTransformer`: RoPE attention, ReLU² FFN, RMSNorm, masked mean-pool |
 | `flow.py`     | `FlowPosterior`: CFM training + RK4 ODE posterior sampling |
 | `baselines.py`| classical baselines (OU MLE, SEIRD nonlinear LS) |
-| `problems/`   | the use-case gallery (8 cases, each with a SOTA baseline) |
+| `problems/`   | the use-case gallery (9 fixed-design cases + the 6-case design zoo) |
 
 Swap points: `SetTransformer` ↔ DeepSet/MLP encoder; Euler–Maruyama ↔ `torchsde`
 for stiff/multi-D systems; the velocity net / probability path are isolated.
