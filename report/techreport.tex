@@ -29,8 +29,8 @@ with conditional flow matching}\\[2mm]
 We describe \amortix, a package for amortized Bayesian estimation of the parameters of dynamical systems
 --- ordinary and stochastic differential equations and discretized PDEs --- from noisy observations at a
 finite set of time points. A conditional flow-matching model is trained once on simulated
-(parameter, data) pairs and thereafter produces posterior samples for any new dataset without likelihood
-evaluations or per-dataset optimization; a single trained network handles any number and placement of
+(parameter, data) pairs and thereafter produces posterior samples for any new observation set without likelihood
+evaluations or per-instance optimization; a single trained network handles any number and placement of
 observation points, the setting required for sequential experiment refinement and Bayesian experimental
 design. The package couples three components that we argue are only useful together: (i)~a set-transformer
 encoder whose input representation is learnable rather than prescribed --- a monotone mixture-of-scales
@@ -71,13 +71,13 @@ ambiguity becomes posterior spread and correlation, quantities one can act on --
 computational obstacles. First, for most stochastic and partially observed systems, the likelihood of the
 observations requires integrating over unobserved trajectory segments and is intractable or expensive.
 Second, modern workflows need posteriors \emph{repeatedly}: calibration studies process thousands of
-synthetic datasets, sequential experiments update the posterior after every new measurement, and Bayesian
+synthetic observation sets, sequential experiments update the posterior after every new measurement, and Bayesian
 experimental design compares candidate observation schedules by the posteriors they would produce --- so
-per-dataset MCMC or optimization inside such loops is the dominant cost even when a likelihood is
+per-instance MCMC or optimization inside such loops is the dominant cost even when a likelihood is
 available.
 
 Simulation-based inference (SBI) addresses both issues by learning a conditional generative model of the
-parameters given the data from simulated pairs --- parameters drawn from the prior, datasets produced by
+parameters given the data from simulated pairs --- parameters drawn from the prior, observation sets produced by
 the simulator --- thereby amortizing the cost of inference into a one-time training phase
 \citep{cranmer2020}. Neural posterior estimation (NPE) and its sequential variants
 \citep{papamakarios2016, greenberg2019} fit normalizing flows by maximum likelihood; flow-matching and
@@ -140,6 +140,9 @@ the trajectory is observed through a noisy channel at $K$ points:
   \D = \{(t_i, y_i)\}_{i=1}^{K}.
   \label{eq:obs}
 \end{equation}
+We call $\D$ the \emph{observation set} of one experiment; it is the entire input to inference.
+Training and evaluation below involve many independently simulated observation sets, each paired with
+the parameter that generated it.
 The observation operator $h$ may expose only part of the state: in the benchmarks below, only the price of
 an asset while its stochastic volatility is latent, only the membrane voltage of a neuron while its gating
 variables are latent, or only three spatial sensors of a PDE field. The target is the posterior
@@ -154,7 +157,7 @@ independent across observations with a known per-system law.
 
 \paragraph{Running example.} The Ornstein--Uhlenbeck process is used throughout to make constructions
 concrete: $dX = -\theta X\,dt + \sigma\,dW$ with $m = (\theta, \sigma)$, prior box
-$[0.3, 3] \times [0.2, 1.5]$, stationary start $X_0 \sim \N(0, \sigma^2/2\theta)$. A dataset is, for
+$[0.3, 3] \times [0.2, 1.5]$, stationary start $X_0 \sim \N(0, \sigma^2/2\theta)$. An observation set is, for
 instance, $K = 74$ noisy values of $X$ on a fixed two-rate grid, or --- in the variable-design setting ---
 any $K$ values at arbitrary times. Its posterior has the features that recur across the suite: the
 diffusion coefficient $\sigma$ is identified sharply by high-frequency increments; the reversion rate
@@ -166,8 +169,8 @@ built to detect all three.
 Although the posterior itself is intractable, sampling from the \emph{joint} distribution of parameters
 and data is easy: draw $m_j \sim p(m)$, simulate the system, apply the observation channel. This yields
 arbitrarily many training pairs $(m_j, \D_j)$, and a conditional generative model trained on them
-approximates the posterior for every dataset simultaneously --- the cost of inference is moved into a
-one-time training phase, and inference for a new dataset is a forward pass. We impose one requirement
+approximates the posterior for every observation set simultaneously --- the cost of inference is moved into a
+one-time training phase, and inference for a new observation set is a forward pass. We impose one requirement
 beyond standard amortization: a single trained network must remain correct for any number $K$ and any
 placement of observation times (and, for PDEs, sensor positions). Formally, for every subset $S$ of the
 measurement points of one experiment the network must approximate $p(m \mid S)$, and the family of
@@ -201,8 +204,8 @@ applied exactly once, at the end of sampling, to return draws on the original sc
 
 The transport is indexed by a \emph{virtual time} $\tau \in [0, 1]$ --- an algorithmic variable with
 no relation to the physical time $t$ at which the dynamical system is observed; $t$ appears only inside
-datasets, $\tau$ only in the transport. Subscripts in $\tau$ denote the position along the transport
-path: $m_1$ is a parameter drawn jointly with its dataset $\D$ (the endpoint), $m_0 \sim \N(0, I)$ is
+observation sets, $\tau$ only in the transport. Subscripts in $\tau$ denote the position along the transport
+path: $m_1$ is a parameter drawn jointly with its observation set $\D$ (the endpoint), $m_0 \sim \N(0, I)$ is
 pure reference noise --- not the transform of any parameter, but the raw material that the transport
 will have turned \emph{into} a posterior draw by $\tau = 1$ --- and between them lies the training
 interpolation $m_\tau = (1 - \tau)\, m_0 + \tau\, m_1$. The velocity network is trained to predict
@@ -223,7 +226,7 @@ The same estimator family, with a different conditioning architecture, is availa
 FMPE \citep{wildberger2023}; the comparison of Sec.~\ref{sec:headtohead} therefore isolates the effect of
 the input representation from the choice of generative engine.
 
-No likelihood evaluations, simulator gradients, or per-dataset optimization are required at any stage; the
+No likelihood evaluations, simulator gradients, or per-instance optimization are required at any stage; the
 simulator is executed only forward, during training-set generation.
 
 The training objective is consistent in the following sense.
@@ -250,9 +253,9 @@ anywhere in the suite lies along the flat ridge direction of the Fisher--KPP pos
 \section{Conditioning architecture}
 \label{sec:arch}
 
-The velocity field $v_\theta(m, \tau, \D)$ must be conditioned on a dataset that is a \emph{set of
-time-stamped measurements}, and three properties of that set drive the architecture: the number of
-observations $K$ varies from dataset to dataset (by two orders of magnitude in the variable-design
+The velocity field $v_\theta(m, \tau, \D)$ must be conditioned on an observation set of
+time-stamped measurements, and three properties of that set drive the architecture: the number of
+observations $K$ varies from experiment to experiment (by two orders of magnitude in the variable-design
 setting); the observation times are irregular real numbers, not grid indices; and the times carry all
 ordering information, so the output must not depend on how the observations happen to be stored. These
 properties rule out the fixed-length-vector conditioners that are the default in NPE implementations,
@@ -287,11 +290,11 @@ encoding with the object being generated,
   v_\theta(m, \tau, \D) \;=\; \mathrm{Dec}\bigl(m,\; \tau,\; \mathrm{Enc}(\D)\bigr),
   \label{eq:encdec}
 \end{equation}
-with explicit types: $\mathrm{Enc}$ maps a dataset --- a set of $K$ time-stamped observations --- to a
-memory of $K$ vectors, $\mathrm{Enc}(\D) \in \R^{K \times d_{\mathrm{model}}}$, computed once per
-dataset, and $\mathrm{Dec} : \R^{d} \times [0,1] \times \R^{K \times d_{\mathrm{model}}} \to
+with explicit types: $\mathrm{Enc}$ maps the observation set --- the $K$ time-stamped measurements of
+one experiment --- to a memory of $K$ vectors,
+$\mathrm{Enc}(\D) \in \R^{K \times d_{\mathrm{model}}}$, computed once per observation set, and $\mathrm{Dec} : \R^{d} \times [0,1] \times \R^{K \times d_{\mathrm{model}}} \to
 \R^{d}$ combines the current transport point and the virtual time with that memory. Two differences
-from the image and text instances of this pattern dictate the concrete form (Fig.~\ref{fig:arch}). First, the conditioning is not a fixed-size embedding but a set whose size $K$
+from the image and text instances of this pattern dictate the concrete form (Fig.~\ref{fig:arch}). First, the conditioning is not a fixed-size embedding but an observation set whose size $K$
 varies: $\mathrm{Enc}$ is therefore a transformer over per-observation tokens, its output is a
 \emph{memory} of $K$ encoded states rather than one pooled vector, and $\mathrm{Dec}$ reads the memory
 by cross-attention --- the one standard mechanism indifferent to $K$. Second, the generated object is
@@ -435,13 +438,13 @@ cases, as the factorization argument predicts. The package selects the construct
 flag.
 
 Two further normalization details matter for processes with jumps, where squared increments within a
-single dataset span several orders of magnitude and a global feature normalization becomes unstable ---
+single observation set span several orders of magnitude and a global feature normalization becomes unstable ---
 concretely, on the Merton benchmark the running normalization scale is set by rare jump outliers and
 the resulting representation drift produces a $+1.12$~sd volatility bias. First, increment features are
 logarithmically compressed before normalization; this is a near-identity on systems without jumps
 (since $\log(1+x) \approx x$ for small $x$) and by itself turns the Merton failure into a calibrated
 posterior across all 25 evaluation cases (Sec.~\ref{sec:anatomy}). Second, the normalization is made
-dataset-adaptive: robust summary statistics $s$ of the token set, pooled over non-padding positions,
+adaptive to the observation set: robust summary statistics $s$ of the observation set, pooled over non-padding positions,
 are mapped by a zero-initialized MLP to per-channel scale and shift corrections,
 \begin{equation}
   h_c \;\mapsto\; \bigl(1 + \gamma_c(s)\bigr)\, h_c + \beta_c(s)
@@ -450,7 +453,7 @@ are mapped by a zero-initialized MLP to per-channel scale and shift corrections,
 --- a feature-wise affine modulation, FiLM in the terminology of \citet{perez2018}. Its measured
 contribution is specific and modest: it removes a residual $+0.27$~sd bias that survives on the densest
 Merton designs (the effective jump-detection threshold shifts with the unknown volatility), and it does
-so as well as a hand-crafted per-dataset rescaling, within error bars
+so as well as a hand-crafted per-observation-set rescaling, within error bars
 ($+0.13 \pm 0.06$ vs $+0.09 \pm 0.05$~sd; Sec.~\ref{sec:anatomy}). Three implementation conditions are
 necessary and were each found through a failure: zero initialization (training starts from the working
 baseline), modulation applied \emph{after} the running normalization (the reverse ordering re-creates
@@ -477,8 +480,8 @@ with bias unchanged; the residual is closed by the training procedure of the nex
 $3 \times 10^{-4}$ under a cosine schedule with linear warmup, batch size 64, and gradient clipping;
 evaluation uses an exponential moving average of the weights with decay $0.999$. At every optimizer step
 the virtual times $\tau$ are drawn afresh (stratified over $[0,1]$) together with fresh reference noise $m_0$,
-so no pairing between datasets and virtual times is ever repeated. For fixed-design problems the training
-set consists of $n$ simulated datasets and training runs for a fixed number of epochs over it; the
+so no pairing between observation sets and virtual times is ever repeated. For fixed-design problems the training
+set consists of $n$ simulated observation sets and training runs for a fixed number of epochs over it; the
 gallery of Sec.~\ref{sec:gallery} uses $n = 40{,}000$ simulations and 35 epochs.
 
 \paragraph{Design amortization.} Training data are simulated once on a fine grid; observation designs are
@@ -512,11 +515,11 @@ Two instruments with different roles are used throughout, plus a diagnostic prob
 
 SBC \citep{talts2018} tests a necessary condition: for $m^\ast \sim p(m)$ and $\D \sim p(\D \mid m^\ast)$,
 the rank of each component of $m^\ast$ among posterior samples must be uniform. We run SBC per parameter
-(uniformity test on 500 simulated datasets with 200 posterior draws each unless stated; $p > 0.05$ passes)
+(uniformity test on 500 simulated observation sets with 200 posterior draws each unless stated; $p > 0.05$ passes)
 and report coverage of central $50\%$ and $90\%$ intervals.
 
 The power of the test at this size is limited, and because our conclusions depend on knowing that limit,
-we measured it: on cases where an exact reference is available, SBC at $300$--$500$ datasets fails to
+we measured it: on cases where an exact reference is available, SBC at $300$--$500$ observation sets fails to
 reject posterior width ratios up to $\approx 1.3$, and its per-parameter $p$-values are unstable between
 retrainings when residual biases are in the range $0.1$--$0.2$ posterior standard deviations. SBC also
 cannot penalize a posterior that ignores the data and returns the prior; the prior-mean and ridge controls
@@ -600,7 +603,7 @@ Fisher--KPP & PDE (64-point grid) & 2 & 3 sensors & variable & PDE-likelihood MC
 \bottomrule
 \end{tabular}
 \caption{The benchmark suite. ``obs.'' lists the observed coordinate when the state is only partially
-visible; ``design'' distinguishes the fixed-grid gallery from variable-design systems, where every dataset
+visible; ``design'' distinguishes the fixed-grid gallery from variable-design systems, where every observation set
 carries its own set of (time, sensor) observation points. Dashes in the last column indicate systems where
 no tractable reference exists --- these are evaluated by SBC and controls only, which is precisely the
 regime that motivates carrying exact-reference systems in the same suite.}
@@ -666,16 +669,16 @@ a reference to score against.}
 
 Table~\ref{tab:gallery} summarizes the nine fixed-design systems. One model configuration (the default
 of Sec.~\ref{sec:arch}) is trained per system on $40{,}000$ simulations for 35 epochs (about 11 minutes
-per system on one H200 GPU). Calibration is assessed by SBC over 500 synthetic datasets with 200
+per system on one H200 GPU). Calibration is assessed by SBC over 500 synthetic observation sets with 200
 posterior draws each, and reported in two forms. \emph{Coverage error} asks the practical question: if
 the posterior's central $q\%$ interval is trusted, how often does it actually contain the truth? The
 table reports the mean absolute deviation of empirical from nominal coverage across levels --- zero is
-perfect, and at 500 datasets pure sampling noise alone produces about $1$--$1.5$ percentage points, so
+perfect, and at 500 observation sets pure sampling noise alone produces about $1$--$1.5$ percentage points, so
 the observed mean of $1.4$\,pp is at the resolution limit of the test. \emph{SBC pass} counts
 parameters whose rank distribution is consistent with uniformity at $p > 0.05$; with 32 tests, one or
 two rejections are expected even from a perfectly calibrated model. Of 32 parameters, 31 pass. The
 failing case in this run is the mean-level parameter $b$ of Cox--Ingersoll--Ross, and the rank data show
-what the failure is: the truth falls above the posterior median in $56\%$ of datasets instead of
+what the failure is: the truth falls above the posterior median in $56\%$ of observation sets instead of
 $50\%$, i.e.\ a location shift of roughly $0.15$ posterior sd, while interval coverage remains intact
 ($48\%$ and $88\%$ at nominal $50\%$ and $90\%$). In an independent earlier training run of the same
 configuration, 31 of 32 parameters passed as well but the marginal case was a different one (stochastic
@@ -692,10 +695,10 @@ parameters of the least calibrated one.
 \centering
 \includegraphics[width=0.98\linewidth]{figs/coverage.pdf}
 \caption{Empirical coverage of central credible intervals for the fixed-design gallery, shown as the
-deviation from the nominal level. For each system, 500 synthetic datasets are simulated with known
+deviation from the nominal level. For each system, 500 synthetic observation sets are simulated with known
 parameters and the posterior's central $q\%$ interval is checked against the truth; a calibrated
 posterior has zero deviation at every level, and the gray band is the 99\% pointwise range induced by
-the finite number of test datasets. Left: deviation averaged over each system's parameters. Right:
+the finite number of test observation sets. Left: deviation averaged over each system's parameters. Right:
 individual parameters of Cox--Ingersoll--Ross, the system with the largest deviation in this run; the
 $b$ curve reflects the $\approx 0.15$~sd location shift discussed in the text. Rank-level detail for
 all 32 parameters is in Appendix~\ref{app:systems} (Fig.~\ref{fig:sbcranks}).}
@@ -724,7 +727,7 @@ total / mean               & 32 & 1.4\,pp & 31/32 & 49\% & 89\% \\
 \end{tabular}
 \caption{Fixed-design gallery: one default model per system, $40{,}000$ simulations, 35 epochs.
 Coverage error is the mean absolute deviation of central-interval coverage from its nominal level ---
-zero is perfect, and pure sampling noise at 500 test datasets contributes about $1$--$1.5$\,pp, so
+zero is perfect, and pure sampling noise at 500 test observation sets contributes about $1$--$1.5$\,pp, so
 values in this range indicate calibration at the resolution limit of the test. ``SBC pass'' counts
 parameters consistent with uniformity at $p > 0.05$; with 32 tests, one or two rejections are expected
 by chance even from an exact posterior.}
@@ -736,7 +739,7 @@ by chance even from an exact posterior.}
 
 Scalar summaries answer whether the posterior is calibrated on average; Fig.~\ref{fig:pairs} shows the
 posteriors themselves. For every system with an exact or validated reference, the joint posterior of the
-trained model is overlaid on the reference for one representative test dataset --- three systems with
+trained model is overlaid on the reference for one representative test observation set --- three systems with
 simple posteriors that serve as checks (linear-Gaussian, GBM, OU), and three whose posterior geometry
 is nontrivial: the Merton
 jump-diffusion, where volatility and jump rate compete to explain the same variance; pharmacokinetics at
@@ -751,7 +754,7 @@ posteriors across the suite; the remaining subsections quantify the edges.
 \centering
 \includegraphics[width=0.98\linewidth]{figs/pairs_hard.pdf}
 \caption{Joint posteriors of \amortix\ (filled contours: 39\% and 86\% highest-density regions) against
-exact or validated-MCMC reference posteriors (open contours, same levels) on one test dataset per
+exact or validated-MCMC reference posteriors (open contours, same levels) on one test observation set per
 system; crosses mark the true parameters. Top row: systems with closed-form or cheap exact references.
 Bottom row: systems where the reference itself required exact-likelihood MCMC with two-chain validation
 --- including the ridge-shaped Fisher--KPP posterior, where the model reproduces the curvature, not just
@@ -835,11 +838,11 @@ $75{,}000$-step training). All arms receive the same simulation budget ($20{,}00
 prior and simulator), run with their package defaults and their own stopping rules, and are compared on
 exactly three axes: training cost (wall-clock time to fit at this budget), accuracy (posterior-mean bias
 and width ratio per parameter against the reference posterior, as in Sec.~\ref{sec:refs}), and
-inference cost (wall-clock time per dataset for $2{,}000$ posterior samples). Because these estimators consume fixed-length vectors, the comparison uses fixed
+inference cost (wall-clock time per observation set for $2{,}000$ posterior samples). Because these estimators consume fixed-length vectors, the comparison uses fixed
 observation designs. Three systems are used, chosen to separate the possible explanations of any
 performance gap: a multiplicative process where input conditioning is hostile (GBM, exact conjugate
 reference), an additive process where it is comparatively benign (OU, exact-likelihood MCMC reference,
-two validated chains per dataset), and a PDE where every likelihood evaluation requires a forward solve (Fisher--KPP), so that the cost
+two validated chains per observation set), and a PDE where every likelihood evaluation requires a forward solve (Fisher--KPP), so that the cost
 relationship between reference and amortized inference is inverted. Where informative, external arms are additionally given
 hand-derived inputs --- log-prices, or per-gap log-returns, the exact coordinates of the GBM likelihood
 factorization --- to separate the effect of the input representation from the generative engine.
@@ -878,8 +881,8 @@ exact-likelihood MCMC & --- & $42$\,ms & \multicolumn{2}{c}{reference (chain che
 \bottomrule
 \end{tabular}
 \caption{GBM, all methods on raw price data at package defaults: training cost, accuracy against the
-exact posterior (bias in reference-sd units; width ratio, $1$ exact), and inference cost per dataset for
-$2{,}000$ samples. Fixed 95-point design, $20{,}000$-simulation budget, 200 test datasets; timings on
+exact posterior (bias in reference-sd units; width ratio, $1$ exact), and inference cost per observation set for
+$2{,}000$ samples. Fixed 95-point design, $20{,}000$-simulation budget, 200 test observation sets; timings on
 one laptop CPU. $^{\ast}$Simformer is research code ported from its authors' minimal example and run on
 an H200 GPU: its timing entries are not device-comparable with the rest, its accuracy entries are.}
 \label{tab:gbmcomp}
@@ -921,7 +924,7 @@ standard deviation.}
 no floating scale --- separates the candidate explanations of the GBM results
 (Table~\ref{tab:oucomp}). The reference is exact-likelihood MCMC (per-gap Euler--Maruyama transitions
 plus the stationary initial density; $62$\,ms per chain; two-chain validation: worst mean discrepancy
-$0.29$~sd, mean $0.08$~sd over 100 datasets). The external estimators improve markedly relative to GBM:
+$0.29$~sd, mean $0.08$~sd over 100 observation sets). The external estimators improve markedly relative to GBM:
 the volatility bias is no longer significant ($+0.19 \pm 0.19$ for NPE, $+0.08 \pm 0.12$ for FMPE), and
 the width inflation drops from $2.5$--$3.2$ to $1.9$ (NPE) and $1.6$ (FMPE). This is the pattern the
 conditioning analysis predicts: the form-1 pathology of Sec.~\ref{sec:anatomy} is absent by
@@ -939,10 +942,10 @@ method (raw values as input) & train & inference & $\theta$: bias / width & $\si
 \amortix\ CFM & $183$\,s & $32$\,ms & $-0.01$ / $1.03$ & $+0.01$ / $1.05$ \\
 \texttt{sbi} NPE & $128$\,s & $10$\,ms & $+0.07$ / $1.15$ & $+0.19 \pm 0.19$ / $1.88$ \\
 \texttt{sbi} FMPE & $87$\,s & $147$\,ms & $+0.11$ / $1.01$ & $+0.08 \pm 0.12$ / $1.60$ \\
-exact-likelihood MCMC & --- & $124$\,ms & \multicolumn{2}{c}{reference (two chains per dataset)} \\
+exact-likelihood MCMC & --- & $124$\,ms & \multicolumn{2}{c}{reference (two chains per observation set)} \\
 \bottomrule
 \end{tabular}
-\caption{Ornstein--Uhlenbeck, fixed 74-point design, $20{,}000$-simulation budget, 100 test datasets,
+\caption{Ornstein--Uhlenbeck, fixed 74-point design, $20{,}000$-simulation budget, 100 test observation sets,
 one H200 GPU (MCMC on its CPU; time given for the two validation chains). The additive control: external
 biases vanish and widths improve but remain inflated; compare Table~\ref{tab:gbmcomp}.}
 \label{tab:oucomp}
@@ -953,14 +956,14 @@ first two: every likelihood evaluation requires solving the forward model. A one
 reaction--diffusion equation is inexpensive in absolute terms ($16$\,ms per solve here); what makes the
 case informative is the \emph{ratio} between reference and amortized inference, because both sides
 scale linearly with the solve cost --- a chain of $n$ likelihood evaluations costs $n$ solves per
-dataset whatever the forward model, while the amortized cost per dataset does not involve the simulator
+observation set whatever the forward model, while the amortized cost per observation set does not involve the simulator
 at all. The measured ratio below transfers to genuinely expensive simulators, where the same reference
-sampler would take days per dataset. A single fixed design of $K = 40$ random (time, sensor) points is shared by all
-datasets and methods; the reference is the PDE-likelihood sampler of Sec.~\ref{sec:refs} with two
-validated chains per dataset ($271$\,s per dataset for the pair; two-chain validation over 32 datasets:
+sampler would take days per observation set. A single fixed design of $K = 40$ random (time, sensor) points is shared by all
+observation sets and methods; the reference is the PDE-likelihood sampler of Sec.~\ref{sec:refs} with two
+validated chains per observation set ($271$\,s per observation set for the pair; two-chain validation over 32 observation sets:
 worst mean discrepancy $0.22$~sd, mean $0.07$~sd). Table~\ref{tab:kppcomp} gives the results.
-\amortix\ matches the reference ($1.02$/$1.04$ width, biases within $0.13$~sd) at $31$\,ms per dataset;
-its entire training cost ($379$\,s) equals the reference cost of fewer than three datasets, so
+\amortix\ matches the reference ($1.02$/$1.04$ width, biases within $0.13$~sd) at $31$\,ms per observation set;
+its entire training cost ($379$\,s) equals the reference cost of fewer than three observation sets, so
 amortization pays for itself almost immediately in any repeated-inference setting. NPE at defaults shows
 moderate width inflation ($1.26$--$1.28$); FMPE at defaults fails outright on the diffusivity
 ($+7.3 \pm 2.7$~sd bias at $12.5\times$ width) while remaining reasonable on the reaction rate --- a
@@ -977,13 +980,13 @@ method (40 observed values as input) & train & inference & $D$: bias / width & $
 \amortix\ CFM & $379$\,s & $31$\,ms & $-0.05$ / $1.02$ & $+0.13$ / $1.04$ \\
 \texttt{sbi} NPE & $218$\,s & $7$\,ms & $+0.19 \pm 0.12$ / $1.28$ & $-0.06$ / $1.26$ \\
 \texttt{sbi} FMPE & $115$\,s & $405$\,ms & $+7.3 \pm 2.7$ / $12.5$ & $-0.25 \pm 0.10$ / $1.19$ \\
-PDE-likelihood MCMC & --- & $271$\,s & \multicolumn{2}{c}{reference (two chains per dataset)} \\
+PDE-likelihood MCMC & --- & $271$\,s & \multicolumn{2}{c}{reference (two chains per observation set)} \\
 \bottomrule
 \end{tabular}
 \caption{Fisher--KPP, fixed $K = 40$ spatio-temporal design, $20{,}000$-simulation budget, 32 test
-datasets, one H200 GPU (MCMC on its CPU pool). One likelihood evaluation is one PDE solve, so the
-reference costs $271$\,s per dataset; the training cost of the amortized model equals the reference
-cost of fewer than three datasets.}
+observation sets, one H200 GPU (MCMC on its CPU pool). One likelihood evaluation is one PDE solve, so the
+reference costs $271$\,s per observation set; the training cost of the amortized model equals the reference
+cost of fewer than three observation sets.}
 \label{tab:kppcomp}
 \end{table}
 
@@ -1001,7 +1004,7 @@ fixed-length inputs by default.
 
 Table~\ref{tab:designarms} and Fig.~\ref{fig:widthk} compare encoder variants for design amortization on GBM, trained at
 $K \sim$ log-uniform$[2, 128]$ random-time designs and evaluated against the exact per-design posterior
-(96 datasets per bucket). Three observations organize the table. First, index-based positions combined
+(96 observation sets per bucket). Three observations organize the table. First, index-based positions combined
 with in-place subsampling during training (leaving kept tokens at spread positions while inference packs
 contiguously) produce biases of $+1.1$ to $+3.3$ posterior sd with no individually incorrect component ---
 the positional pathology of Sec.~\ref{sec:trope}; repacking or replacing positions with time phases
@@ -1033,7 +1036,7 @@ pair tokens + full training procedure & 1.06 & 1.06 & 1.05 & 1.07 & --- \\
 \bottomrule
 \end{tabular}
 \caption{GBM with variable designs: posterior width for the volatility $\sigma$ against the exact
-per-design posterior (96 datasets per design-size bucket) and, where measured, the probe $R^2$ for
+per-design posterior (96 observation sets per design-size bucket) and, where measured, the probe $R^2$ for
 $\log K$ from the pooled encoder output. The table tracks $\sigma$ because it is the parameter whose
 posterior width is governed by the observation density --- the drift $\mu$ is weakly informed at every
 $K$, and all variants recover its posterior within a few percent, so it does not discriminate between
@@ -1061,15 +1064,15 @@ The default model trains in minutes to tens of minutes per system: on one H200 G
 system at base budget ($20{,}000$ simulations, $12{,}000$ steps) takes 8--12 minutes, and the $\times 6$
 budget behind the sharpest numbers of Fig.~\ref{fig:budget} takes about 50 minutes; on a laptop CPU the
 fixed-design gallery systems take 8--45 minutes. Inference draws $2{,}000$ posterior samples for a
-dataset in $426$\,ms on the laptop CPU and $72$\,ms (batched; $135$\,ms single) on the GPU. GPU and CPU
+observation set in $426$\,ms on the laptop CPU and $72$\,ms (batched; $135$\,ms single) on the GPU. GPU and CPU
 runs produce bit-identical posteriors because all stochastic generation is kept on a CPU random number
 generator by design, so a device change cannot silently alter results. For orientation against
 non-amortized inference: on GBM, whose likelihood is a three-line formula, adaptive Metropolis costs
-$42$\,ms per dataset and amortization buys nothing for a single dataset; on Fisher--KPP, where one
-likelihood evaluation is one PDE solve ($16$\,ms), the same reference sampler costs minutes per dataset
+$42$\,ms per observation set and amortization buys nothing for a single observation set; on Fisher--KPP, where one
+likelihood evaluation is one PDE solve ($16$\,ms), the same reference sampler costs minutes per observation set
 (measured in Table~\ref{tab:kppcomp}); and for Heston or Hodgkin--Huxley no likelihood formula is
 available at any price. The regime where amortization pays is determined by the likelihood cost, the
-number of datasets, and --- as Table~\ref{tab:gbmcomp} indicates --- by whether a trustworthy input
+number of observation sets, and --- as Table~\ref{tab:gbmcomp} indicates --- by whether a trustworthy input
 representation for a conditional density estimator is available without one.
 
 \section{Failure analysis: conditioning of the encoder input}
@@ -1101,9 +1104,9 @@ $+1.12$~sd volatility bias. Encoder probing (Sec.~\ref{sec:probing}) shows the i
 repair targets representation stability: logarithmic compression of increment features (near-identity on
 clean diffusions since $\log(1+x) \approx x$ for small $x$) restores all 25 evaluation cases. A precision
 follow-up against the Poisson-mixture reference then isolated a smaller ($+0.27$~sd) residual whose
-mechanism is a jump-classification threshold that floats with the unknown volatility; a per-dataset
+mechanism is a jump-classification threshold that floats with the unknown volatility; a per-observation-set
 set-conditioning module (pooled statistics modulating feature channels, initialized to the identity)
-removes it as effectively as a hand-crafted per-dataset rescaling ($+0.127 \pm 0.055$ vs
+removes it as effectively as a hand-crafted per-observation-set rescaling ($+0.127 \pm 0.055$ vs
 $+0.094 \pm 0.054$~sd, statistically indistinguishable). This was one of three such paired comparisons in
 the project (log coordinate, set size, robust scaling); in all three the learnable module matched the
 hand-crafted repair once initialized at the working configuration. We summarize the pattern as a design
@@ -1114,7 +1117,7 @@ Three implementation conditions proved necessary for the set-conditioning module
 because each was found through a failure: the modulation must be zero-initialized (training must start
 from the working baseline); it must act after feature normalization, not before (the reverse ordering
 re-creates the representation drift it is meant to cure); and pooled set statistics must exclude padding
-positions (a masking error here made padded and packed representations of the same dataset inequivalent,
+positions (a masking error here made padded and packed representations of the same observation set inequivalent,
 detected only because SBC and the exact-reference probe disagreed).
 
 \section{Discussion and limitations}
@@ -1251,7 +1254,7 @@ SINDy-SDE & $c_0$: 0.06 \quad $c_1$: 0.96 \quad $c_2$: 0.46 \quad $c_3$: 0.80 \q
 \bottomrule
 \end{tabular}
 \caption{Per-parameter SBC uniformity $p$-values for the fixed-design gallery run of
-Table~\ref{tab:gallery} (500 datasets $\times$ 200 draws; $p > 0.05$ passes). The single failure is
+Table~\ref{tab:gallery} (500 observation sets $\times$ 200 draws; $p > 0.05$ passes). The single failure is
 marked in bold; see Sec.~\ref{sec:gallery} for its behavior across retrainings.}
 \label{tab:pvals}
 \end{table}
@@ -1260,11 +1263,11 @@ marked in bold; see Sec.~\ref{sec:gallery} for its behavior across retrainings.}
 \centering
 \includegraphics[width=0.98\linewidth]{figs/sbc_ecdf.pdf}
 \caption{Calibration check for the fixed-design gallery. Procedure: for each system, 500 synthetic
-datasets are simulated with known parameters; for each dataset the model produces 200 posterior draws,
+observation sets are simulated with known parameters; for each observation set the model produces 200 posterior draws,
 and the rank of the true parameter among the draws is recorded. If the posterior is calibrated, these
 ranks are uniform. Each curve shows, for one parameter, the deviation of the empirical CDF of normalized
 ranks from the uniform diagonal; the gray band is the 99\% range attributable to sampling noise at 500
-datasets. A curve bulging below zero on the left indicates a posterior shifted low relative to the
+observation sets. A curve bulging below zero on the left indicates a posterior shifted low relative to the
 truth, and vice versa. All curves stay within the band except Cox--Ingersoll--Ross $b$, whose deviation
 corresponds to the $\approx 0.15$~sd location shift discussed in the text.}
 \label{fig:sbcranks}
