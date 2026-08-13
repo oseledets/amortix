@@ -189,23 +189,22 @@ matching \citep{lipman2023}.
 
 Concretely, parameters are first mapped componentwise to normalized coordinates
 \begin{equation}
-  z = \Phi^{-1}\!\bigl(F_{\text{prior}}(m)\bigr) \in \R^{d},
+  \tilde m = \Phi^{-1}\!\bigl(F_{\text{prior}}(m)\bigr) \in \R^{d},
   \label{eq:probit}
 \end{equation}
-where $F_{\text{prior}}$ collects the marginal prior CDFs and $\Phi$ is the standard normal CDF; in
-$z$-coordinates the prior is exactly $\N(0, I)$, box constraints disappear, and --- usefully --- the
+where $F_{\text{prior}}$ collects the marginal prior CDFs and $\Phi$ is the standard normal CDF; in these normalized coordinates the prior is exactly $\N(0, I)$, box constraints disappear, and --- usefully --- the
 uninformative limit costs nothing: when the data carry no information the posterior coincides with the
-reference and the transport is the identity. Let $z_0 \sim \N(0, I)$ be a reference draw and $z_1$ the
+reference and the transport is the identity. Let $\tilde m_0 \sim \N(0, I)$ be a reference draw and $\tilde m_1$ the
 normalized parameter drawn jointly with its dataset $\D$. Define the linear interpolation
-$z_t = (1 - t) z_0 + t z_1$ and train a velocity network by regression:
+$\tilde m_t = (1 - t) \tilde m_0 + t \tilde m_1$ and train a velocity network by regression:
 \begin{equation}
   \mathcal{L}(\theta) =
-  \E_{\,m,\D,\; z_0 \sim \N(0,I),\; t \sim U[0,1]}
-  \bigl\| v_\theta(z_t,\, t,\, \D) - (z_1 - z_0) \bigr\|^2 .
+  \E_{\,m,\D,\; \tilde m_0 \sim \N(0,I),\; t \sim U[0,1]}
+  \bigl\| v_\theta(\tilde m_t,\, t,\, \D) - (\tilde m_1 - \tilde m_0) \bigr\|^2 .
   \label{eq:cfm}
 \end{equation}
 The minimizer of \eqref{eq:cfm} is the marginal velocity field whose flow transports $\N(0, I)$ at $t = 0$
-to $p(z_1 \mid \D)$ at $t = 1$ \citep{lipman2023}. Sampling integrates $\dot z = v_\theta(z, t, \D)$ with a fixed-step midpoint scheme and maps back
+to $p(\tilde m_1 \mid \D)$ at $t = 1$ \citep{lipman2023}. Sampling integrates $\dot{\tilde m} = v_\theta(\tilde m, t, \D)$ with a fixed-step midpoint scheme and maps back
 through the inverse of \eqref{eq:probit}; the number of steps is a solver-accuracy parameter fixed once
 by a convergence check --- refining the default (20 steps) to fourth-order Runge--Kutta with three times
 as many steps changes no benchmark statistic (Sec.~\ref{sec:budget}). Evaluation uses an exponential moving average of the weights.
@@ -219,9 +218,9 @@ simulator is executed only forward, during training-set generation.
 The training objective is consistent in the following sense.
 
 \begin{proposition}[consistency]
-Let $(m, \D) \sim p(m)\,p(\D \mid m)$ and let $z_1$ be given by \eqref{eq:probit}. If the loss
+Let $(m, \D) \sim p(m)\,p(\D \mid m)$ and let $\tilde m_1$ be given by \eqref{eq:probit}. If the loss
 \eqref{eq:cfm} is minimized over all measurable velocity fields, then for $p(\D)$-almost every $\D$ the
-flow of the minimizer transports $\N(0, I)$ at $t = 0$ to the conditional law $p(z_1 \mid \D)$ at
+flow of the minimizer transports $\N(0, I)$ at $t = 0$ to the conditional law $p(\tilde m_1 \mid \D)$ at
 $t = 1$; equivalently, the sampling procedure above draws exactly from the posterior
 \citep{lipman2023, wildberger2023}.
 \end{proposition}
@@ -240,7 +239,7 @@ anywhere in the suite lies along the flat ridge direction of the Fisher--KPP pos
 \section{Conditioning architecture}
 \label{sec:arch}
 
-The velocity field $v_\theta(z, t, \D)$ must be conditioned on a dataset that is a \emph{set of
+The velocity field $v_\theta(\tilde m, t, \D)$ must be conditioned on a dataset that is a \emph{set of
 time-stamped measurements}, and three properties of that set drive the architecture: the number of
 observations $K$ varies from dataset to dataset (by two orders of magnitude in the variable-design
 setting); the observation times are irregular real numbers, not grid indices; and the times carry all
@@ -255,7 +254,7 @@ throughout this section, a \emph{token}.
 \caption{Model architecture; arrows denote data flow, bottom to top. Left: each observation is
 featurized and linearly embedded into one token; $L$ transformer encoder blocks, whose attention phases
 are computed from the physical observation times (Sec.~\ref{sec:trope}), produce a memory $H$ of $K$
-encoded states. Middle: the $d$ components of the flow state $z_t$ form $d$ parameter-slot tokens
+encoded states. Middle: the $d$ components of the flow state $\tilde m_t$ form $d$ parameter-slot tokens
 processed by $L$ velocity blocks and a linear head into the velocity $v_\theta$. Right: one velocity
 block expanded --- self-attention across parameter slots, cross-attention reading the observation memory
 $H$, and an MLP, each preceded by layer normalization with scale-shift $(\gamma, \beta)$ and followed by
@@ -268,13 +267,13 @@ flow time $t$ by a zero-initialized map, so the untrained block is the identity 
 \label{sec:scheme}
 
 
-The network evaluates $v_\theta(z, t, \D)$, where $z$ is the normalized parameter vector partway along
-its path from reference noise to posterior sample --- the interpolation $z_t$ at training time, the
+The network evaluates $v_\theta(\tilde m, t, \D)$, where $\tilde m$ is the normalized parameter vector partway along
+its path from reference noise to posterior sample --- the interpolation $\tilde m_t$ at training time, the
 current ODE state at sampling time. The design follows the encoder--decoder pattern that is standard in
 conditional flow-matching and diffusion models: the data are encoded once, and a decoder combines that
 encoding with the object being generated,
 \begin{equation}
-  v_\theta(z, t, \D) \;=\; \mathrm{Dec}\bigl(z,\; t,\; \mathrm{Enc}(\D)\bigr).
+  v_\theta(\tilde m, t, \D) \;=\; \mathrm{Dec}\bigl(\tilde m,\; t,\; \mathrm{Enc}(\D)\bigr).
   \label{eq:encdec}
 \end{equation}
 Two differences from the image and text instances of this pattern dictate the concrete form
@@ -282,7 +281,7 @@ Two differences from the image and text instances of this pattern dictate the co
 varies: $\mathrm{Enc}$ is therefore a transformer over per-observation tokens, its output is a
 \emph{memory} of $K$ encoded states rather than one pooled vector, and $\mathrm{Dec}$ reads the memory
 by cross-attention --- the one standard mechanism indifferent to $K$. Second, the generated object is
-not an image but a short vector of $d$ parameters, so the decoder is small: the $d$ components of $z$
+not an image but a short vector of $d$ parameters, so the decoder is small: the $d$ components of $\tilde m$
 are treated as $d$ tokens, self-attention among them expresses posterior correlations (the ridge of the
 Fisher--KPP posterior, the drift--volatility coupling of GBM), and the flow time $t$ enters every block
 through zero-initialized adaptive layer normalization (adaLN-Zero), the conditioning mechanism of
@@ -429,7 +428,7 @@ with bias unchanged; the residual is closed by the training procedure of the nex
 \paragraph{Common settings.} All models are trained with Adam at a base learning rate of
 $3 \times 10^{-4}$ under a cosine schedule with linear warmup, batch size 64, and gradient clipping;
 evaluation uses an exponential moving average of the weights with decay $0.999$. At every optimizer step
-the flow times $t$ are drawn afresh (stratified over $[0,1]$) together with fresh reference noise $z_0$,
+the flow times $t$ are drawn afresh (stratified over $[0,1]$) together with fresh reference noise $\tilde m_0$,
 so no pairing between datasets and flow times is ever repeated. For fixed-design problems the training
 set consists of $n$ simulated datasets and training runs for a fixed number of epochs over it; the
 gallery of Sec.~\ref{sec:gallery} uses $n = 40{,}000$ simulations and 35 epochs.
