@@ -59,19 +59,27 @@ each one.
 \section{Introduction}
 \label{sec:intro}
 
-Estimating the parameters of a differential-equation model from noisy, irregularly sampled trajectory data
-is among the most common inverse problems in applied science. Two features make the fully Bayesian version
-of this problem expensive. First, for most stochastic and partially observed systems, the likelihood
-$p(\D \mid m)$ requires integrating over latent paths between observations and is intractable or costly.
-Second, modern workflows evaluate posteriors \emph{repeatedly}: calibration studies process thousands of
-synthetic datasets; sequential experiments update the posterior after every new measurement; Bayesian
-experimental design compares candidate observation schedules by the posteriors they would produce.
-Per-dataset MCMC or optimization inside such loops is the dominant cost even when a likelihood is
-available, and is impossible when it is not.
+Recovering the parameters of a differential-equation model from noisy measurements of its solution is one
+of the basic inverse problems of applied science: a modeler writes down a dynamical system --- an ODE, an
+SDE, or a PDE --- whose right-hand side depends on unknown physical constants, observes a trajectory at a
+finite set of time points, and asks what the observations say about the constants. Like most inverse
+problems, this one is ill-posed in the practical sense: different parameter values can produce nearly
+indistinguishable observations, especially when the state is partially observed or the sampling is
+sparse, so a point estimate both hides the ambiguity and is unstable under noise. The Bayesian
+formulation resolves this by reporting the full posterior distribution over parameters given the data ---
+ambiguity becomes posterior spread and correlation, quantities one can act on --- at the price of two
+computational obstacles. First, for most stochastic and partially observed systems, the likelihood of the
+observations requires integrating over unobserved trajectory segments and is intractable or expensive.
+Second, modern workflows need posteriors \emph{repeatedly}: calibration studies process thousands of
+synthetic datasets, sequential experiments update the posterior after every new measurement, and Bayesian
+experimental design compares candidate observation schedules by the posteriors they would produce --- so
+per-dataset MCMC or optimization inside such loops is the dominant cost even when a likelihood is
+available.
 
-Simulation-based inference (SBI) addresses both issues by learning a conditional generative model
-$q_\theta(m \mid \D)$ from simulated pairs $(m_j, \D_j)$, amortizing the cost of inference into a one-time
-training phase \citep{cranmer2020}. Neural posterior estimation (NPE) and its sequential variants
+Simulation-based inference (SBI) addresses both issues by learning a conditional generative model of the
+parameters given the data from simulated pairs --- parameters drawn from the prior, datasets produced by
+the simulator --- thereby amortizing the cost of inference into a one-time training phase
+\citep{cranmer2020}. Neural posterior estimation (NPE) and its sequential variants
 \citep{papamakarios2016, greenberg2019} fit normalizing flows by maximum likelihood; flow-matching and
 diffusion variants \citep{wildberger2023, gloeckler2024} replace the density estimator with transport-based
 generative models. Mature software exists: the \texttt{sbi} toolkit \citep{boelts2024}, BayesFlow
@@ -155,35 +163,41 @@ observations accumulate. An estimator can therefore be wrong in the posterior me
 width, or in the width-versus-$K$ trend, and the evaluation methodology of Sec.~\ref{sec:protocol} is
 built to detect all three.
 
-\paragraph{Amortization.} Sampling from the joint distribution is easy --- draw $m_j \sim p(m)$, simulate,
-apply the observation channel --- and yields training pairs $(m_j, \D_j)$. A conditional generative model
-trained on such pairs approximates the posterior for every dataset simultaneously; inference for a new
-dataset is a forward pass.
-
-\paragraph{Design amortization.} We additionally require that a single trained network be correct for any
-number $K$ and placement of observation times (and sensor positions). Formally, for every subset $S$ of the
-measurement points of one experiment, the network must approximate $p(m \mid S)$; in particular the
-posterior must widen consistently as points are removed. This object is what sequential refinement and
-Bayesian experimental design consume: candidate designs are compared by the posteriors they would produce.
+Although the posterior itself is intractable, sampling from the \emph{joint} distribution of parameters
+and data is easy: draw $m_j \sim p(m)$, simulate the system, apply the observation channel. This yields
+arbitrarily many training pairs $(m_j, \D_j)$, and a conditional generative model trained on them
+approximates the posterior for every dataset simultaneously --- the cost of inference is moved into a
+one-time training phase, and inference for a new dataset is a forward pass. We impose one requirement
+beyond standard amortization: a single trained network must remain correct for any number $K$ and any
+placement of observation times (and, for PDEs, sensor positions). Formally, for every subset $S$ of the
+measurement points of one experiment the network must approximate $p(m \mid S)$, and the family of
+answers must be coherent --- in particular the posterior must widen as points are removed. We refer to
+this requirement as \emph{design amortization}; it is the object consumed by sequential refinement and by
+Bayesian experimental design, where candidate observation schedules are ranked by the posteriors they
+would produce.
 
 \section{Posterior sampling by conditional flow matching}
 \label{sec:method}
 
-\paragraph{Parameter normalization.} Since the prior factorizes with known one-dimensional CDFs, parameters
-are mapped componentwise through
+The idea of the method is to represent the posterior not by a density formula but by a
+\emph{transport}: a learned, data-conditioned deformation that carries a fixed reference distribution
+onto the posterior. Sampling then amounts to drawing from the reference and applying the deformation ---
+there is no normalizing constant to compute and no invertibility constraint to build into the network,
+because the deformation is defined implicitly as the flow of a velocity field, and the field itself is
+fitted by ordinary least-squares regression on simulated pairs. This construction is conditional flow
+matching \citep{lipman2023}.
+
+Concretely, parameters are first mapped componentwise to normalized coordinates
 \begin{equation}
   z = \Phi^{-1}\!\bigl(F_{\text{prior}}(m)\bigr) \in \R^{d},
   \label{eq:probit}
 \end{equation}
-where $\Phi$ is the standard normal CDF. In $z$-coordinates the prior is exactly $\N(0, I)$ and box
-constraints disappear. The choice fixes the uninformative limit: when the data carry no information the
-posterior coincides with the base distribution and the transport below reduces to the identity, so the
-network need not learn anything to represent ignorance correctly.
-
-\paragraph{Conditional flow matching.} The posterior is represented as the endpoint of a learned transport
-\citep{lipman2023}. Let $z_0 \sim \N(0, I)$ and let $z_1$ be the normalized parameter drawn jointly with
-its dataset $\D$. Define the linear interpolation $z_t = (1 - t) z_0 + t z_1$ and train a velocity network
-by regression:
+where $F_{\text{prior}}$ collects the marginal prior CDFs and $\Phi$ is the standard normal CDF; in
+$z$-coordinates the prior is exactly $\N(0, I)$, box constraints disappear, and --- usefully --- the
+uninformative limit costs nothing: when the data carry no information the posterior coincides with the
+reference and the transport is the identity. Let $z_0 \sim \N(0, I)$ be a reference draw and $z_1$ the
+normalized parameter drawn jointly with its dataset $\D$. Define the linear interpolation
+$z_t = (1 - t) z_0 + t z_1$ and train a velocity network by regression:
 \begin{equation}
   \mathcal{L}(\theta) =
   \E_{\,m,\D,\; z_0 \sim \N(0,I),\; t \sim U[0,1]}
@@ -201,9 +215,9 @@ the input representation from the choice of generative engine.
 No likelihood evaluations, simulator gradients, or per-dataset optimization are required at any stage; the
 simulator is executed only forward, during training-set generation.
 
-\paragraph{What is and is not guaranteed.} The construction has an exact consistency property.
+The training objective is consistent in the following sense.
 
-\begin{proposition}[consistency in the idealized limit]
+\begin{proposition}[consistency]
 Let $(m, \D) \sim p(m)\,p(\D \mid m)$ and let $z_1$ be given by \eqref{eq:probit}. If the loss
 \eqref{eq:cfm} is minimized over all measurable velocity fields, then for $p(\D)$-almost every $\D$ the
 flow of the minimizer transports $\N(0, I)$ at $t = 0$ to the conditional law $p(z_1 \mid \D)$ at
@@ -211,14 +225,15 @@ $t = 1$; equivalently, the sampling procedure above draws exactly from the poste
 \citep{lipman2023, wildberger2023}.
 \end{proposition}
 
-Two things are not guaranteed, and they shape the rest of the paper. First, with a finite network,
-finite simulation budget, and a numerical ODE solver, no calibration guarantee survives; the residual
-error is an empirical quantity, which is why Sec.~\ref{sec:protocol} builds instruments to measure it
-rather than assuming it away. Second, the expectation in \eqref{eq:cfm} weights approximation error by
-the probability of the data: directions of parameter space in which the posterior is nearly flat
-contribute little to the loss and are learned last. Both effects are visible and quantified in the
-experiments --- the first as width ratios slightly above one that decrease with budget, the second as
-the along-ridge bias of the Fisher--KPP posterior (Sec.~\ref{sec:budget}).
+The proposition is an idealization, and the two ways in which practice departs from it shape the rest of
+the paper. With a finite network, a finite simulation budget, and a numerical solver, no calibration
+guarantee survives; the residual error is an empirical quantity, and Sec.~\ref{sec:protocol} builds the
+instruments to measure it rather than assume it away. Moreover, the expectation in \eqref{eq:cfm}
+weights approximation error by the probability of the data, so directions of parameter space in which the
+posterior is nearly flat contribute little to the loss and are learned last. Both effects are visible and
+quantified in the experiments: the first as posterior widths slightly above the reference that decrease
+with training budget, the second as the along-ridge bias of the Fisher--KPP posterior
+(Sec.~\ref{sec:budget}).
 
 \section{Conditioning architecture}
 \label{sec:arch}
@@ -252,9 +267,12 @@ Gaussian draw yields a posterior sample.}
 
 Figure~\ref{fig:arch} shows the two halves of the model.
 
-\emph{Encoder.} Observation $i$ becomes the token
-$x_i = [\,t_i,\; w(y_i),\; \text{sensor id},\; \text{design metadata}\,] W_{\mathrm{emb}}$, where $w$ is
-the learnable monotone transform of Sec.~\ref{sec:warp}. Three standard transformer blocks (multi-head
+\emph{Encoder.} Observation $i$ is first described by a small feature vector: its time $t_i$, its
+transformed value $w(y_i)$ (with $w$ the learnable monotone transform of Sec.~\ref{sec:warp}), an
+integer identifying which sensor or state component produced it, and the design-size feature of
+Sec.~\ref{sec:count} --- six numbers in the default configuration. A learned linear map
+$\R^{6} \to \R^{64}$ lifts this vector to the model width; the result is the \emph{token}
+representing observation $i$. Three standard transformer blocks (multi-head
 self-attention followed by a two-layer MLP, pre-norm residual form) exchange information among the $K$
 tokens; attention weights are $\mathrm{softmax}_j(q_i^\top k_j / \sqrt{d_h})$ with queries and keys
 rotated by time-dependent phases as defined in Sec.~\ref{sec:trope}. The result is a memory of $K$
@@ -286,7 +304,9 @@ head dimension into two-dimensional subspaces and rotates queries and keys in su
 proportional to the token's \emph{position} $n$ in the sequence:
 $q_i \mapsto R(n_i \omega_j)\,q_i$, $k_i \mapsto R(n_i \omega_j)\,k_i$, with a geometric frequency bank
 $\omega_j$, so that $q_i^\top k_l$ depends only on $n_i - n_l$. For irregularly sampled data the storage
-position is meaningless, and we replace it by the physical observation time:
+position is meaningless, and the natural continuous substitute is the physical observation time --- the
+same substitution that attention models for irregular clinical and event time series make in other
+positional schemes \citep{horn2020, shukla2021}. Applied to the rotary phases:
 \begin{equation}
   q_i \;\mapsto\; R(\omega_j t_i)\, q_i, \qquad
   k_i \;\mapsto\; R(\omega_j t_i)\, k_i,
@@ -313,23 +333,24 @@ The values $y_i$ enter tokens through a monotone map
   \qquad a_k \ge 0,
   \label{eq:warp}
 \end{equation}
-a positive mixture over a geometric bank of scales $s_k$ spanning eight octaves; the same construction
-(with its own weights) is applied to time gaps where they appear. Since
-$\log(1 + |x|/s) \approx |x|/s$ for $|x| \ll s$ and $\approx \log|x| - \log s$ for $|x| \gg s$, the
-mixture interpolates continuously between the identity and the logarithm, and the network can learn, per
-problem, the coordinate in which the observed process is well-conditioned --- for geometric Brownian
-motion it learns the log-price coordinate in which increments become homoscedastic.
+a positive mixture over a geometric bank of $S$ scales $s_k$; the same construction (with its own
+weights) is applied to time gaps where they appear. Since $\log(1 + |x|/s) \approx |x|/s$ for
+$|x| \ll s$ and $\approx \log|x| - \log s$ for $|x| \gg s$, each component is linear below its scale
+and logarithmic above it, so the mixture can realize the identity, the signed logarithm, and all
+intermediate compressions, with monotonicity guaranteed by the sign constraint on the weights. The number
+of scales $S$ and their placement are hyperparameters with a transparent role --- the bank must cover the
+dynamic range of the observed values --- and we use one default everywhere, $S = 8$ scales spaced by
+octaves, for all fifteen benchmark systems with no per-problem adjustment. On geometric Brownian motion
+the trained mixture concentrates on its small-scale components: it learns the log-price coordinate in
+which increments become homoscedastic.
 
-A natural first candidate for this role is the Yeo--Johnson transform \citep{yeo2000}, the standard
-one-parameter family of monotone power transforms used in applied statistics to normalize skewed data;
-it contains the identity ($\lambda = 1$) and, for positive data, the logarithm ($\lambda \to 0$) in its
-parameter space. Used as the trainable input transform on GBM, it failed: across seeds, gradient descent
-left $\lambda$ near its initialization, and the volatility bias remained at $+0.48$ posterior sd --- the
-same value as with no transform. The mixture \eqref{eq:warp} reaches the log coordinate reliably because
-all of its components produce gradients at initialization, whereas moving $\lambda$ requires traversing
-a region of the loss surface with no useful signal. We record this ablation because it illustrates the
-design rule used throughout the package: what matters is not whether the correct transformation exists
-in the hypothesis class, but whether gradient descent reaches it from the initialization.
+The structure of \eqref{eq:warp} --- monotone by construction, few parameters, containing the useful
+coordinates at nonzero gradient from initialization --- is the point of the design; less structured
+learnable alternatives were evaluated and did not work at matched budget. A trainable Yeo--Johnson
+transform \citep{yeo2000}, which nests the logarithm at $\lambda \to 0$, never left its initialization
+on GBM (the volatility bias stayed at $+0.48$ posterior sd, as with no transform at all), and
+unconstrained feature maps --- a two-layer MLP on raw values, and random Fourier features --- also failed
+to recover the log coordinate.
 
 \subsection{Optional increment tokens for directly observed diffusions}
 \label{sec:tokens}
@@ -353,7 +374,7 @@ The rule for choosing between the constructions --- increment tokens exactly whe
 is Markov --- was tested in both directions: an increment-token model class transfers across Markov
 systems without adjustment (GBM to OU), and on the Heston model, whose observed price is not Markov
 because volatility is latent, increment and point tokens perform identically across all 25 evaluation
-cells, as the factorization argument predicts. The package selects the construction from a per-problem
+cases, as the factorization argument predicts. The package selects the construction from a per-problem
 flag.
 
 Two additions make increment tokens robust on heavy-tailed processes (the measurements are in
@@ -378,16 +399,19 @@ encoder output: all architecture variants of Table~\ref{tab:designarms} recover 
 statistics ($R^2 = 0.83$--$0.94$), while $R^2(\log K)$ ranges from $0.985$ to $0.498$ and ranks the
 variants exactly in the order of their width errors. The repair is to supply the count: an explicit
 $\log K$ token feature, or two learned register tokens \citep{darcet2024} that accumulate it. On the
-hardest cell ($K = 100$) the explicit feature reduces the width ratio from $1.95$ to $1.49$ with bias
+hardest case ($K = 100$) the explicit feature reduces the width ratio from $1.95$ to $1.49$ with bias
 unchanged; the residual is closed by the training procedure of the next section.
 
 \section{Training procedures}
 \label{sec:recipe}
 
-\paragraph{Common settings.} Adam with cosine decay and linear warmup, base learning rate $3\times10^{-4}$,
-batch 64, gradient clipping, EMA decay $0.999$. Each optimizer step draws fresh flow times $t$ (stratified)
-and fresh base noise. Fixed-design models train on $n$ simulated datasets for a fixed number of epochs
-(the gallery of Sec.~\ref{sec:gallery} uses $n = 40{,}000$ and 35 epochs).
+\paragraph{Common settings.} All models are trained with Adam at a base learning rate of
+$3 \times 10^{-4}$ under a cosine schedule with linear warmup, batch size 64, and gradient clipping;
+evaluation uses an exponential moving average of the weights with decay $0.999$. At every optimizer step
+the flow times $t$ are drawn afresh (stratified over $[0,1]$) together with fresh reference noise $z_0$,
+so no pairing between datasets and flow times is ever repeated. For fixed-design problems the training
+set consists of $n$ simulated datasets and training runs for a fixed number of epochs over it; the
+gallery of Sec.~\ref{sec:gallery} uses $n = 40{,}000$ simulations and 35 epochs.
 
 \paragraph{Design amortization.} Training data are simulated once on a fine grid; observation designs are
 then resampled \emph{from the stored fine trajectories at every optimizer step}. The procedure has three
@@ -424,8 +448,8 @@ the rank of each component of $m^\ast$ among posterior samples must be uniform. 
 and report coverage of central $50\%$ and $90\%$ intervals.
 
 The power of the test at this size is limited, and because our conclusions depend on knowing that limit,
-we measured it: on cells where an exact reference is available, SBC at $300$--$500$ datasets fails to
-reject posterior width ratios up to $\approx 1.3$, and its per-cell $p$-values are unstable between
+we measured it: on cases where an exact reference is available, SBC at $300$--$500$ datasets fails to
+reject posterior width ratios up to $\approx 1.3$, and its per-parameter $p$-values are unstable between
 retrainings when residual biases are in the range $0.1$--$0.2$ posterior standard deviations. SBC also
 cannot penalize a posterior that ignores the data and returns the prior; the prior-mean and ridge controls
 of Sec.~\ref{sec:baselines-tiers} exist for that reason. SBC is therefore used as a cheap screen, never as
@@ -528,17 +552,59 @@ Sec.~\ref{sec:refs}.
 \section{Experimental results}
 \label{sec:results}
 
+Table~\ref{tab:overview} maps the full set of quantitative results before the details: every benchmark
+system, the strongest evaluation available for it, the outcome for \amortix, the external methods
+measured on it, and where in the paper the numbers appear. Two conventions hold throughout. Where a
+reference posterior exists, results are reported as posterior-mean bias (in units of the reference
+posterior standard deviation) and the width ratio (learned sd over reference sd; $1$ is exact, above one
+conservative, below one overconfident), and the SBC screen is reported as the number of parameters
+passing the uniformity test. External methods were run only on systems with references, since without a
+reference the comparison could not be scored.
+
+\begin{table}[t]
+\centering
+\scriptsize
+\begin{tabular}{@{}lllll@{}}
+\toprule
+system & evaluation & \amortix & externals & details \\
+\midrule
+linear-Gaussian & exact posterior & SBC 4/4; width $\approx 1.00$ & --- & Tab.~\ref{tab:gallery} \\
+Ornstein--Uhlenbeck & exact-lik.\ MCMC & 1.03 / 1.05; SBC 2/2 & NPE 1.88; FMPE 1.60 & Tab.~\ref{tab:oucomp} \\
+geometric BM & conjugate closed form & 1.00 / 1.05; SBC 2/2 & 1.44--3.16 (12 arms) & Tab.~\ref{tab:gbmcomp} \\
+Cox--Ingersoll--Ross & SBC + controls & 2/3 (see text) & --- & Tab.~\ref{tab:gallery} \\
+double well & SBC + controls & 3/3 & --- & Tab.~\ref{tab:gallery} \\
+stoch.\ Lotka--Volterra & SBC + controls & 4/4 & --- & Tab.~\ref{tab:gallery} \\
+FitzHugh--Nagumo & SBC + controls & 4/4 & --- & Tab.~\ref{tab:gallery} \\
+SEIR & SBC + controls & 5/5 & --- & Tab.~\ref{tab:gallery} \\
+SINDy-SDE & SBC + controls & 5/5 & --- & Tab.~\ref{tab:gallery} \\
+\midrule
+Heston & SBC (variable designs) & all 25 cases pass & --- & Sec.~\ref{sec:design-amortization} \\
+Merton jump-diff. & Poisson-mixture MCMC & widths $\to 1.06$ w/ budget & --- & Fig.~\ref{fig:budget}, \ref{fig:pairs} \\
+H\'enon--Heiles & SBC (variable designs) & pass at all $K \ge 6$ & --- & Sec.~\ref{sec:design-amortization} \\
+Hodgkin--Huxley & SBC (variable designs) & 4/4 mixed designs & --- & Sec.~\ref{sec:design-amortization} \\
+pharmacokinetics & log-normal MCMC & $|$bias$| \le 0.06$; width 1.09--1.33 & --- & Fig.~\ref{fig:pairs} \\
+Fisher--KPP (PDE) & PDE-likelihood MCMC & 1.02 / 1.04 (fixed design) & NPE 1.28; FMPE fails $D$ & Tab.~\ref{tab:kppcomp} \\
+\bottomrule
+\end{tabular}
+\caption{Overview of all quantitative results. The ``externals'' column quotes the width ratio of the
+least well-conditioned parameter for each external method (GBM row: the range across all twelve external
+arms and input choices of Table~\ref{tab:gbmcomp}). SBC counts are
+parameters passing the uniformity screen at $p > 0.05$. Dashes: not run --- external comparisons require
+a reference to score against.}
+\label{tab:overview}
+\end{table}
+
 \subsection{Fixed-design gallery}
 \label{sec:gallery}
 
 Table~\ref{tab:gallery} summarizes the nine fixed-design systems. One model configuration (the default of
 Sec.~\ref{sec:arch}) is trained per system on $40{,}000$ simulations for 35 epochs (about 11 minutes per
 system on one H200 GPU); SBC uses 500 datasets with 200 posterior draws. Of 32 parameters, 31 pass; mean
-central-interval coverage error is $1.4$ percentage points. The failing cell in this run is the mean-level
+central-interval coverage error is $1.4$ percentage points. The failing case in this run is the mean-level
 parameter $b$ of Cox--Ingersoll--Ross; in an independent earlier training run of the same configuration on
-a CPU, 31 of 32 parameters passed as well, but the failing cell was the $\beta$ parameter of stochastic
+a CPU, 31 of 32 parameters passed as well, but the failing case was the $\beta$ parameter of stochastic
 Lotka--Volterra at $p = 0.04$ while Cox--Ingersoll--Ross passed at $p \ge 0.33$. The identity of the
-marginal cell is not stable across retrainings --- which is exactly the behavior predicted by the power
+marginal case is not stable across retrainings --- which is exactly the behavior predicted by the power
 analysis of Sec.~\ref{sec:protocol} for residual defects of $0.1$--$0.2$ posterior sd, and one reason SBC
 alone is not used as a verdict. On the systems with exact references, the learned posteriors carry
 $89$--$90\%$ of the available information (width relative to the exact posterior). Per-parameter
@@ -640,14 +706,14 @@ training procedure of Sec.~\ref{sec:recipe}.}
 \end{figure}
 
 \paragraph{Variable-design zoo.} With the class rule and training procedure fixed, six further systems
-were trained without per-system adjustments. Heston (five parameters, latent volatility): all 25 SBC cells
+were trained without per-system adjustments. Heston (five parameters, latent volatility): all 25 SBC cases
 pass, and pair tokens give no advantage over point tokens, consistent with the class boundary
-(Sec.~\ref{sec:tokens}). Merton jump-diffusion: 25 of 25 cells after the heavy-tail treatment of
-Sec.~\ref{sec:anatomy}, including dense-design cells that failed at $p < 10^{-3}$ before it; the residual
+(Sec.~\ref{sec:tokens}). Merton jump-diffusion: 25 of 25 cases after the heavy-tail treatment of
+Sec.~\ref{sec:anatomy}, including dense-design cases that failed at $p < 10^{-3}$ before it; the residual
 width sits on the budget curve below. H\'enon--Heiles (parameters of the potential of
 \citealt{lubich2015}, observing one coordinate at random times): calibrated at every design size down to
 $K = 6$, where the posterior widens honestly rather than degrading. Hodgkin--Huxley \citep{hodgkin1952}:
-calibrated on mixed designs; one dense-design cell shows the budget signature. Pharmacokinetics: at
+calibrated on mixed designs; one dense-design case shows the budget signature. Pharmacokinetics: at
 $K = 6$ irregular blood draws, bias $-0.01$ to $-0.06$~sd and widths $1.09$--$1.33$ against
 exact-likelihood MCMC. Fisher--KPP: the posterior concentrates on the ridge $D \cdot r \approx$ const;
 the residual along-ridge bias decays with budget (next subsection).
@@ -667,12 +733,12 @@ at different points within $\pm 0.5$~sd along the ridge, consistent with the fla
 the weakest training signal (Sec.~\ref{sec:method}). Under the variable-design training procedure,
 which averages every optimizer step over fresh observation designs, the same ridge bias does decay with
 budget. Beyond it, the two residual defects of the variable-design suite --- inflated width on the
-hardest Merton cell and along-ridge bias on Fisher--KPP under random designs --- respond to the same
+hardest Merton case and along-ridge bias on Fisher--KPP under random designs --- respond to the same
 budget lever (Fig.~\ref{fig:budget}). The Merton width excess follows
 $\propto 1/\text{budget}$ ($0.246 \to 0.120 \to 0.059$ at $\times 1, \times 3, \times 6$); the KPP ridge
 bias follows $\approx \text{budget}^{-1/2}$ ($+0.41 \to +0.23 \to +0.14$~sd along the ridge, with the
 sharply identified front-speed component decaying in parallel). Two negative controls exclude the obvious
-alternatives: doubling network width and depth at fixed budget changes the Merton cell by less than
+alternatives: doubling network width and depth at fixed budget changes the Merton case by less than
 $0.02$ in width ratio ($1.103$ vs $1.120$ at $\times 3$), and refining the sampling ODE solver from 20
 midpoint steps to 60 RK4 steps changes nothing measurable. The weakly identified posterior direction
 carries the weakest regression signal in \eqref{eq:cfm} and converges last; we find no evidence of a
@@ -693,7 +759,7 @@ $K = 40$ design).}
 \centering
 \includegraphics[width=0.9\linewidth]{figs/budget_laws.pdf}
 \caption{The two residual defects of the suite against training budget (simulations and steps scaled
-together; model size fixed). Left: Merton width excess on the hardest evaluation cell, with the
+together; model size fixed). Left: Merton width excess on the hardest evaluation case, with the
 $1/\text{budget}$ guide. Right: Fisher--KPP posterior-mean biases in the ridge coordinate system, with
 the $\text{budget}^{-1/2}$ guide.}
 \label{fig:budget}
@@ -924,7 +990,7 @@ normalization never converges, and the flow trains against a drifting representa
 $+1.12$~sd volatility bias. Encoder probing (Sec.~\ref{sec:probing}) shows the information is extracted
 --- the failing configuration encodes robust volatility statistics better than the healthy one --- so the
 repair targets representation stability: logarithmic compression of increment features (near-identity on
-clean diffusions since $\log(1+x) \approx x$ for small $x$) restores all 25 evaluation cells. A precision
+clean diffusions since $\log(1+x) \approx x$ for small $x$) restores all 25 evaluation cases. A precision
 follow-up against the Poisson-mixture reference then isolated a smaller ($+0.27$~sd) residual whose
 mechanism is a jump-classification threshold that floats with the unknown volatility; a per-dataset
 set-conditioning module (pooled statistics modulating feature channels, initialized to the identity)
@@ -1172,6 +1238,9 @@ volatility with applications to bond and currency options. \emph{Rev.\ Financial
 A quantitative description of membrane current and its application to conduction and excitation in
 nerve. \emph{J.\ Physiology} 117(4), 1952.
 
+\bibitem[Horn et al.(2020)]{horn2020} M.~Horn, M.~Moor, C.~Bock, B.~Rieck, K.~Borgwardt.
+Set functions for time series. \emph{ICML}, 2020.
+
 \bibitem[Lipman et al.(2023)]{lipman2023} Y.~Lipman, R.~T.~Q.~Chen, H.~Ben-Hamu, M.~Nickel, M.~Le.
 Flow matching for generative modeling. \emph{ICLR}, 2023.
 
@@ -1200,6 +1269,9 @@ Scalable diffusion models with transformers. \emph{ICCV}, 2023.
 \bibitem[Radev et al.(2020)]{radev2020} S.~T.~Radev, U.~K.~Mertens, A.~Voss, L.~Ardizzone, U.~K\"othe.
 BayesFlow: Learning complex stochastic models with invertible neural networks.
 \emph{IEEE Trans.\ Neural Netw.\ Learn.\ Syst.} 33(4), 2020.
+
+\bibitem[Shukla and Marlin(2021)]{shukla2021} S.~N.~Shukla, B.~M.~Marlin.
+Multi-time attention networks for irregularly sampled time series. \emph{ICLR}, 2021.
 
 \bibitem[Su et al.(2024)]{su2024} J.~Su, M.~Ahmed, Y.~Lu, S.~Pan, W.~Bo, Y.~Liu.
 RoFormer: Enhanced transformer with rotary position embedding. \emph{Neurocomputing} 568, 2024.
