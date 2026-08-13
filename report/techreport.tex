@@ -434,18 +434,27 @@ because volatility is latent, increment and point tokens perform identically acr
 cases, as the factorization argument predicts. The package selects the construction from a per-problem
 flag.
 
-Two additions make increment tokens robust on heavy-tailed processes (the measurements are in
-Sec.~\ref{sec:anatomy}). Squared increments are logarithmically compressed before feature
-normalization. And the normalization is made dataset-adaptive by feature-wise affine modulation
-\citep[FiLM;][]{perez2018}: pooled robust statistics $s$ of the token set (computed over non-padding
-positions only) are mapped by a zero-initialized MLP to per-channel scales and shifts,
+Two further normalization details matter for processes with jumps, where squared increments within a
+single dataset span several orders of magnitude and a global feature normalization becomes unstable ---
+concretely, on the Merton benchmark the running normalization scale is set by rare jump outliers and
+the resulting representation drift produces a $+1.12$~sd volatility bias. First, increment features are
+logarithmically compressed before normalization; this is a near-identity on systems without jumps
+(since $\log(1+x) \approx x$ for small $x$) and by itself turns the Merton failure into a calibrated
+posterior across all 25 evaluation cases (Sec.~\ref{sec:anatomy}). Second, the normalization is made
+dataset-adaptive: robust summary statistics $s$ of the token set, pooled over non-padding positions,
+are mapped by a zero-initialized MLP to per-channel scale and shift corrections,
 \begin{equation}
-  h_c \;\mapsto\; \bigl(1 + \gamma_c(s)\bigr)\, h_c + \beta_c(s),
+  h_c \;\mapsto\; \bigl(1 + \gamma_c(s)\bigr)\, h_c + \beta_c(s)
   \label{eq:film}
 \end{equation}
-applied after the running feature normalization. Zero initialization keeps the working baseline at the
-start of training; the ordering (normalize, then modulate) matters and is discussed with the failure it
-prevents in Sec.~\ref{sec:anatomy}.
+--- a feature-wise affine modulation, FiLM in the terminology of \citet{perez2018}. Its measured
+contribution is specific and modest: it removes a residual $+0.27$~sd bias that survives on the densest
+Merton designs (the effective jump-detection threshold shifts with the unknown volatility), and it does
+so as well as a hand-crafted per-dataset rescaling, within error bars
+($+0.13 \pm 0.06$ vs $+0.09 \pm 0.05$~sd; Sec.~\ref{sec:anatomy}). Three implementation conditions are
+necessary and were each found through a failure: zero initialization (training starts from the working
+baseline), modulation applied \emph{after} the running normalization (the reverse ordering re-creates
+the drift it corrects), and pooled statistics that exclude padding positions.
 
 \paragraph{Design size.} Posterior width is governed by the number of observations --- in regular
 models the error scales as $K^{-1/2}$ --- but $K$ is a global property of the set, and softmax
