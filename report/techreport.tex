@@ -321,53 +321,57 @@ result, so at these problem sizes accuracy is limited by training budget, not ca
 
 
 
-Let $x_1, \dots, x_K \in \R^{d_{\mathrm{model}}}$ be the token states entering an attention layer. Each
-head computes queries, keys, and values by learned linear maps,
+
+We adapt rotary position embeddings --- the standard positional scheme of modern transformers
+\citep{su2024} --- to irregular time sampling.
+
+First the classical construction. Let $x_1, \dots, x_K \in \R^{d_{\mathrm{model}}}$ be the token states
+entering an attention layer. Each head computes queries, keys, and values by learned linear maps,
 \begin{equation}
   q_i = W_Q x_i, \qquad k_i = W_K x_i, \qquad u_i = W_V x_i,
   \qquad W_Q, W_K, W_V \in \R^{d_h \times d_{\mathrm{model}}},
 \end{equation}
 and token $i$ aggregates the others with weights
-$a_{il} = \operatorname{softmax}_l\bigl(q_i^\top k_l / \sqrt{d_h}\bigr)$, producing
-$\sum_l a_{il}\, u_l$. As written, the weights are oblivious to \emph{when} each observation was made;
-positional information must be injected into the $q^\top k$ products.
-
-Rotary embeddings \citep{su2024} do this by rotating queries and keys before the product. Split each
-query and key into $d_h / 2$ two-dimensional blocks,
-$q_i = \bigl(q_i^{(1)}, \dots, q_i^{(d_h/2)}\bigr)$ with $q_i^{(j)} \in \R^2$, and rotate block $j$ of
-token $i$ by the angle $\omega_j t_i$:
+$a_{il} = \operatorname{softmax}_l\bigl(\hat q_i^\top \hat k_l / \sqrt{d_h}\bigr)$ applied to the $u_l$,
+where $\hat q, \hat k$ are position-modulated versions of $q, k$ defined as follows. Split each query
+and key into $d_h/2$ two-dimensional blocks, $q_i = (q_i^{(1)}, \dots, q_i^{(d_h/2)})$ with
+$q_i^{(j)} \in \R^2$, and rotate block $j$ by an angle $\phi_i$ proportional to a per-token scalar:
 \begin{equation}
-  \hat q_i^{(j)} = R(\omega_j t_i)\, q_i^{(j)}, \qquad
-  \hat k_i^{(j)} = R(\omega_j t_i)\, k_i^{(j)}, \qquad
-  R(\phi) = \begin{pmatrix} \cos\phi & -\sin\phi \\ \sin\phi & \cos\phi \end{pmatrix},
+  \hat q_i^{(j)} = R(\omega_j \phi_i)\, q_i^{(j)}, \qquad
+  \hat k_i^{(j)} = R(\omega_j \phi_i)\, k_i^{(j)}, \qquad
+  R(\phi) = \begin{pmatrix} \cos\phi & -\sin\phi \\ \sin\phi & \cos\phi \end{pmatrix}.
   \label{eq:trope}
 \end{equation}
-where $t_i$ is the physical time stamp of observation $i$ and the frequencies form a geometric ladder,
-$\omega_j = \omega_{\max} \bigl(\omega_{\min} / \omega_{\max}\bigr)^{(j-1)/(d_h/2 - 1)}$, chosen so that
-the periods $2\pi/\omega_j$ span the range from the finest observable time gap to several times the
-horizon --- high-frequency blocks resolve near-coincident observations, low-frequency blocks long-range
-structure. (In the original formulation $t_i$ is the token's integer position in the sequence; using
-the time stamp instead is the same substitution that time-aware attention models for irregular series
-make in other positional schemes, \citealt{horn2020, shukla2021}.) The attention logit is then computed
-from the rotated vectors, and because rotations preserve inner products up to the relative angle,
+In the classical scheme the scalar is the token's integer position in the sequence, $\phi_i = n_i$, and
+the frequencies form a geometric ladder across blocks,
+$\omega_j = \omega_{\max} (\omega_{\min}/\omega_{\max})^{(j-1)/(d_h/2-1)}$, so that high-frequency
+blocks resolve neighboring positions and low-frequency blocks long ranges. Because rotations preserve
+inner products up to the relative angle,
 \begin{equation}
   \hat q_i^{\top} \hat k_l
-  \;=\; \sum_{j=1}^{d_h/2} \bigl(\hat q_i^{(j)}\bigr)^{\top} \hat k_l^{(j)}
-  \;=\; \sum_{j=1}^{d_h/2} \bigl(q_i^{(j)}\bigr)^{\top} R\bigl(\omega_j (t_l - t_i)\bigr)\, k_l^{(j)},
+  \;=\; \sum_{j=1}^{d_h/2} \bigl(q_i^{(j)}\bigr)^{\top} R\bigl(\omega_j (\phi_l - \phi_i)\bigr)\, k_l^{(j)},
   \label{eq:ropeinv}
 \end{equation}
-every logit depends on the time stamps only through differences $t_l - t_i$. Two consequences follow
-immediately: the encoder is exactly permutation-invariant (relabeling tokens changes nothing on the
-right-hand side; verified numerically to $10^{-8}$), and no positional bookkeeping of any kind is
-needed for variable designs.
+every attention logit depends on the positions only through differences $\phi_l - \phi_i$ --- relative
+position awareness with no positional parameters.
 
-The choice is motivated by a measured failure. An earlier configuration used
-integer-position rotations, trained with long token sequences subsampled in place (kept tokens retained
-their spread-out positions), and evaluated on contiguously packed short sequences. Every component was
-individually correct, yet the mismatch between the positional distributions seen at training and
-evaluation produced systematic posterior biases of $+1.1$ to $+3.3$ standard deviations (measured in
+For irregularly sampled data the integer position is meaningless, and the generalization is immediate:
+we set $\phi_i = t_i$, the physical time stamp of observation $i$, and choose the frequency range so
+that the periods $2\pi/\omega_j$ span from the finest observable time gap to several times the horizon.
+Nothing else changes; by \eqref{eq:ropeinv}, every logit now depends on the time stamps only through
+differences $t_l - t_i$. The substitution of physical time for position is the same one that time-aware
+attention models for irregular clinical and event series make in other positional schemes
+\citep{horn2020, shukla2021}. Two consequences follow at once: the encoder is exactly
+permutation-invariant (relabeling tokens leaves the right-hand side of \eqref{eq:ropeinv} unchanged;
+verified numerically to $10^{-8}$), and variable designs require no positional bookkeeping.
+
+The adaptation is also motivated by a measured failure. An earlier configuration used integer-position
+rotations, trained with long token sequences subsampled in place (kept tokens retained their spread-out
+positions), and evaluated on contiguously packed short sequences. Every component was individually
+correct, yet the mismatch between the positional distributions seen at training and evaluation produced
+systematic posterior biases of $+1.1$ to $+3.3$ standard deviations (measured in
 Sec.~\ref{sec:ablations}). Integer positions create an implicit train/test contract on token placement;
-time-based phases eliminate the contract rather than manage it.
+physical-time phases eliminate the contract rather than manage it.
 
 \subsection{Input features}
 \label{sec:features}
@@ -379,7 +383,7 @@ each is load-bearing, as the ablations of Sec.~\ref{sec:ablations} show.
 
 \paragraph{Value transform.} The values $y_i$ enter tokens through a monotone map
 \begin{equation}
-  w(x) \;=\; \sum_{k=1}^{8} a_k \,\operatorname{sign}(x) \log\!\bigl(1 + |x| / s_k\bigr),
+  w(x) \;=\; \sum_{k=1}^{S} a_k \,\operatorname{sign}(x) \log\!\bigl(1 + |x| / s_k\bigr),
   \qquad a_k \ge 0,
   \label{eq:warp}
 \end{equation}
@@ -716,8 +720,9 @@ by chance even from an exact posterior.}
 
 Scalar summaries answer whether the posterior is calibrated on average; Fig.~\ref{fig:pairs} shows the
 posteriors themselves. For every system with an exact or validated reference, the joint posterior of the
-trained model is overlaid on the reference for one representative test dataset --- the sanity systems
-(linear-Gaussian, GBM, OU), where a mistake would be inexcusable, and the hard ones: the Merton
+trained model is overlaid on the reference for one representative test dataset --- three systems with
+simple posteriors that serve as checks (linear-Gaussian, GBM, OU), and three whose posterior geometry
+is nontrivial: the Merton
 jump-diffusion, where volatility and jump rate compete to explain the same variance; pharmacokinetics at
 six irregular blood draws, the data-poor clinical regime; and Fisher--KPP, whose posterior concentrates
 on the curved ridge $D r \approx \mathrm{const}$ fixed by the observable front speed. The learned
