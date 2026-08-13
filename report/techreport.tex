@@ -187,32 +187,35 @@ because the deformation is defined implicitly as the flow of a velocity field, a
 fitted by ordinary least-squares regression on simulated pairs. This construction is conditional flow
 matching \citep{lipman2023}.
 
-Concretely, parameters are first mapped componentwise to normalized coordinates
+Concretely, parameters are first reparametrized componentwise,
 \begin{equation}
-  \tilde m = \Phi^{-1}\!\bigl(F_{\text{prior}}(m)\bigr) \in \R^{d},
+  m \;\longmapsto\; \Phi^{-1}\!\bigl(F_{\text{prior}}(m)\bigr) \in \R^{d},
   \label{eq:probit}
 \end{equation}
 where $F_{\text{prior}}$ collects the marginal prior CDFs and $\Phi$ is the standard normal CDF. In
-these coordinates the prior is exactly $\N(0, I)$ and box constraints disappear; usefully, the
+the new coordinates the prior is exactly $\N(0, I)$ and box constraints disappear; usefully, the
 uninformative limit then costs nothing --- when the data carry no information the posterior coincides
-with the reference and the transport is the identity.
+with the reference and the transport is the identity. From here on we work exclusively in these
+coordinates and keep writing $m$ for the parameter in them; the inverse of \eqref{eq:probit} is
+applied exactly once, at the end of sampling, to return draws on the original scale.
 
-The transport lives in this normalized parameter space, and we fix the notation once: $\tilde m$
-denotes a point of that space, and a subscript denotes the position along the transport path. The
-endpoint $\tilde m_1$ is a genuine normalized parameter --- the image under \eqref{eq:probit} of an
-$m$ drawn jointly with its dataset $\D$. The starting point $\tilde m_0 \sim \N(0, I)$ is pure
-reference noise: it is not the transform of any parameter, it is the raw material that the transport
-will have turned \emph{into} a posterior draw by $t = 1$. Between them lies the training interpolation
-$\tilde m_t = (1 - t)\, \tilde m_0 + t\, \tilde m_1$. The velocity network is trained to predict the
-direction of this path by regression:
+The transport is indexed by a \emph{virtual time} $\tau \in [0, 1]$ --- an algorithmic variable with
+no relation to the physical time $t$ at which the dynamical system is observed; $t$ appears only inside
+datasets, $\tau$ only in the transport. Subscripts in $\tau$ denote the position along the transport
+path: $m_1$ is a parameter drawn jointly with its dataset $\D$ (the endpoint), $m_0 \sim \N(0, I)$ is
+pure reference noise --- not the transform of any parameter, but the raw material that the transport
+will have turned \emph{into} a posterior draw by $\tau = 1$ --- and between them lies the training
+interpolation $m_\tau = (1 - \tau)\, m_0 + \tau\, m_1$. The velocity network is trained to predict
+the direction of this path by regression:
 \begin{equation}
   \mathcal{L}(\theta) =
-  \E_{\,m,\D,\; \tilde m_0 \sim \N(0,I),\; t \sim U[0,1]}
-  \bigl\| v_\theta(\tilde m_t,\, t,\, \D) - (\tilde m_1 - \tilde m_0) \bigr\|^2 .
+  \E_{\,m,\D,\; m_0 \sim \N(0,I),\; \tau \sim U[0,1]}
+  \bigl\| v_\theta(m_\tau,\, \tau,\, \D) - (m_1 - m_0) \bigr\|^2 .
   \label{eq:cfm}
 \end{equation}
-The minimizer of \eqref{eq:cfm} is the marginal velocity field whose flow transports $\N(0, I)$ at $t = 0$
-to $p(\tilde m_1 \mid \D)$ at $t = 1$ \citep{lipman2023}. Sampling integrates $\dot{\tilde m} = v_\theta(\tilde m, t, \D)$ with a fixed-step midpoint scheme and maps back
+The minimizer of \eqref{eq:cfm} is the marginal velocity field whose flow transports $\N(0, I)$ at
+$\tau = 0$ to $p(m_1 \mid \D)$ at $\tau = 1$ \citep{lipman2023}. Sampling integrates
+$dm/d\tau = v_\theta(m, \tau, \D)$ with a fixed-step midpoint scheme and maps back
 through the inverse of \eqref{eq:probit}; the number of steps is a solver-accuracy parameter fixed once
 by a convergence check --- refining the default (20 steps) to fourth-order Runge--Kutta with three times
 as many steps changes no benchmark statistic (Sec.~\ref{sec:budget}). Evaluation uses an exponential moving average of the weights.
@@ -226,9 +229,9 @@ simulator is executed only forward, during training-set generation.
 The training objective is consistent in the following sense.
 
 \begin{proposition}[consistency]
-Let $(m, \D) \sim p(m)\,p(\D \mid m)$ and let $\tilde m_1$ be given by \eqref{eq:probit}. If the loss
+Let $(m, \D) \sim p(m)\,p(\D \mid m)$ and let $m_1$ be given by \eqref{eq:probit}. If the loss
 \eqref{eq:cfm} is minimized over all measurable velocity fields, then for $p(\D)$-almost every $\D$ the
-flow of the minimizer transports $\N(0, I)$ at $t = 0$ to the conditional law $p(\tilde m_1 \mid \D)$ at
+flow of the minimizer transports $\N(0, I)$ at $t = 0$ to the conditional law $p(m_1 \mid \D)$ at
 $t = 1$; equivalently, the sampling procedure above draws exactly from the posterior
 \citep{lipman2023, wildberger2023}.
 \end{proposition}
@@ -237,7 +240,7 @@ The proposition is an idealization, and the two ways in which practice departs f
 the paper. With a finite network, a finite simulation budget, and a numerical solver, no calibration
 guarantee survives; the residual error is an empirical quantity, and Sec.~\ref{sec:protocol} builds the
 instruments to measure it rather than assume it away. A second, structural observation: the loss \eqref{eq:cfm} is a plain average over simulated data and
-flow times, and nothing in it privileges accuracy in directions of parameter space where the posterior
+virtual times, and nothing in it privileges accuracy in directions of parameter space where the posterior
 is nearly flat --- errors there change the regression target little. We offer this as an interpretation,
 not a theorem, and it is consistent with what the experiments show: residual posterior widths sit
 slightly above the reference and decrease with training budget, and the largest residual bias we observe
@@ -247,7 +250,7 @@ anywhere in the suite lies along the flat ridge direction of the Fisher--KPP pos
 \section{Conditioning architecture}
 \label{sec:arch}
 
-The velocity field $v_\theta(\tilde m, t, \D)$ must be conditioned on a dataset that is a \emph{set of
+The velocity field $v_\theta(m, \tau, \D)$ must be conditioned on a dataset that is a \emph{set of
 time-stamped measurements}, and three properties of that set drive the architecture: the number of
 observations $K$ varies from dataset to dataset (by two orders of magnitude in the variable-design
 setting); the observation times are irregular real numbers, not grid indices; and the times carry all
@@ -262,12 +265,12 @@ throughout this section, a \emph{token}.
 \caption{Model architecture; arrows denote data flow, bottom to top. Left: each observation is
 featurized and linearly embedded into one token; $L$ transformer encoder blocks, whose attention phases
 are computed from the physical observation times (Sec.~\ref{sec:trope}), produce a memory $H$ of $K$
-encoded states. Middle: the $d$ components of the flow state $\tilde m_t$ form $d$ parameter-slot tokens
+encoded states. Middle: the $d$ components of the flow state $m_\tau$ form $d$ parameter-slot tokens
 processed by $L$ velocity blocks and a linear head into the velocity $v_\theta$. Right: one velocity
 block expanded --- self-attention across parameter slots, cross-attention reading the observation memory
 $H$, and an MLP, each preceded by layer normalization with scale-shift $(\gamma, \beta)$ and followed by
 a gated residual connection ($g$, marked $+$); the triples $(\gamma, \beta, g)$ are produced from the
-flow time $t$ by a zero-initialized map, so the untrained block is the identity \citep{peebles2023}.}
+virtual time $\tau$ by a zero-initialized map, so the untrained block is the identity \citep{peebles2023}.}
 \label{fig:arch}
 \end{figure}
 
@@ -275,23 +278,26 @@ flow time $t$ by a zero-initialized map, so the untrained block is the identity 
 \label{sec:scheme}
 
 
-The network evaluates $v_\theta(\tilde m, t, \D)$, where $\tilde m$ is the normalized parameter vector partway along
-its path from reference noise to posterior sample --- the interpolation $\tilde m_t$ at training time, the
-current ODE state at sampling time. The design follows the encoder--decoder pattern that is standard in
+The network evaluates $v_\theta(m, \tau, \D)$, where $m$ is the normalized parameter vector partway
+along its transport path --- the interpolation $m_\tau$ at training time, the current ODE state at
+sampling time --- and $\tau$ is the virtual time of the transport. The design follows the encoder--decoder pattern that is standard in
 conditional flow-matching and diffusion models: the data are encoded once, and a decoder combines that
 encoding with the object being generated,
 \begin{equation}
-  v_\theta(\tilde m, t, \D) \;=\; \mathrm{Dec}\bigl(\tilde m,\; t,\; \mathrm{Enc}(\D)\bigr).
+  v_\theta(m, \tau, \D) \;=\; \mathrm{Dec}\bigl(m,\; \tau,\; \mathrm{Enc}(\D)\bigr),
   \label{eq:encdec}
 \end{equation}
-Two differences from the image and text instances of this pattern dictate the concrete form
-(Fig.~\ref{fig:arch}). First, the conditioning is not a fixed-size embedding but a set whose size $K$
+with explicit types: $\mathrm{Enc}$ maps a dataset --- a set of $K$ time-stamped observations --- to a
+memory of $K$ vectors, $\mathrm{Enc}(\D) \in \R^{K \times d_{\mathrm{model}}}$, computed once per
+dataset, and $\mathrm{Dec} : \R^{d} \times [0,1] \times \R^{K \times d_{\mathrm{model}}} \to
+\R^{d}$ combines the current transport point and the virtual time with that memory. Two differences
+from the image and text instances of this pattern dictate the concrete form (Fig.~\ref{fig:arch}). First, the conditioning is not a fixed-size embedding but a set whose size $K$
 varies: $\mathrm{Enc}$ is therefore a transformer over per-observation tokens, its output is a
 \emph{memory} of $K$ encoded states rather than one pooled vector, and $\mathrm{Dec}$ reads the memory
 by cross-attention --- the one standard mechanism indifferent to $K$. Second, the generated object is
-not an image but a short vector of $d$ parameters, so the decoder is small: the $d$ components of $\tilde m$
+not an image but a short vector of $d$ parameters, so the decoder is small: the $d$ components of $m$
 are treated as $d$ tokens, self-attention among them expresses posterior correlations (the ridge of the
-Fisher--KPP posterior, the drift--volatility coupling of GBM), and the flow time $t$ enters every block
+Fisher--KPP posterior, the drift--volatility coupling of GBM), and the virtual time $\tau$ enters every block
 through zero-initialized adaptive layer normalization (adaLN-Zero), the conditioning mechanism of
 diffusion transformers \citep{peebles2023}, so that the untrained network is an identity-like map.
 
@@ -314,34 +320,48 @@ result, so at these problem sizes accuracy is limited by training budget, not ca
 \label{sec:trope}
 
 
-Attention compares tokens through inner products: the logit between tokens $i$ and $l$ in one head is
-$q_i^\top k_l / \sqrt{d_h}$, where the query $q_i$ and key $k_l$ are linear functions of the tokens and
-$d_h$ is the head dimension. Rotary position embeddings \citep{su2024} make these logits
-position-aware as follows: the $d_h$ coordinates of each query and key are grouped into $d_h/2$
-two-dimensional planes, and in plane $j$ both vectors are rotated by
+
+Let $x_1, \dots, x_K \in \R^{d_{\mathrm{model}}}$ be the token states entering an attention layer. Each
+head computes queries, keys, and values by learned linear maps,
 \begin{equation}
+  q_i = W_Q x_i, \qquad k_i = W_K x_i, \qquad u_i = W_V x_i,
+  \qquad W_Q, W_K, W_V \in \R^{d_h \times d_{\mathrm{model}}},
+\end{equation}
+and token $i$ aggregates the others with weights
+$a_{il} = \operatorname{softmax}_l\bigl(q_i^\top k_l / \sqrt{d_h}\bigr)$, producing
+$\sum_l a_{il}\, u_l$. As written, the weights are oblivious to \emph{when} each observation was made;
+positional information must be injected into the $q^\top k$ products.
+
+Rotary embeddings \citep{su2024} do this by rotating queries and keys before the product. Split each
+query and key into $d_h / 2$ two-dimensional blocks,
+$q_i = \bigl(q_i^{(1)}, \dots, q_i^{(d_h/2)}\bigr)$ with $q_i^{(j)} \in \R^2$, and rotate block $j$ of
+token $i$ by the angle $\omega_j t_i$:
+\begin{equation}
+  \hat q_i^{(j)} = R(\omega_j t_i)\, q_i^{(j)}, \qquad
+  \hat k_i^{(j)} = R(\omega_j t_i)\, k_i^{(j)}, \qquad
   R(\phi) = \begin{pmatrix} \cos\phi & -\sin\phi \\ \sin\phi & \cos\phi \end{pmatrix},
-  \qquad \phi = \omega_j \, n,
+  \label{eq:trope}
 \end{equation}
-where $n$ is the token's integer position and the frequencies $\omega_j$ decrease geometrically across
-planes (fast planes resolve near neighbors, slow planes long ranges). Since rotations preserve inner
-products up to the relative angle,
+where $t_i$ is the physical time stamp of observation $i$ and the frequencies form a geometric ladder,
+$\omega_j = \omega_{\max} \bigl(\omega_{\min} / \omega_{\max}\bigr)^{(j-1)/(d_h/2 - 1)}$, chosen so that
+the periods $2\pi/\omega_j$ span the range from the finest observable time gap to several times the
+horizon --- high-frequency blocks resolve near-coincident observations, low-frequency blocks long-range
+structure. (In the original formulation $t_i$ is the token's integer position in the sequence; using
+the time stamp instead is the same substitution that time-aware attention models for irregular series
+make in other positional schemes, \citealt{horn2020, shukla2021}.) The attention logit is then computed
+from the rotated vectors, and because rotations preserve inner products up to the relative angle,
 \begin{equation}
-  \bigl(R(\omega_j n)\, q\bigr)^{\top} R(\omega_j n')\, k
-  \;=\; q^{\top} R\bigl(\omega_j (n' - n)\bigr)\, k,
-  \label{eq:rope}
+  \hat q_i^{\top} \hat k_l
+  \;=\; \sum_{j=1}^{d_h/2} \bigl(\hat q_i^{(j)}\bigr)^{\top} \hat k_l^{(j)}
+  \;=\; \sum_{j=1}^{d_h/2} \bigl(q_i^{(j)}\bigr)^{\top} R\bigl(\omega_j (t_l - t_i)\bigr)\, k_l^{(j)},
+  \label{eq:ropeinv}
 \end{equation}
-attention logits depend only on position differences $n' - n$.
+every logit depends on the time stamps only through differences $t_l - t_i$. Two consequences follow
+immediately: the encoder is exactly permutation-invariant (relabeling tokens changes nothing on the
+right-hand side; verified numerically to $10^{-8}$), and no positional bookkeeping of any kind is
+needed for variable designs.
 
-For irregularly sampled data the storage position $n$ is meaningless, and the natural continuous
-substitute is the physical observation time --- the same substitution that attention models for
-irregular clinical and event time series make in other positional schemes \citep{horn2020, shukla2021}.
-We therefore set $\phi = \omega_j t_i$, upon which \eqref{eq:rope} makes every attention logit a
-function of the time difference $t_i - t_l$ and of nothing else about storage order. The encoder is
-then permutation-invariant by construction (verified to $10^{-8}$ under random token permutations), and
-design amortization involves no positional bookkeeping.
-
-The measurement that forced this choice is worth recording. An earlier configuration used
+The choice is motivated by a measured failure. An earlier configuration used
 integer-position rotations, trained with long token sequences subsampled in place (kept tokens retained
 their spread-out positions), and evaluated on contiguously packed short sequences. Every component was
 individually correct, yet the mismatch between the positional distributions seen at training and
@@ -436,8 +456,8 @@ with bias unchanged; the residual is closed by the training procedure of the nex
 \paragraph{Common settings.} All models are trained with Adam at a base learning rate of
 $3 \times 10^{-4}$ under a cosine schedule with linear warmup, batch size 64, and gradient clipping;
 evaluation uses an exponential moving average of the weights with decay $0.999$. At every optimizer step
-the flow times $t$ are drawn afresh (stratified over $[0,1]$) together with fresh reference noise $\tilde m_0$,
-so no pairing between datasets and flow times is ever repeated. For fixed-design problems the training
+the virtual times $\tau$ are drawn afresh (stratified over $[0,1]$) together with fresh reference noise $m_0$,
+so no pairing between datasets and virtual times is ever repeated. For fixed-design problems the training
 set consists of $n$ simulated datasets and training runs for a fixed number of epochs over it; the
 gallery of Sec.~\ref{sec:gallery} uses $n = 40{,}000$ simulations and 35 epochs.
 
@@ -644,20 +664,21 @@ $0.1$--$0.2$~sd sit at the resolution limit of SBC at this size, so the identity
 moves between retrainings --- one reason SBC alone is not used as a verdict. On the systems with exact references, the learned posteriors carry
 $89$--$90\%$ of the available information (width relative to the exact posterior). Per-parameter
 $p$-values for the run shown are listed in Appendix~\ref{app:systems}.
-Figure~\ref{fig:sbc} shows the calibration directly in the form a user consumes it: empirical against
-nominal coverage of the central credible intervals, for all nine systems.
+Figure~\ref{fig:sbc} shows the same information as coverage curves: the deviation of empirical from
+nominal coverage of the central credible intervals, for all nine systems and for the individual
+parameters of the least calibrated one.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.98\linewidth]{figs/coverage.pdf}
-\caption{Calibration of the gallery models, read the way a practitioner would use them. Left: for each
-system, the fraction of the 500 test datasets in which the true parameter fell inside the posterior's
-central $q\%$ credible interval, plotted against $q$ and averaged over the system's parameters; a
-perfectly calibrated posterior follows the diagonal, and the gray band is the spread attributable to
-having only 500 datasets. All nine systems track the diagonal within the band. Right: the same curves
-for the individual parameters of the least calibrated system of this run (Cox--Ingersoll--Ross); the $b$
-curve shows the $\approx 0.15$~sd location shift discussed in the text. Rank-level detail for all 32
-parameters is given in Appendix~\ref{app:systems} (Fig.~\ref{fig:sbcranks}).}
+\caption{Empirical coverage of central credible intervals for the fixed-design gallery, shown as the
+deviation from the nominal level. For each system, 500 synthetic datasets are simulated with known
+parameters and the posterior's central $q\%$ interval is checked against the truth; a calibrated
+posterior has zero deviation at every level, and the gray band is the 99\% pointwise range induced by
+the finite number of test datasets. Left: deviation averaged over each system's parameters. Right:
+individual parameters of Cox--Ingersoll--Ross, the system with the largest deviation in this run; the
+$b$ curve reflects the $\approx 0.15$~sd location shift discussed in the text. Rank-level detail for
+all 32 parameters is in Appendix~\ref{app:systems} (Fig.~\ref{fig:sbcranks}).}
 \label{fig:sbc}
 \end{figure}
 
