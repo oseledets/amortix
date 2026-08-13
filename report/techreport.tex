@@ -241,14 +241,13 @@ anywhere in the suite lies along the flat ridge direction of the Fisher--KPP pos
 \label{sec:arch}
 
 The velocity field $v_\theta(z, t, \D)$ must be conditioned on a dataset that is a \emph{set of
-time-stamped measurements}, and this drives the architecture. Four requirements follow directly from the
-problem statement: the network must accept any number $K$ of observations; its output must not depend on
-the order in which observations are stored, since the times $t_i$ carry all ordering information; the
-times are irregular real numbers, not grid indices; and, because posterior width is governed by $K$, the
-dependence on $K$ must be represented accurately, not merely tolerated. The first three requirements rule
-out the fixed-length-vector conditioners that are the default in NPE implementations; they are naturally
-met by a transformer operating on one feature vector per observation. Throughout this section the term
-\emph{token} means exactly that: the feature vector representing one observation.
+time-stamped measurements}, and three properties of that set drive the architecture: the number of
+observations $K$ varies from dataset to dataset (by two orders of magnitude in the variable-design
+setting); the observation times are irregular real numbers, not grid indices; and the times carry all
+ordering information, so the output must not depend on how the observations happen to be stored. These
+properties rule out the fixed-length-vector conditioners that are the default in NPE implementations,
+and they are naturally met by a transformer operating on one feature vector per observation ---
+throughout this section, a \emph{token}.
 
 \begin{figure}[t]
 \centering
@@ -268,72 +267,90 @@ flow time $t$ by a zero-initialized map, so the untrained block is the identity 
 \subsection{Overall scheme}
 \label{sec:scheme}
 
-Figure~\ref{fig:arch} shows the two halves of the model.
 
-\emph{Encoder.} Observation $i$ is first described by a small feature vector: its time $t_i$, its
-transformed value $w(y_i)$ (with $w$ the learnable monotone transform of Sec.~\ref{sec:warp}), an index
-identifying which sensor or state component produced the value, and the design-size feature of
-Sec.~\ref{sec:count}. Multivariate states require nothing special: each observed component at each
-observation time contributes its own token, distinguished by the component index --- this is how the
-two-species and five-compartment systems of the suite are handled. A learned linear map
-$\R^{n_f} \to \R^{d_{\mathrm{model}}}$ lifts the $n_f$ features to the model width; the result is
-the \emph{token} representing the observation. Three standard transformer blocks (multi-head
-self-attention followed by a two-layer MLP, pre-norm residual form) exchange information among the $K$
-tokens; attention weights are $\mathrm{softmax}_j(q_i^\top k_j / \sqrt{d_h})$ with queries and keys
-rotated by time-dependent phases as defined in Sec.~\ref{sec:trope}. The result is a memory of $K$
-encoded states.
+The network evaluates $v_\theta(z, t, \D)$, where $z$ is the normalized parameter vector partway along
+its path from reference noise to posterior sample --- the interpolation $z_t$ at training time, the
+current ODE state at sampling time. The design follows the encoder--decoder pattern that is standard in
+conditional flow-matching and diffusion models: the data are encoded once, and a decoder combines that
+encoding with the object being generated,
+\begin{equation}
+  v_\theta(z, t, \D) \;=\; \mathrm{Dec}\bigl(z,\; t,\; \mathrm{Enc}(\D)\bigr).
+  \label{eq:encdec}
+\end{equation}
+Two differences from the image and text instances of this pattern dictate the concrete form
+(Fig.~\ref{fig:arch}). First, the conditioning is not a fixed-size embedding but a set whose size $K$
+varies: $\mathrm{Enc}$ is therefore a transformer over per-observation tokens, its output is a
+\emph{memory} of $K$ encoded states rather than one pooled vector, and $\mathrm{Dec}$ reads the memory
+by cross-attention --- the one standard mechanism indifferent to $K$. Second, the generated object is
+not an image but a short vector of $d$ parameters, so the decoder is small: the $d$ components of $z$
+are treated as $d$ tokens, self-attention among them expresses posterior correlations (the ridge of the
+Fisher--KPP posterior, the drift--volatility coupling of GBM), and the flow time $t$ enters every block
+through zero-initialized adaptive layer normalization (adaLN-Zero), the conditioning mechanism of
+diffusion transformers \citep{peebles2023}, so that the untrained network is an identity-like map.
 
-\emph{Velocity network.} The $d$ components of the flow state $z_t$ are treated as $d$ tokens. Each of
-three velocity blocks applies self-attention across the parameter slots --- this is where posterior
-correlations between parameters are expressed --- and cross-attention from the parameter slots into the
-$K$-state observation memory, which is how information about the data, at any $K$, reaches the flow.
-The flow time $t$ enters through adaptive layer normalization: each sub-layer computes
-$h \mapsto h + g \odot f\bigl((1 + \gamma)\odot \mathrm{LN}(h) + \beta\bigr)$ with
-$(\gamma, \beta, g)$ produced from a sinusoidal embedding of $t$ by a zero-initialized linear map
-\citep{peebles2023}, so the untrained network starts as an identity-like map and departs only as driven
-by the loss. All sizes are configuration parameters; the package default, used unchanged for every experiment in
-this paper, is $d_{\mathrm{model}} = 64$, four attention heads, and $L = 3$ blocks on each side, which
-gives $4.8 \times 10^5$ trainable parameters in total. The default is deliberately small:
-Sec.~\ref{sec:budget} shows that doubling width and depth changes no benchmark result, so at these
-problem sizes accuracy is limited by training budget, not capacity.
+On the encoder side, observation $i$ is described by a few features --- its time $t_i$, its transformed
+value $w(y_i)$ with $w$ the learnable monotone map of Sec.~\ref{sec:features}, an index identifying the
+sensor or state component that produced the value (multivariate states contribute one token per observed
+component per time), and the design-size feature of Sec.~\ref{sec:features} --- and lifted to the model
+width by a learned linear map. The attention mechanism that lets these tokens interact is the subject of
+the next subsection; the choice of features is the subject of Sec.~\ref{sec:features}.
 
 This scheme was not the first attempt but the survivor of a sequence of measured alternatives; the
 failed ones are retained in the package as reproducible controls and are compared under a common
-protocol in Sec.~\ref{sec:design-amortization}. The remainder of the section describes the three components that make the
-scheme work at benchmark accuracy: the time encoding, the input transform, and the design-size features
---- plus one optional token construction that accelerates a special but common case.
+protocol in the ablation study of Sec.~\ref{sec:ablations}. All sizes are configuration parameters; the
+package default, used unchanged for every experiment in this paper, is model width 64, four attention
+heads, and three blocks on each side ($4.8 \times 10^5$ trainable parameters). The default is
+deliberately small: Sec.~\ref{sec:budget} shows that doubling width and depth changes no benchmark
+result, so at these problem sizes accuracy is limited by training budget, not capacity.
 
 \subsection{Attention phases from observation times}
 \label{sec:trope}
 
-Transformers are made order-aware by positional encodings. The rotary scheme \citep{su2024} splits each
-head dimension into two-dimensional subspaces and rotates queries and keys in subspace $j$ by an angle
-proportional to the token's \emph{position} $n$ in the sequence:
-$q_i \mapsto R(n_i \omega_j)\,q_i$, $k_i \mapsto R(n_i \omega_j)\,k_i$, with a geometric frequency bank
-$\omega_j$, so that $q_i^\top k_l$ depends only on $n_i - n_l$. For irregularly sampled data the storage
-position is meaningless, and the natural continuous substitute is the physical observation time --- the
-same substitution that attention models for irregular clinical and event time series make in other
-positional schemes \citep{horn2020, shukla2021}. Applied to the rotary phases:
+
+Attention compares tokens through inner products: the logit between tokens $i$ and $l$ in one head is
+$q_i^\top k_l / \sqrt{d_h}$, where the query $q_i$ and key $k_l$ are linear functions of the tokens and
+$d_h$ is the head dimension. Rotary position embeddings \citep{su2024} make these logits
+position-aware as follows: the $d_h$ coordinates of each query and key are grouped into $d_h/2$
+two-dimensional planes, and in plane $j$ both vectors are rotated by
 \begin{equation}
-  q_i \;\mapsto\; R(\omega_j t_i)\, q_i, \qquad
-  k_i \;\mapsto\; R(\omega_j t_i)\, k_i,
-  \label{eq:trope}
+  R(\phi) = \begin{pmatrix} \cos\phi & -\sin\phi \\ \sin\phi & \cos\phi \end{pmatrix},
+  \qquad \phi = \omega_j \, n,
 \end{equation}
-so attention logits depend on the time differences $t_i - t_l$ and on nothing else about storage order.
-The encoder is then permutation-invariant by construction (verified to $10^{-8}$ under random token
-permutations), and design amortization involves no positional bookkeeping at all.
+where $n$ is the token's integer position and the frequencies $\omega_j$ decrease geometrically across
+planes (fast planes resolve near neighbors, slow planes long ranges). Since rotations preserve inner
+products up to the relative angle,
+\begin{equation}
+  \bigl(R(\omega_j n)\, q\bigr)^{\top} R(\omega_j n')\, k
+  \;=\; q^{\top} R\bigl(\omega_j (n' - n)\bigr)\, k,
+  \label{eq:rope}
+\end{equation}
+attention logits depend only on position differences $n' - n$.
 
-The measurement that forced this choice is worth recording. An earlier configuration used storage-index
-rotations, trained with long token sequences subsampled in place (kept tokens retained their spread-out
-indices), and evaluated on contiguously packed short sequences. Every component was individually
-correct, yet the mismatch between the positional distributions seen at training and evaluation produced
-systematic posterior biases of $+1.1$ to $+3.3$ standard deviations (measured in Sec.~\ref{sec:design-amortization}). Index-based encodings create an implicit train/test contract on token
-placement; time-based phases eliminate the contract rather than manage it.
+For irregularly sampled data the storage position $n$ is meaningless, and the natural continuous
+substitute is the physical observation time --- the same substitution that attention models for
+irregular clinical and event time series make in other positional schemes \citep{horn2020, shukla2021}.
+We therefore set $\phi = \omega_j t_i$, upon which \eqref{eq:rope} makes every attention logit a
+function of the time difference $t_i - t_l$ and of nothing else about storage order. The encoder is
+then permutation-invariant by construction (verified to $10^{-8}$ under random token permutations), and
+design amortization involves no positional bookkeeping.
 
-\subsection{Learnable coordinate transform}
-\label{sec:warp}
+The measurement that forced this choice is worth recording. An earlier configuration used
+integer-position rotations, trained with long token sequences subsampled in place (kept tokens retained
+their spread-out positions), and evaluated on contiguously packed short sequences. Every component was
+individually correct, yet the mismatch between the positional distributions seen at training and
+evaluation produced systematic posterior biases of $+1.1$ to $+3.3$ standard deviations (measured in
+Sec.~\ref{sec:ablations}). Integer positions create an implicit train/test contract on token placement;
+time-based phases eliminate the contract rather than manage it.
 
-The values $y_i$ enter tokens through a monotone map
+\subsection{Input features}
+\label{sec:features}
+
+The remaining design choices concern what the tokens contain. Three of them matter and are described in
+turn: a learnable transform of the observed values, an optional increment-based token construction for
+directly observed diffusions, and an explicit design-size feature. Each occupies a few lines of code;
+each is load-bearing, as the ablations of Sec.~\ref{sec:ablations} show.
+
+\paragraph{Value transform.} The values $y_i$ enter tokens through a monotone map
 \begin{equation}
   w(x) \;=\; \sum_{k=1}^{8} a_k \,\operatorname{sign}(x) \log\!\bigl(1 + |x| / s_k\bigr),
   \qquad a_k \ge 0,
@@ -358,10 +375,7 @@ on GBM (the volatility bias stayed at $+0.48$ posterior sd, as with no transform
 unconstrained feature maps --- a two-layer MLP on raw values, and random Fourier features --- also failed
 to recover the log coordinate.
 
-\subsection{Optional increment tokens for directly observed diffusions}
-\label{sec:tokens}
-
-For scalar SDEs whose state is observed directly --- no latent components --- the package offers a
+\paragraph{Increment features for directly observed diffusions.} For scalar SDEs whose state is observed directly --- no latent components --- the package offers a
 second token construction: after sorting by time, consecutive observations contribute
 \[
   \bigl[\,t_{(i)},\; w(y_{(i)}),\; \Delta w_i,\; (\Delta w_i)^2,\; w_t(\Delta t_{(i)})\,\bigr],
@@ -372,8 +386,8 @@ the likelihood factorizes over consecutive pairs, transition densities of diffus
 increments and gaps, and squared increments carry the quadratic-variation information that identifies
 diffusion coefficients. This is an inductive bias of the same character as convolutions for images ---
 useful where its assumption holds, not a requirement of the method: the point-token path of
-Sec.~\ref{sec:scheme} is fully general, and Sec.~\ref{sec:design-amortization} quantifies what the
-increment tokens buy at fixed budget.
+Sec.~\ref{sec:scheme} is fully general, and the ablations of Sec.~\ref{sec:ablations} quantify what
+the increment tokens buy at fixed budget.
 
 The rule for choosing between the constructions --- increment tokens exactly when the observed process
 is Markov --- was tested in both directions: an increment-token model class transfers across Markov
@@ -395,10 +409,9 @@ applied after the running feature normalization. Zero initialization keeps the w
 start of training; the ordering (normalize, then modulate) matters and is discussed with the failure it
 prevents in Sec.~\ref{sec:anatomy}.
 
-\subsection{Design-size features}
-\label{sec:count}
-
-Softmax attention computes normalized weighted means, which are nearly invariant to the number of tokens
+\paragraph{Design size.} Posterior width is governed by the number of observations --- in regular
+models the error scales as $K^{-1/2}$ --- but $K$ is a global property of the set, and softmax
+attention, which computes normalized weighted means, is nearly invariant to it. Softmax attention computes normalized weighted means, which are nearly invariant to the number of tokens
 --- yet posterior width is governed by $K$. The deficit is measurable by linear probes from the pooled
 encoder output: all architecture variants of Table~\ref{tab:designarms} recover posterior-mean
 statistics ($R^2 = 0.83$--$0.94$), while $R^2(\log K)$ ranges from $0.985$ to $0.498$ and ranks the
@@ -624,22 +637,20 @@ $0.1$--$0.2$~sd sit at the resolution limit of SBC at this size, so the identity
 moves between retrainings --- one reason SBC alone is not used as a verdict. On the systems with exact references, the learned posteriors carry
 $89$--$90\%$ of the available information (width relative to the exact posterior). Per-parameter
 $p$-values for the run shown are listed in Appendix~\ref{app:systems}.
-Figure~\ref{fig:sbc} shows the SBC rank distributions themselves --- empirical CDFs of the normalized
-ranks for all 32 parameters, with the pointwise band that a uniform distribution would occupy at this
-sample size --- so the reader can judge the calibration claim directly rather than through $p$-values
-alone.
+Figure~\ref{fig:sbc} shows the calibration directly in the form a user consumes it: empirical against
+nominal coverage of the central credible intervals, for all nine systems.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.98\linewidth]{figs/sbc_ecdf.pdf}
-\caption{Calibration check for the fixed-design gallery. Procedure: for each system, 500 synthetic
-datasets are simulated with known parameters; for each dataset the model produces 200 posterior draws,
-and the rank of the true parameter among the draws is recorded. If the posterior is calibrated, these
-ranks are uniform. Each curve shows, for one parameter, the deviation of the empirical CDF of normalized
-ranks from the uniform diagonal; the gray band is the 99\% range attributable to sampling noise at 500
-datasets. A curve bulging below zero on the left indicates a posterior shifted low relative to the
-truth, and vice versa. All curves stay within the band except Cox--Ingersoll--Ross $b$, whose deviation
-corresponds to the $\approx 0.15$~sd location shift discussed in the text.}
+\includegraphics[width=0.98\linewidth]{figs/coverage.pdf}
+\caption{Calibration of the gallery models, read the way a practitioner would use them. Left: for each
+system, the fraction of the 500 test datasets in which the true parameter fell inside the posterior's
+central $q\%$ credible interval, plotted against $q$ and averaged over the system's parameters; a
+perfectly calibrated posterior follows the diagonal, and the gray band is the spread attributable to
+having only 500 datasets. All nine systems track the diagonal within the band. Right: the same curves
+for the individual parameters of the least calibrated system of this run (Cox--Ingersoll--Ross); the $b$
+curve shows the $\approx 0.15$~sd location shift discussed in the text. Rank-level detail for all 32
+parameters is given in Appendix~\ref{app:systems} (Fig.~\ref{fig:sbcranks}).}
 \label{fig:sbc}
 \end{figure}
 
@@ -663,75 +674,49 @@ SINDy-SDE (cubic drift)    & 5 & 1.4\,pp & 5/5 & 50\% & 89\% \\
 total / mean               & 32 & 1.4\,pp & 31/32 & 49\% & 89\% \\
 \bottomrule
 \end{tabular}
-\caption{Fixed-design gallery: one default model per system, $40{,}000$ simulations, 35 epochs. Coverage
-error is the mean absolute deviation of central-interval coverage from its nominal level; ``SBC pass''
-counts parameters with uniformity $p > 0.05$ (500 datasets $\times$ 200 draws).}
+\caption{Fixed-design gallery: one default model per system, $40{,}000$ simulations, 35 epochs.
+Coverage error is the mean absolute deviation of central-interval coverage from its nominal level ---
+zero is perfect, and pure sampling noise at 500 test datasets contributes about $1$--$1.5$\,pp, so
+values in this range indicate calibration at the resolution limit of the test. ``SBC pass'' counts
+parameters consistent with uniformity at $p > 0.05$; with 32 tests, one or two rejections are expected
+by chance even from an exact posterior.}
 \label{tab:gallery}
 \end{table}
+
+\subsection{Posterior geometry against validated references}
+\label{sec:pairs}
+
+Scalar summaries answer whether the posterior is calibrated on average; Fig.~\ref{fig:pairs} shows the
+posteriors themselves. For every system with an exact or validated reference, the joint posterior of the
+trained model is overlaid on the reference for one representative test dataset --- the sanity systems
+(linear-Gaussian, GBM, OU), where a mistake would be inexcusable, and the hard ones: the Merton
+jump-diffusion, where volatility and jump rate compete to explain the same variance; pharmacokinetics at
+six irregular blood draws, the data-poor clinical regime; and Fisher--KPP, whose posterior concentrates
+on the curved ridge $D r \approx \mathrm{const}$ fixed by the observable front speed. The learned
+posteriors reproduce location, scale, orientation, and --- where present --- the curvature of the ridge.
+This figure, together with the calibration curves of Fig.~\ref{fig:sbc} and the summary of
+Table~\ref{tab:overview}, is the evidence for the claim that one small default model recovers full
+posteriors across the suite; the remaining subsections quantify the edges.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.98\linewidth]{figs/pairs_hard.pdf}
+\caption{Joint posteriors of \amortix\ (filled contours: 39\% and 86\% highest-density regions) against
+exact or validated-MCMC reference posteriors (open contours, same levels) on one test dataset per
+system; crosses mark the true parameters. Top row: systems with closed-form or cheap exact references.
+Bottom row: systems where the reference itself required exact-likelihood MCMC with two-chain validation
+--- including the ridge-shaped Fisher--KPP posterior, where the model reproduces the curvature, not just
+the moments.}
+\label{fig:pairs}
+\end{figure}
 
 \subsection{Variable designs}
 \label{sec:design-amortization}
 
-\paragraph{Architecture comparison under a common protocol.} Table~\ref{tab:designarms} and
-Fig.~\ref{fig:widthk} compare encoder variants for design amortization on GBM, trained at
-$K \sim$ log-uniform$[2, 128]$ random-time designs and evaluated against the exact per-design posterior
-(96 datasets per bucket). Three observations organize the table. First, index-based positions combined
-with in-place subsampling during training (leaving kept tokens at spread positions while inference packs
-contiguously) produce biases of $+1.1$ to $+3.3$ posterior sd with no individually incorrect component ---
-the positional pathology of Sec.~\ref{sec:trope}; repacking or replacing positions with time phases
-removes the bias entirely. Second, all point-token variants share inflated widths at dense designs, in
-proportion to how poorly their pooled representation encodes $\log K$ (rightmost column; the probe of
-Sec.~\ref{sec:count}) --- including two attention mechanisms specifically constructed to exploit
-continuous time (a learned per-head time-kernel logit bias in the spirit of relative-position methods, and
-edge-message attention carrying gap-modulated increments on all pairs). Third, pair tokens with time-phase
-attention, plus the training procedure of Sec.~\ref{sec:recipe}, bring every bucket to within $7\%$ of the
-exact width.
-
-\begin{table}[t]
-\centering
-\small
-\begin{tabular}{@{}lccccc@{}}
-\toprule
- & \multicolumn{4}{c}{$\sigma$ width ratio at $K$} & \\
-\cmidrule(lr){2-5}
-encoder variant & 5 & 9 & 20 & 100 & $R^2(\log K)$ \\
-\midrule
-point tokens, index positions, spread subsampling & 0.94$^{\ast}$ & 1.13$^{\ast}$ & 1.42$^{\ast}$ & 2.08$^{\ast}$ & --- \\
-point tokens, index positions, contiguous & 1.05 & 1.17 & 1.13 & 1.73 & 0.957 \\
-point tokens, time-kernel attention bias & 1.03 & 1.14 & 1.31 & 2.51 & 0.712 \\
-point tokens, edge-message attention & 1.03 & 1.15 & 1.29 & 2.45 & 0.498 \\
-point tokens, time phases & 1.01 & 1.10 & 1.14 & 1.95 & --- \\
-\quad + explicit $\log K$ feature & 1.01 & 1.05 & 1.08 & 1.49 & --- \\
-pair tokens, time phases & 1.02 & 1.02 & 1.02 & 1.27 & 0.985 \\
-pair tokens + full training procedure & 1.06 & 1.06 & 1.05 & 1.07 & --- \\
-\bottomrule
-\end{tabular}
-\caption{GBM with variable designs: posterior width for the volatility $\sigma$ against the exact
-per-design posterior (96 datasets per design-size bucket) and, where measured, the probe $R^2$ for
-$\log K$ from the pooled encoder output. The table tracks $\sigma$ because it is the parameter whose
-posterior width is governed by the observation density --- the drift $\mu$ is weakly informed at every
-$K$, and all variants recover its posterior within a few percent, so it does not discriminate between
-architectures. $^{\ast}$This row also carries biases of $+1.09$ to $+3.30$ posterior sd (the positional
-train/test mismatch of Sec.~\ref{sec:trope}); all other rows have biases consistent with zero.}
-\label{tab:designarms}
-\end{table}
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.62\linewidth]{figs/width_vs_k.pdf}
-\caption{The data of Table~\ref{tab:designarms} in graphical form: excess posterior width for the GBM
-volatility --- the width ratio against the exact posterior minus one, so $0.1$ means a posterior $10\%$
-too wide and lower is better --- as a function of the number of observation points $K$ (both axes
-logarithmic). Dotted curves: point-token variants with no set-size information, which degrade as designs
-become dense; dashed: partial repairs; solid: increment tokens, and increment tokens combined with the
-training procedure of Sec.~\ref{sec:recipe}, which is flat in $K$.}
-\label{fig:widthk}
-\end{figure}
-
 \paragraph{Variable-design zoo.} With the class rule and training procedure fixed, six further systems
 were trained without per-system adjustments. Heston (five parameters, latent volatility): all 25 SBC cases
 pass, and pair tokens give no advantage over point tokens, consistent with the class boundary
-(Sec.~\ref{sec:tokens}). Merton jump-diffusion: 25 of 25 cases after the heavy-tail treatment of
+(Sec.~\ref{sec:features}). Merton jump-diffusion: 25 of 25 cases after the heavy-tail treatment of
 Sec.~\ref{sec:anatomy}, including dense-design cases that failed at $p < 10^{-3}$ before it; the residual
 width sits on the budget curve below. H\'enon--Heiles (parameters of the potential of
 \citealt{lubich2015}, observing one coordinate at random times): calibrated at every design size down to
@@ -786,30 +771,6 @@ together; model size fixed). Left: Merton width excess on the hardest evaluation
 $1/\text{budget}$ guide. Right: Fisher--KPP posterior-mean biases in the ridge coordinate system, with
 the $\text{budget}^{-1/2}$ guide.}
 \label{fig:budget}
-\end{figure}
-
-\subsection{Posterior geometry against validated references}
-\label{sec:pairs}
-
-Scalar bias and width statistics summarize accuracy but hide the joint structure of the posterior.
-Figure~\ref{fig:pairs} overlays two-dimensional posterior samples of the trained models on their
-validated references for three systems where the reference is nontrivial: the Merton jump-diffusion
-(volatility--jump-rate plane, where the two parameters compete to explain variance), pharmacokinetics at
-$K = 6$ irregular blood draws (absorption--elimination plane, the data-poor clinical regime), and
-Fisher--KPP (diffusion--reaction plane, where the posterior concentrates on the ridge
-$D r \approx \mathrm{const}$ set by the front speed). The learned posteriors reproduce the location,
-scale, orientation, and curvature of the references, including the ridge geometry; the corresponding
-scalar statistics appear in the tables of this section and in Fig.~\ref{fig:budgetgrid}.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.98\linewidth]{figs/pairs_hard.pdf}
-\caption{Joint posteriors of \amortix\ (filled contours) against validated reference posteriors (open
-contours; exact-likelihood MCMC, two chains per dataset) on one test dataset per system. Left: Merton
-jump-diffusion $(\sigma, \lambda_J)$. Middle: pharmacokinetics $(k_a, k_e)$ at $K = 6$ observations.
-Right: Fisher--KPP $(D, r)$, whose posterior concentrates on the front-speed ridge. Crosses mark the
-true parameters.}
-\label{fig:pairs}
 \end{figure}
 
 \subsection{Comparison with existing implementations}
@@ -986,6 +947,64 @@ recipe, not of the method's ceiling. Conversely, the variable-design capability 
 Sec.~\ref{sec:design-amortization} is not exercised here at all, since the external estimators consume
 fixed-length inputs by default.
 
+\subsection{Ablations: what each architecture component contributes}
+\label{sec:ablations}
+
+Table~\ref{tab:designarms} and Fig.~\ref{fig:widthk} compare encoder variants for design amortization on GBM, trained at
+$K \sim$ log-uniform$[2, 128]$ random-time designs and evaluated against the exact per-design posterior
+(96 datasets per bucket). Three observations organize the table. First, index-based positions combined
+with in-place subsampling during training (leaving kept tokens at spread positions while inference packs
+contiguously) produce biases of $+1.1$ to $+3.3$ posterior sd with no individually incorrect component ---
+the positional pathology of Sec.~\ref{sec:trope}; repacking or replacing positions with time phases
+removes the bias entirely. Second, all point-token variants share inflated widths at dense designs, in
+proportion to how poorly their pooled representation encodes $\log K$ (rightmost column; the probe of
+Sec.~\ref{sec:features}) --- including two attention mechanisms specifically constructed to exploit
+continuous time (a learned per-head time-kernel logit bias in the spirit of relative-position methods, and
+edge-message attention carrying gap-modulated increments on all pairs). Third, pair tokens with time-phase
+attention, plus the training procedure of Sec.~\ref{sec:recipe}, bring every bucket to within $7\%$ of the
+exact width.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+ & \multicolumn{4}{c}{$\sigma$ width ratio at $K$} & \\
+\cmidrule(lr){2-5}
+encoder variant & 5 & 9 & 20 & 100 & $R^2(\log K)$ \\
+\midrule
+point tokens, index positions, spread subsampling & 0.94$^{\ast}$ & 1.13$^{\ast}$ & 1.42$^{\ast}$ & 2.08$^{\ast}$ & --- \\
+point tokens, index positions, contiguous & 1.05 & 1.17 & 1.13 & 1.73 & 0.957 \\
+point tokens, time-kernel attention bias & 1.03 & 1.14 & 1.31 & 2.51 & 0.712 \\
+point tokens, edge-message attention & 1.03 & 1.15 & 1.29 & 2.45 & 0.498 \\
+point tokens, time phases & 1.01 & 1.10 & 1.14 & 1.95 & --- \\
+\quad + explicit $\log K$ feature & 1.01 & 1.05 & 1.08 & 1.49 & --- \\
+pair tokens, time phases & 1.02 & 1.02 & 1.02 & 1.27 & 0.985 \\
+pair tokens + full training procedure & 1.06 & 1.06 & 1.05 & 1.07 & --- \\
+\bottomrule
+\end{tabular}
+\caption{GBM with variable designs: posterior width for the volatility $\sigma$ against the exact
+per-design posterior (96 datasets per design-size bucket) and, where measured, the probe $R^2$ for
+$\log K$ from the pooled encoder output. The table tracks $\sigma$ because it is the parameter whose
+posterior width is governed by the observation density --- the drift $\mu$ is weakly informed at every
+$K$, and all variants recover its posterior within a few percent, so it does not discriminate between
+architectures. $^{\ast}$This row also carries biases of $+1.09$ to $+3.30$ posterior sd (the positional
+train/test mismatch of Sec.~\ref{sec:trope}); all other rows have biases consistent with zero.}
+\label{tab:designarms}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.62\linewidth]{figs/width_vs_k.pdf}
+\caption{The data of Table~\ref{tab:designarms} in graphical form: excess posterior width for the GBM
+volatility --- the width ratio against the exact posterior minus one, so $0.1$ means a posterior $10\%$
+too wide and lower is better --- as a function of the number of observation points $K$ (both axes
+logarithmic). Dotted curves: point-token variants with no set-size information, which degrade as designs
+become dense; dashed: partial repairs; solid: increment tokens, and increment tokens combined with the
+training procedure of Sec.~\ref{sec:recipe}, which is flat in $K$.}
+\label{fig:widthk}
+\end{figure}
+
 \subsection{Computational cost}
 \label{sec:cost}
 
@@ -1016,14 +1035,14 @@ transformations.
 \paragraph{Form 1: floating multiplicative scale.} On GBM, raw price tokens force the network to divide
 squared increments by squared levels internally; with global standardization this manifests as a
 volatility bias of $+0.48$ posterior sd (confirmed against the closed-form posterior) that no amount of
-training removes. The repair is the monotone mixture reparametrization of Sec.~\ref{sec:warp}, which
+training removes. The repair is the monotone mixture reparametrization of Sec.~\ref{sec:features}, which
 learns the log coordinate; the Yeo--Johnson ablation there shows why the parametrization, not the
 hypothesis class, is the operative choice. External estimators exhibit the same form on the same data
 (Table~\ref{tab:gbmcomp}, raw-price rows).
 
 \paragraph{Form 2: cardinality blindness.} Normalized attention erases set size, which controls posterior
 width under design amortization; the probe measurements and the $\log K$/register-token repairs are given
-in Sec.~\ref{sec:count}, with the arm-by-arm consequences in Table~\ref{tab:designarms}.
+in Sec.~\ref{sec:features}, with the arm-by-arm consequences in Table~\ref{tab:designarms}.
 
 \paragraph{Form 3: heavy tails.} On the Merton jump-diffusion, squared increments have sample standard
 deviation $3.1 \times 10^4$ against a diffusion signal of order $10^{-2}$--$1$; running feature
@@ -1187,6 +1206,20 @@ Table~\ref{tab:gallery} (500 datasets $\times$ 200 draws; $p > 0.05$ passes). Th
 marked in bold; see Sec.~\ref{sec:gallery} for its behavior across retrainings.}
 \label{tab:pvals}
 \end{table}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.98\linewidth]{figs/sbc_ecdf.pdf}
+\caption{Calibration check for the fixed-design gallery. Procedure: for each system, 500 synthetic
+datasets are simulated with known parameters; for each dataset the model produces 200 posterior draws,
+and the rank of the true parameter among the draws is recorded. If the posterior is calibrated, these
+ranks are uniform. Each curve shows, for one parameter, the deviation of the empirical CDF of normalized
+ranks from the uniform diagonal; the gray band is the 99\% range attributable to sampling noise at 500
+datasets. A curve bulging below zero on the left indicates a posterior shifted low relative to the
+truth, and vice versa. All curves stay within the band except Cox--Ingersoll--Ross $b$, whose deviation
+corresponds to the $\approx 0.15$~sd location shift discussed in the text.}
+\label{fig:sbcranks}
+\end{figure}
 
 \section{Reference posteriors}
 \label{app:refs}
