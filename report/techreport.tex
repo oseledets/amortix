@@ -77,37 +77,38 @@ diffusion variants \citep{wildberger2023, gloeckler2024} replace the density est
 generative models. Mature software exists: the \texttt{sbi} toolkit \citep{boelts2024}, BayesFlow
 \citep{radev2020}, and the \texttt{sbibm} benchmark collection \citep{lueckmann2021}.
 
-This report describes \amortix, a compact package (about $3{,}500$ lines, PyTorch, one small default model
-of $4.8 \times 10^5$ weights) built around three design decisions that distinguish it from the packages
-above.
+This report describes \amortix, a compact PyTorch package (about $3{,}500$ lines; one default model of
+$4.8 \times 10^5$ weights) for amortized Bayesian parameter recovery in dynamical systems. Three aspects
+of its design distinguish it from the toolkits above, and the report is organized around measuring their
+consequences.
 
-\paragraph{1. The input representation is learned, not chosen.} Conditional density estimators are
-routinely fitted to a fixed data vector after global standardization. Section~\ref{sec:anatomy} shows,
-across four different generative engines from three codebases, that this convention fails on multiplicative
-and heavy-tailed processes in a specific, reproducible way, and that supplying hand-derived coordinates
-trades one failure mode for others (over-dispersion, overconfidence, or bias, depending on the package).
-\amortix\ instead makes the coordinate system part of the model: a learnable monotone reparametrization of
-the value axis (Sec.~\ref{sec:warp}), observation times entering attention as continuous phases
-(Sec.~\ref{sec:trope}), and explicit set-cardinality features (Sec.~\ref{sec:count}). Each component is
+The first concerns the interface between raw data and the network. Conditional density estimators are
+conventionally fitted to a fixed-length data vector after global standardization; the estimator sees
+whatever coordinates the user chose. We show in Sec.~\ref{sec:headtohead} that on multiplicative and
+heavy-tailed processes this convention fails in a specific, reproducible way across four different
+generative engines from three codebases, and that supplying hand-derived coordinates does not repair it
+uniformly: with identical inputs, different implementations end up over-dispersed, overconfident, or
+biased. In \amortix\ the transformation from observations to network inputs is itself part of the trained
+model --- a monotone mixture-of-scales reparametrization of the value axis, observation times entering
+attention as continuous phases, and explicit design-size features (Sec.~\ref{sec:arch}); each component is
 motivated by a measured failure and validated by an ablation.
 
-\paragraph{2. One network for all observation designs.} \amortix\ trains a single model to approximate
-$p(m \mid S)$ coherently for \emph{every} subset $S$ of measurement points of an experiment --- arbitrary
-sizes and placements, including spatio-temporal sensor designs for PDEs
-(Sec.~\ref{sec:design-amortization}). This is the primitive required for sequential refinement and
-experimental design, and it changes the training procedure (Sec.~\ref{sec:recipe}): observation designs
-must be resampled fresh at every optimizer step, and the distribution of design sizes becomes a modeling
-choice with measurable consequences.
+The second concerns observation designs. \amortix\ trains a single network to approximate $p(m \mid S)$
+coherently for every subset $S$ of the measurement points of an experiment --- arbitrary sizes and
+placements, including spatio-temporal sensor designs for PDEs (Sec.~\ref{sec:design-amortization}). This
+is the object consumed by sequential refinement and Bayesian experimental design, and supporting it
+changes the training procedure (Sec.~\ref{sec:recipe}): designs must be resampled fresh at every
+optimizer step, and the distribution of design sizes becomes a modeling choice with measurable
+consequences.
 
-\paragraph{3. Calibration screening is separated from verification.} Simulation-based calibration (SBC)
-\citep{talts2018} is a necessary-condition test with limited power at practical sample sizes; we measure
-that limit (Sec.~\ref{sec:protocol}) and treat SBC only as a screen. The instrument of record throughout is
-the comparison of posterior mean and width against an exact or validated-MCMC reference posterior computed
-on the same observed points. The package ships the reference machinery --- closed-form posteriors where
-they exist, exact-likelihood adaptive Metropolis samplers elsewhere, and chain-validation diagnostics ---
-as part of its public API. The concern that motivates this discipline is documented in the SBI literature:
-learned posteriors can be confidently wrong in ways that rank-based diagnostics do not detect
-\citep{hermans2022}.
+The third concerns evaluation. Simulation-based calibration \citep{talts2018} is a necessary-condition
+test whose statistical power at practical sample sizes is limited; we measure that limit
+(Sec.~\ref{sec:protocol}) and use SBC only as a screen. The instrument of record throughout is the
+comparison of posterior mean and width against an exact or validated-MCMC reference posterior on the same
+observed points, and the package ships this machinery --- closed forms, exact-likelihood adaptive
+Metropolis samplers, chain validation --- as part of its public API. The concern motivating this
+discipline is documented in the SBI literature: learned posteriors can be confidently wrong in ways that
+rank diagnostics do not detect \citep{hermans2022}.
 
 The remainder of the report presents the method (Sec.~\ref{sec:method}), the architecture
 (Sec.~\ref{sec:arch}), training procedures (Sec.~\ref{sec:recipe}), the evaluation methodology
@@ -136,6 +137,24 @@ an asset while its stochastic volatility is latent, only the membrane voltage of
 variables are latent, or only three spatial sensors of a PDE field. The target is the posterior
 $p(m \mid \D) \propto p(\D \mid m)\, p(m)$.
 
+Three standing assumptions delimit the setting. The parameter is finite- and low-dimensional ($d = 2$--$5$
+in every benchmark below) with a prior that factorizes across components and has tractable marginal CDFs
+(uniform boxes throughout; the construction extends to any such prior). The simulator can be run forward
+cheaply and repeatedly, but nothing else is required of it --- no likelihood evaluations, no gradients.
+Observation times (and sensor indices) are known exactly; the measurement noise $\varepsilon_i$ is
+independent across observations with a known per-system law.
+
+\paragraph{Running example.} The Ornstein--Uhlenbeck process is used throughout to make constructions
+concrete: $dX = -\theta X\,dt + \sigma\,dW$ with $m = (\theta, \sigma)$, prior box
+$[0.3, 3] \times [0.2, 1.5]$, stationary start $X_0 \sim \N(0, \sigma^2/2\theta)$. A dataset is, for
+instance, $K = 74$ noisy values of $X$ on a fixed two-rate grid, or --- in the variable-design setting ---
+any $K$ values at arbitrary times. Its posterior has the features that recur across the suite: the
+diffusion coefficient $\sigma$ is identified sharply by high-frequency increments; the reversion rate
+$\theta$ only weakly over a finite horizon; and the width of both marginals must shrink as
+observations accumulate. An estimator can therefore be wrong in the posterior mean, in the posterior
+width, or in the width-versus-$K$ trend, and the evaluation methodology of Sec.~\ref{sec:protocol} is
+built to detect all three.
+
 \paragraph{Amortization.} Sampling from the joint distribution is easy --- draw $m_j \sim p(m)$, simulate,
 apply the observation channel --- and yields training pairs $(m_j, \D_j)$. A conditional generative model
 trained on such pairs approximates the posterior for every dataset simultaneously; inference for a new
@@ -146,37 +165,6 @@ number $K$ and placement of observation times (and sensor positions). Formally, 
 measurement points of one experiment, the network must approximate $p(m \mid S)$; in particular the
 posterior must widen consistently as points are removed. This object is what sequential refinement and
 Bayesian experimental design consume: candidate designs are compared by the posteriors they would produce.
-
-\subsection{Challenges}
-\label{sec:hard}
-
-Five properties of this problem class shaped the design of the package; each defeated at least one
-plausible architecture during development.
-
-\begin{enumerate}
-  \item \emph{Intractable likelihoods.} For SDEs observed at gaps, the likelihood integrates over latent
-  paths; for hidden-state models even the observed-process transition density is unavailable. Classical
-  estimators exist per problem but each is a separate derivation (Appendix~\ref{app:systems} lists the one
-  we implement for every benchmark system).
-  \item \emph{The width of the posterior must be right.} A point estimate can be checked against the truth;
-  a posterior asserts an uncertainty, and the two failure directions are asymmetric in consequence: an
-  overconfident posterior is silently wrong for downstream decisions. Verifying width requires reference
-  posteriors or calibration tests, and the standard calibration test has limited power
-  (Sec.~\ref{sec:protocol}), so detecting failure is itself nontrivial \citep{hermans2022}.
-  \item \emph{One network must serve all designs.} Posterior width is governed by the number of
-  observations $K$, yet softmax attention computes normalized averages that are nearly invariant to $K$
-  (Sec.~\ref{sec:count}); and the training distribution over designs acquires measurable consequences
-  (Sec.~\ref{sec:recipe}).
-  \item \emph{Conditioning of the raw data.} Multiplicative processes have a per-dataset floating scale;
-  jump processes produce squared-increment features whose sample standard deviation exceeds the median
-  scale by six orders of magnitude; the coordinate in which the process is well-behaved (often the
-  logarithm) differs per problem. Section~\ref{sec:anatomy} traces every hard failure encountered in this
-  project to this property.
-  \item \emph{Weak identifiability.} Posteriors of real systems concentrate on ridges. In the
-  Fisher--KPP benchmark only the front speed $2\sqrt{Dr}$ is sharply determined, and the trained model's
-  residual error concentrates along the flat direction of the posterior, where the training signal is
-  weakest (Sec.~\ref{sec:budget}).
-\end{enumerate}
 
 \section{Posterior sampling by conditional flow matching}
 \label{sec:method}
@@ -213,124 +201,185 @@ the input representation from the choice of generative engine.
 No likelihood evaluations, simulator gradients, or per-dataset optimization are required at any stage; the
 simulator is executed only forward, during training-set generation.
 
-\section{Architecture}
-\label{sec:arch}
+\paragraph{What is and is not guaranteed.} The construction has an exact consistency property.
 
-The network consists of a set encoder that maps the observation set $\D$ to context vectors and a velocity
-network that consumes them. The default model has width $64$, three encoder blocks, three velocity blocks,
-and $4.8 \times 10^5$ parameters in total; Sec.~\ref{sec:budget} shows that capacity is not the accuracy
-bottleneck on any benchmark, so the default is deliberately small. Throughout, the design constraint is
-that no transformation of the raw data be problem-specific.
-
-\subsection{Tokenization: point tokens and pair tokens}
-\label{sec:tokens}
-
-Each observation contributes one token. Two constructions are used.
-
-\paragraph{Point tokens (general case).} Observation $i$ becomes
-$\bigl[\,t_i,\; w(y_i),\; \text{sensor id},\; \text{set-size feature}\,\bigr]$, where $w$ is the learnable
-reparametrization of Sec.~\ref{sec:warp}. Nothing is assumed about the process.
-
-\paragraph{Pair tokens (Markov observations).} When the \emph{observed} coordinate is itself a Markov
-process --- scalar SDEs observed directly --- the likelihood factorizes over consecutive observations, and
-the factorization dictates a sufficient token content.
-
-\begin{proposition}
-Let the observed process be Markov and let $t_{(1)} < \dots < t_{(K)}$ be the sorted observation times.
-Then $p(\D \mid m) = p(y_{(1)} \mid m) \prod_{i=1}^{K-1} p\bigl(y_{(i+1)} \mid y_{(i)}; m\bigr)$, and each
-factor depends only on the pair $(y_{(i)}, y_{(i+1)})$ and the gap $\Delta t_{(i)}$.
+\begin{proposition}[consistency in the idealized limit]
+Let $(m, \D) \sim p(m)\,p(\D \mid m)$ and let $z_1$ be given by \eqref{eq:probit}. If the loss
+\eqref{eq:cfm} is minimized over all measurable velocity fields, then for $p(\D)$-almost every $\D$ the
+flow of the minimizer transports $\N(0, I)$ at $t = 0$ to the conditional law $p(z_1 \mid \D)$ at
+$t = 1$; equivalently, the sampling procedure above draws exactly from the posterior
+\citep{lipman2023, wildberger2023}.
 \end{proposition}
 
-Pair tokens present exactly these arguments in learnable coordinates,
-\[
-  \bigl[\,t_{(i)},\; w(y_{(i)}),\; \Delta w_i,\; (\Delta w_i)^2,\; w_t(\Delta t_{(i)})\,\bigr],
-  \qquad \Delta w_i = w(y_{(i+1)}) - w(y_{(i)}),
-\]
-where the squared increment supplies the quadratic-variation
-statistic that diffusion coefficients require. Two additions make the construction robust on heavy-tailed
-processes (Sec.~\ref{sec:anatomy}): squared increments are logarithmically compressed before feature
-normalization, and a set-conditioning block --- statistics pooled over the token set modulating each
-feature channel, initialized to the identity --- adapts the normalization to each dataset.
+Two things are not guaranteed, and they shape the rest of the paper. First, with a finite network,
+finite simulation budget, and a numerical ODE solver, no calibration guarantee survives; the residual
+error is an empirical quantity, which is why Sec.~\ref{sec:protocol} builds instruments to measure it
+rather than assuming it away. Second, the expectation in \eqref{eq:cfm} weights approximation error by
+the probability of the data: directions of parameter space in which the posterior is nearly flat
+contribute little to the loss and are learned last. Both effects are visible and quantified in the
+experiments --- the first as width ratios slightly above one that decrease with budget, the second as
+the along-ridge bias of the Fisher--KPP posterior (Sec.~\ref{sec:budget}).
 
-\paragraph{Class rule.} Pair tokens are used exactly when the observed process is Markov; point tokens
-otherwise. The rule was tested in both directions. A pair-token model transfers across Markov systems
-(a model class trained on geometric Brownian motion re-trains cleanly on Ornstein--Uhlenbeck with
-unchanged settings); on the Heston model, where the observed price is not Markov because volatility is
-latent, pair and point models are statistically indistinguishable across all 25 evaluation cells, as the
-factorization argument predicts --- the pair stencil confers an advantage only where the proposition
-applies. The package selects the construction from a per-problem Markov flag.
+\section{Conditioning architecture}
+\label{sec:arch}
 
-\subsection{Learnable monotone reparametrization}
+The velocity field $v_\theta(z, t, \D)$ must be conditioned on a dataset that is a \emph{set of
+time-stamped measurements}, and this drives the architecture. Four requirements follow directly from the
+problem statement: the network must accept any number $K$ of observations; its output must not depend on
+the order in which observations are stored, since the times $t_i$ carry all ordering information; the
+times are irregular real numbers, not grid indices; and, because posterior width is governed by $K$, the
+dependence on $K$ must be represented accurately, not merely tolerated. The first three requirements rule
+out the fixed-length-vector conditioners that are the default in NPE implementations; they are naturally
+met by a transformer operating on one feature vector per observation. Throughout this section the term
+\emph{token} means exactly that: the feature vector representing one observation.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\linewidth]{figs/arch.pdf}
+\caption{Architecture. Left: each observation $(t_i, y_i)$ becomes a token
+$[\,t_i,\; w(y_i),\; \text{metadata}\,]$ with a learnable monotone transform $w$
+(Sec.~\ref{sec:warp}); a three-block transformer encoder, whose attention phases are computed from the
+physical times $t_i$ (Sec.~\ref{sec:trope}), produces a memory of $K$ states. Right: the $d$ parameter
+components of the flow state $z_t$ form $d$ tokens processed by three velocity blocks, each applying
+self-attention across parameter slots and cross-attention into the observation memory, modulated by the
+flow time through zero-initialized adaptive layer norms. Integrating the resulting velocity field from a
+Gaussian draw yields a posterior sample.}
+\label{fig:arch}
+\end{figure}
+
+\subsection{Overall scheme}
+\label{sec:scheme}
+
+Figure~\ref{fig:arch} shows the two halves of the model.
+
+\emph{Encoder.} Observation $i$ becomes the token
+$x_i = [\,t_i,\; w(y_i),\; \text{sensor id},\; \text{design metadata}\,] W_{\mathrm{emb}}$, where $w$ is
+the learnable monotone transform of Sec.~\ref{sec:warp}. Three standard transformer blocks (multi-head
+self-attention followed by a two-layer MLP, pre-norm residual form) exchange information among the $K$
+tokens; attention weights are $\mathrm{softmax}_j(q_i^\top k_j / \sqrt{d_h})$ with queries and keys
+rotated by time-dependent phases as defined in Sec.~\ref{sec:trope}. The result is a memory of $K$
+encoded states.
+
+\emph{Velocity network.} The $d$ components of the flow state $z_t$ are treated as $d$ tokens. Each of
+three velocity blocks applies self-attention across the parameter slots --- this is where posterior
+correlations between parameters are expressed --- and cross-attention from the parameter slots into the
+$K$-state observation memory, which is how information about the data, at any $K$, reaches the flow.
+The flow time $t$ enters through adaptive layer normalization: each sub-layer computes
+$h \mapsto h + g \odot f\bigl((1 + \gamma)\odot \mathrm{LN}(h) + \beta\bigr)$ with
+$(\gamma, \beta, g)$ produced from a sinusoidal embedding of $t$ by a zero-initialized linear map
+\citep{peebles2023}, so the untrained network starts as an identity-like map and departs only as driven
+by the loss. The default model uses width 64, four heads, three encoder and three velocity blocks:
+$4.8 \times 10^5$ parameters in total. Section~\ref{sec:budget} shows that doubling width and depth
+changes no benchmark result, so the default is deliberately small.
+
+This scheme was not the first attempt but the survivor of a sequence of measured alternatives; the
+failed ones are retained in the package as reproducible controls and appear as rows of
+Table~\ref{tab:designarms}. The remainder of the section describes the three components that make the
+scheme work at benchmark accuracy: the time encoding, the input transform, and the design-size features
+--- plus one optional token construction that accelerates a special but common case.
+
+\subsection{Attention phases from observation times}
+\label{sec:trope}
+
+Transformers are made order-aware by positional encodings. The rotary scheme \citep{su2024} splits each
+head dimension into two-dimensional subspaces and rotates queries and keys in subspace $j$ by an angle
+proportional to the token's \emph{position} $n$ in the sequence:
+$q_i \mapsto R(n_i \omega_j)\,q_i$, $k_i \mapsto R(n_i \omega_j)\,k_i$, with a geometric frequency bank
+$\omega_j$, so that $q_i^\top k_l$ depends only on $n_i - n_l$. For irregularly sampled data the storage
+position is meaningless, and we replace it by the physical observation time:
+\begin{equation}
+  q_i \;\mapsto\; R(\omega_j t_i)\, q_i, \qquad
+  k_i \;\mapsto\; R(\omega_j t_i)\, k_i,
+  \label{eq:trope}
+\end{equation}
+so attention logits depend on the time differences $t_i - t_l$ and on nothing else about storage order.
+The encoder is then permutation-invariant by construction (verified to $10^{-8}$ under random token
+permutations), and design amortization involves no positional bookkeeping at all.
+
+The measurement that forced this choice is worth recording. An earlier configuration used storage-index
+rotations, trained with long token sequences subsampled in place (kept tokens retained their spread-out
+indices), and evaluated on contiguously packed short sequences. Every component was individually
+correct, yet the mismatch between the positional distributions seen at training and evaluation produced
+systematic posterior biases of $+1.1$ to $+3.3$ standard deviations (first row of
+Table~\ref{tab:designarms}). Index-based encodings create an implicit train/test contract on token
+placement; time-based phases eliminate the contract rather than manage it.
+
+\subsection{Learnable coordinate transform}
 \label{sec:warp}
 
-All tokenizations share one module: a monotone map applied to observed values and to time gaps,
+The values $y_i$ enter tokens through a monotone map
 \begin{equation}
-  w(x) = \sum_{k} a_k \,\operatorname{sign}(x) \log\!\bigl(1 + |x| / s_k\bigr),
+  w(x) \;=\; \sum_{k=1}^{8} a_k \,\operatorname{sign}(x) \log\!\bigl(1 + |x| / s_k\bigr),
   \qquad a_k \ge 0,
   \label{eq:warp}
 \end{equation}
-with learnable weights $a_k$ over a geometric bank of scales $s_k$ (eight octaves by default). The mixture
-interpolates continuously between the identity ($s_k$ large) and the logarithm ($s_k$ small), so the
-network can learn the coordinate in which the process is well-conditioned --- for example the log-price
-coordinate of geometric Brownian motion --- rather than having it prescribed.
+a positive mixture over a geometric bank of scales $s_k$ spanning eight octaves; the same construction
+(with its own weights) is applied to time gaps where they appear. Since
+$\log(1 + |x|/s) \approx |x|/s$ for $|x| \ll s$ and $\approx \log|x| - \log s$ for $|x| \gg s$, the
+mixture interpolates continuously between the identity and the logarithm, and the network can learn, per
+problem, the coordinate in which the observed process is well-conditioned --- for geometric Brownian
+motion it learns the log-price coordinate in which increments become homoscedastic.
 
-The specific parametrization matters more than its expressive power, which is the reason we document it.
-We first attempted a Yeo--Johnson layer \citep{yeo2000} with learnable $\lambda$: its parameter space
-contains the logarithm exactly (at $\lambda = 0$), yet across repeated runs on GBM, gradient descent left
-$\lambda$ near its initialization and the volatility bias persisted at $+0.48$ posterior standard
-deviations --- the same failure as with no transform at all. The mixture \eqref{eq:warp}, whose components
-are all active at initialization, reached the log coordinate reliably. Membership of the correct transform
-in the hypothesis class is not sufficient; it must be reachable by gradient descent from the
-initialization, and \eqref{eq:warp} is built so that it is.
+A natural first candidate for this role is the Yeo--Johnson transform \citep{yeo2000}, the standard
+one-parameter family of monotone power transforms used in applied statistics to normalize skewed data;
+it contains the identity ($\lambda = 1$) and, for positive data, the logarithm ($\lambda \to 0$) in its
+parameter space. Used as the trainable input transform on GBM, it failed: across seeds, gradient descent
+left $\lambda$ near its initialization, and the volatility bias remained at $+0.48$ posterior sd --- the
+same value as with no transform. The mixture \eqref{eq:warp} reaches the log coordinate reliably because
+all of its components produce gradients at initialization, whereas moving $\lambda$ requires traversing
+a region of the loss surface with no useful signal. We record this ablation because it illustrates the
+design rule used throughout the package: what matters is not whether the correct transformation exists
+in the hypothesis class, but whether gradient descent reaches it from the initialization.
 
-\subsection{Observation times as attention phases}
-\label{sec:trope}
+\subsection{Optional increment tokens for directly observed diffusions}
+\label{sec:tokens}
 
-Transformers encode order through positional embeddings; rotary embeddings \citep{su2024} encode the token
-\emph{index} as a rotation of query--key pairs. For irregularly sampled data the index is not meaningful,
-and using it is actively harmful in a way that is easy to miss. In an early configuration, training
-subsampled long token sequences in place (leaving kept tokens at their original, spread-out indices) while
-inference presented short, contiguously packed sequences. No individual component was incorrect, yet the
-mismatch between the two positional distributions produced systematic biases of $1$--$3$ posterior
-standard deviations at evaluation (Table~\ref{tab:designarms}). The failure is a hidden train/test
-contract on token placement.
+For scalar SDEs whose state is observed directly --- no latent components --- the package offers a
+second token construction: after sorting by time, consecutive observations contribute
+\[
+  \bigl[\,t_{(i)},\; w(y_{(i)}),\; \Delta w_i,\; (\Delta w_i)^2,\; w_t(\Delta t_{(i)})\,\bigr],
+  \qquad \Delta w_i = w(y_{(i+1)}) - w(y_{(i)}).
+\]
+The motivation is elementary: for a Markov observed process
+the likelihood factorizes over consecutive pairs, transition densities of diffusions depend on
+increments and gaps, and squared increments carry the quadratic-variation information that identifies
+diffusion coefficients. This is an inductive bias of the same character as convolutions for images ---
+useful where its assumption holds, not a requirement of the method: the point-token path of
+Sec.~\ref{sec:scheme} is fully general, and Table~\ref{tab:designarms} quantifies what the increment
+tokens buy at fixed budget (the dense-design width drops from $1.49$ to $1.27$ before the training
+procedure closes the rest).
 
-\amortix\ removes the contract by computing the attention rotation phases from \emph{physical time}: the
-rotation angle of head-dimension $j$ for a token observed at time $t$ is $\omega_j t$ with a geometric
-frequency bank $\omega_j$, so attention logits depend on time differences $t_i - t_j$ and not on storage
-order. The encoder is then permutation-invariant by construction; we verify $10^{-8}$-level invariance
-under random token permutations at float precision.
+The rule for choosing between the constructions --- increment tokens exactly when the observed process
+is Markov --- was tested in both directions: an increment-token model class transfers across Markov
+systems without adjustment (GBM to OU), and on the Heston model, whose observed price is not Markov
+because volatility is latent, increment and point tokens perform identically across all 25 evaluation
+cells, as the factorization argument predicts. The package selects the construction from a per-problem
+flag.
 
-\subsection{Set size under normalized attention}
+Two additions make increment tokens robust on heavy-tailed processes (the measurements are in
+Sec.~\ref{sec:anatomy}). Squared increments are logarithmically compressed before feature
+normalization. And the normalization is made dataset-adaptive by feature-wise affine modulation
+\citep[FiLM;][]{perez2018}: pooled robust statistics $s$ of the token set (computed over non-padding
+positions only) are mapped by a zero-initialized MLP to per-channel scales and shifts,
+\begin{equation}
+  h_c \;\mapsto\; \bigl(1 + \gamma_c(s)\bigr)\, h_c + \beta_c(s),
+  \label{eq:film}
+\end{equation}
+applied after the running feature normalization. Zero initialization keeps the working baseline at the
+start of training; the ordering (normalize, then modulate) matters and is discussed with the failure it
+prevents in Sec.~\ref{sec:anatomy}.
+
+\subsection{Design-size features}
 \label{sec:count}
 
-Posterior width is governed by the number of observations ($\propto K^{-1/2}$ in regular models), but
-softmax attention computes weighted \emph{means} over the set, and means are nearly invariant to $K$. The
-deficit is measurable. We fit linear probes from the encoder's pooled representation to known sufficient
-statistics of the GBM benchmark: every architectural variant recovers the posterior-mean statistics
-($R^2 = 0.83$--$0.94$), but $R^2(\log K)$ separates the variants that produce correct widths from those
-that do not --- $0.985$ for pair tokens, $0.957$ for index-based positions with contiguous packing,
-$0.712$ for a continuous time-kernel attention bias, $0.498$ for pairwise edge-message attention --- and
-the ranking of width errors follows the ranking of $R^2(\log K)$ exactly
-(Table~\ref{tab:designarms}).
-
-The repair requires no process knowledge, only making the set size available: either an explicit
-$\log K$ input feature, or two learned register tokens \citep{darcet2024} appended to every set, which the
-model uses to accumulate a count. On the hardest cell (dense designs, $K = 100$), the explicit feature
-reduces the width ratio from $1.95$ to $1.49$ with bias unchanged at zero. The residual after the count
-repair is a budget effect, not an architectural one (Sec.~\ref{sec:budget}). This analysis also explains an
-otherwise puzzling observation: index-based positions with contiguous packing outperform metrically
-correct continuous-time variants at dense designs, because with contiguous packing the maximal position
-\emph{is} $K$ --- the ordinal embedding leaks the count.
-
-\subsection{Velocity network}
-\label{sec:vel}
-
-The flow state $z_t$ is processed by self-attention over the $d$ parameter slots. The flow time $t$ and the
-pooled data context enter every block through adaptive layer norms with zero-initialized modulation
-(adaLN-Zero, \citealt{peebles2023}), so training starts from an identity-like map and departs only as
-driven by data. Parameter-slot attention lets the model express posterior correlations (the ridge of the
-Fisher--KPP posterior, the drift--volatility coupling of GBM) without a joint output head.
+Softmax attention computes normalized weighted means, which are nearly invariant to the number of tokens
+--- yet posterior width is governed by $K$. The deficit is measurable by linear probes from the pooled
+encoder output: all architecture variants of Table~\ref{tab:designarms} recover posterior-mean
+statistics ($R^2 = 0.83$--$0.94$), while $R^2(\log K)$ ranges from $0.985$ to $0.498$ and ranks the
+variants exactly in the order of their width errors. The repair is to supply the count: an explicit
+$\log K$ token feature, or two learned register tokens \citep{darcet2024} that accumulate it. On the
+hardest cell ($K = 100$) the explicit feature reduces the width ratio from $1.95$ to $1.49$ with bias
+unchanged; the residual is closed by the training procedure of the next section.
 
 \section{Training procedures}
 \label{sec:recipe}
@@ -483,12 +532,32 @@ Sec.~\ref{sec:refs}.
 \label{sec:gallery}
 
 Table~\ref{tab:gallery} summarizes the nine fixed-design systems. One model configuration (the default of
-Sec.~\ref{sec:arch}) is trained per system on $40{,}000$ simulations for 35 epochs; SBC uses 500 datasets
-with 200 posterior draws. Of 32 parameters, 31 pass; the single failure is the $\beta$ parameter of
-stochastic Lotka--Volterra at $p = 0.04$, marginal at the threshold. Mean central-interval coverage error
-is $1.3$ percentage points. On the systems with exact references, the learned posteriors carry
+Sec.~\ref{sec:arch}) is trained per system on $40{,}000$ simulations for 35 epochs (about 11 minutes per
+system on one H200 GPU); SBC uses 500 datasets with 200 posterior draws. Of 32 parameters, 31 pass; mean
+central-interval coverage error is $1.4$ percentage points. The failing cell in this run is the mean-level
+parameter $b$ of Cox--Ingersoll--Ross; in an independent earlier training run of the same configuration on
+a CPU, 31 of 32 parameters passed as well, but the failing cell was the $\beta$ parameter of stochastic
+Lotka--Volterra at $p = 0.04$ while Cox--Ingersoll--Ross passed at $p \ge 0.33$. The identity of the
+marginal cell is not stable across retrainings --- which is exactly the behavior predicted by the power
+analysis of Sec.~\ref{sec:protocol} for residual defects of $0.1$--$0.2$ posterior sd, and one reason SBC
+alone is not used as a verdict. On the systems with exact references, the learned posteriors carry
 $89$--$90\%$ of the available information (width relative to the exact posterior). Per-parameter
-$p$-values are listed in Appendix~\ref{app:systems}.
+$p$-values for the run shown are listed in Appendix~\ref{app:systems}.
+Figure~\ref{fig:sbc} shows the SBC rank distributions themselves --- empirical CDFs of the normalized
+ranks for all 32 parameters, with the pointwise band that a uniform distribution would occupy at this
+sample size --- so the reader can judge the calibration claim directly rather than through $p$-values
+alone.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.98\linewidth]{figs/sbc_ecdf.pdf}
+\caption{Simulation-based calibration for the fixed-design gallery: empirical CDFs of normalized SBC
+ranks (500 datasets, 200 posterior draws) for every parameter of every system, shown as deviation from
+the uniform diagonal, with a 99\% pointwise band. Curves inside the band are consistent with
+calibration; the single failure of this run (Cox--Ingersoll--Ross $b$) is visible as the curve leaving
+the band.}
+\label{fig:sbc}
+\end{figure}
 
 \begin{table}[t]
 \centering
@@ -497,17 +566,17 @@ $p$-values are listed in Appendix~\ref{app:systems}.
 \toprule
 system & $d$ & coverage err. & SBC pass & cov.\ $50\%$ & cov.\ $90\%$ \\
 \midrule
-linear-Gaussian            & 4 & 0.9\,pp & 4/4 & 51\% & 91\% \\
-Ornstein--Uhlenbeck        & 2 & 1.0\,pp & 2/2 & 52\% & 90\% \\
-SEIR                       & 5 & 1.6\,pp & 5/5 & 49\% & 89\% \\
-geometric Brownian motion  & 2 & 1.2\,pp & 2/2 & 50\% & 90\% \\
-Cox--Ingersoll--Ross       & 3 & 1.0\,pp & 3/3 & 51\% & 90\% \\
-double well                & 3 & 1.8\,pp & 3/3 & 49\% & 89\% \\
-stochastic Lotka--Volterra & 4 & 1.7\,pp & 3/4 & 51\% & 89\% \\
-FitzHugh--Nagumo           & 4 & 1.4\,pp & 4/4 & 50\% & 90\% \\
-SINDy-SDE (cubic drift)    & 5 & 1.2\,pp & 5/5 & 49\% & 90\% \\
+linear-Gaussian            & 4 & 1.3\,pp & 4/4 & 51\% & 90\% \\
+Ornstein--Uhlenbeck        & 2 & 1.8\,pp & 2/2 & 47\% & 88\% \\
+SEIR                       & 5 & 1.5\,pp & 5/5 & 49\% & 90\% \\
+geometric Brownian motion  & 2 & 1.5\,pp & 2/2 & 50\% & 90\% \\
+Cox--Ingersoll--Ross       & 3 & 1.5\,pp & 2/3 & 49\% & 88\% \\
+double well                & 3 & 0.8\,pp & 3/3 & 50\% & 90\% \\
+stochastic Lotka--Volterra & 4 & 1.9\,pp & 4/4 & 48\% & 88\% \\
+FitzHugh--Nagumo           & 4 & 1.1\,pp & 4/4 & 51\% & 90\% \\
+SINDy-SDE (cubic drift)    & 5 & 1.4\,pp & 5/5 & 50\% & 89\% \\
 \midrule
-total / mean               & 32 & 1.3\,pp & 31/32 & 50\% & 90\% \\
+total / mean               & 32 & 1.4\,pp & 31/32 & 49\% & 89\% \\
 \bottomrule
 \end{tabular}
 \caption{Fixed-design gallery: one default model per system, $40{,}000$ simulations, 35 epochs. Coverage
@@ -586,9 +655,20 @@ the residual along-ridge bias decays with budget (next subsection).
 \subsection{Residuals scale as power laws in the training budget}
 \label{sec:budget}
 
-Two residual defects remained anywhere in the suite after the architectural work: inflated width on the
-hardest Merton cell, and along-ridge bias on Fisher--KPP. Both were driven down by scaling simulations and
-optimizer steps together at fixed model size (Fig.~\ref{fig:budget}). The Merton width excess follows
+Accuracy against the exact references is a smooth, monotone function of the training budget, and we
+report it systematically rather than at a single operating point. Figure~\ref{fig:budgetgrid} shows
+posterior width and bias against the reference for three systems (GBM, OU, Fisher--KPP with the fixed
+design of Sec.~\ref{sec:headtohead}) over a grid of budgets from $5{,}000$ to $40{,}000$ simulations
+with optimizer steps scaled proportionally. Posterior widths converge to one from above on all three
+systems (Fisher--KPP: $1.45 \to 1.01$). Posterior-mean biases behave differently by identifiability:
+on GBM and OU they stay within $\pm 0.1$~sd throughout, while on Fisher--KPP the bias lies along the
+weakly identified ridge direction and does not decay monotonically --- independently trained models land
+at different points within $\pm 0.5$~sd along the ridge, consistent with the flat direction carrying
+the weakest training signal (Sec.~\ref{sec:method}). Under the variable-design training procedure,
+which averages every optimizer step over fresh observation designs, the same ridge bias does decay with
+budget. Beyond it, the two residual defects of the variable-design suite --- inflated width on the
+hardest Merton cell and along-ridge bias on Fisher--KPP under random designs --- respond to the same
+budget lever (Fig.~\ref{fig:budget}). The Merton width excess follows
 $\propto 1/\text{budget}$ ($0.246 \to 0.120 \to 0.059$ at $\times 1, \times 3, \times 6$); the KPP ridge
 bias follows $\approx \text{budget}^{-1/2}$ ($+0.41 \to +0.23 \to +0.14$~sd along the ridge, with the
 sharply identified front-speed component decaying in parallel). Two negative controls exclude the obvious
@@ -600,12 +680,47 @@ floor within the measured range.
 
 \begin{figure}[t]
 \centering
+\includegraphics[width=0.98\linewidth]{figs/budget_grid.pdf}
+\caption{Convergence to the reference posterior with training budget on three systems (columns):
+posterior width ratio (top) and posterior-mean bias (bottom) per parameter, over budgets of
+$5{,}000$--$40{,}000$ simulations with optimizer steps scaled proportionally. References: exact
+conjugate posterior (GBM), exact-likelihood MCMC (OU), PDE-likelihood MCMC (Fisher--KPP, fixed
+$K = 40$ design).}
+\label{fig:budgetgrid}
+\end{figure}
+
+\begin{figure}[t]
+\centering
 \includegraphics[width=0.9\linewidth]{figs/budget_laws.pdf}
 \caption{The two residual defects of the suite against training budget (simulations and steps scaled
 together; model size fixed). Left: Merton width excess on the hardest evaluation cell, with the
 $1/\text{budget}$ guide. Right: Fisher--KPP posterior-mean biases in the ridge coordinate system, with
 the $\text{budget}^{-1/2}$ guide.}
 \label{fig:budget}
+\end{figure}
+
+\subsection{Posterior geometry against validated references}
+\label{sec:pairs}
+
+Scalar bias and width statistics summarize accuracy but hide the joint structure of the posterior.
+Figure~\ref{fig:pairs} overlays two-dimensional posterior samples of the trained models on their
+validated references for three systems where the reference is nontrivial: the Merton jump-diffusion
+(volatility--jump-rate plane, where the two parameters compete to explain variance), pharmacokinetics at
+$K = 6$ irregular blood draws (absorption--elimination plane, the data-poor clinical regime), and
+Fisher--KPP (diffusion--reaction plane, where the posterior concentrates on the ridge
+$D r \approx \mathrm{const}$ set by the front speed). The learned posteriors reproduce the location,
+scale, orientation, and curvature of the references, including the ridge geometry; the corresponding
+scalar statistics appear in the tables of this section and in Fig.~\ref{fig:budgetgrid}.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.98\linewidth]{figs/pairs_hard.pdf}
+\caption{Joint posteriors of \amortix\ (filled contours) against validated reference posteriors (open
+contours; exact-likelihood MCMC, two chains per dataset) on one test dataset per system. Left: Merton
+jump-diffusion $(\sigma, \lambda_J)$. Middle: pharmacokinetics $(k_a, k_e)$ at $K = 6$ observations.
+Right: Fisher--KPP $(D, r)$, whose posterior concentrates on the front-speed ridge. Crosses mark the
+true parameters.}
+\label{fig:pairs}
 \end{figure}
 
 \subsection{Comparison with existing implementations}
@@ -624,13 +739,12 @@ Sec.~\ref{sec:refs}. Because these estimators consume fixed-length vectors, the 
 observation designs. Three systems are used, chosen to separate the possible explanations of any
 performance gap: a multiplicative process where input conditioning is hostile (GBM, exact conjugate
 reference), an additive process where it is comparatively benign (OU, exact-likelihood MCMC reference,
-two validated chains per dataset), and a PDE where the reference itself is expensive (Fisher--KPP, one
-PDE solve per likelihood evaluation). Where informative, external arms are additionally given
+two validated chains per dataset), and a PDE where every likelihood evaluation requires a forward solve (Fisher--KPP), so that the cost
+relationship between reference and amortized inference is inverted. Where informative, external arms are additionally given
 hand-derived inputs --- log-prices, or per-gap log-returns, the exact coordinates of the GBM likelihood
 factorization --- to separate the effect of the input representation from the generative engine.
 
-\paragraph{Multiplicative process (GBM).} Table~\ref{tab:gbmcomp} and Figs.~\ref{fig:bars},
-\ref{fig:posteriors} give the results; timing columns are wall-clock on one laptop CPU (Apple M-series;
+\paragraph{Multiplicative process (GBM).} Table~\ref{tab:gbmcomp} and Fig.~\ref{fig:bars} give the results; timing columns are wall-clock on one laptop CPU (Apple M-series;
 Simformer rows on an H200 GPU, so their timings are not comparable with the rest while their accuracy
 rows are). Three regularities are visible. First, with raw prices as input, every external configuration
 inflates the volatility posterior --- widths $1.85$ (BayesFlow coupling) to $3.16$ (Simformer port) ---
@@ -686,15 +800,6 @@ bias in posterior-sd units.}
 \label{fig:bars}
 \end{figure}
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.8\linewidth]{figs/posteriors_gbm.pdf}
-\caption{Posterior marginals on two representative GBM test datasets (rows) for both parameters
-(columns): exact posterior (shaded), \amortix\ from raw prices, \texttt{sbi} NPE from raw prices, and
-\texttt{sbi} FMPE from hand-computed log-returns. Dotted vertical lines mark the true parameters.}
-\label{fig:posteriors}
-\end{figure}
-
 \paragraph{Additive control (Ornstein--Uhlenbeck).} The same protocol on OU --- an additive process with
 no floating scale --- separates the candidate explanations of the GBM results
 (Table~\ref{tab:oucomp}). The reference is exact-likelihood MCMC (per-gap Euler--Maruyama transitions
@@ -726,9 +831,14 @@ biases vanish and widths improve but remain inflated; compare Table~\ref{tab:gbm
 \label{tab:oucomp}
 \end{table}
 
-\paragraph{Expensive reference (Fisher--KPP).} The third system inverts the cost relationship that
-makes GBM unrepresentative: one likelihood evaluation is one PDE solve, so the reference itself is the
-expensive object. A single fixed design of $K = 40$ random (time, sensor) points is shared by all
+\paragraph{Simulator-limited regime (Fisher--KPP).} The third system inverts the cost structure of the
+first two: every likelihood evaluation requires solving the forward model. A one-dimensional
+reaction--diffusion equation is inexpensive in absolute terms ($16$\,ms per solve here); what makes the
+case informative is the \emph{ratio} between reference and amortized inference, because both sides
+scale linearly with the solve cost --- a chain of $n$ likelihood evaluations costs $n$ solves per
+dataset whatever the forward model, while the amortized cost per dataset does not involve the simulator
+at all. The measured ratio below transfers to genuinely expensive simulators, where the same reference
+sampler would take days per dataset. A single fixed design of $K = 40$ random (time, sensor) points is shared by all
 datasets and methods; the reference is the PDE-likelihood sampler of Sec.~\ref{sec:refs} with two
 validated chains per dataset ($271$\,s per dataset for the pair; two-chain validation over 32 datasets:
 worst mean discrepancy $0.22$~sd, mean $0.07$~sd). Table~\ref{tab:kppcomp} gives the results.
@@ -954,19 +1064,20 @@ PDE solve.
 \toprule
 system & per-parameter SBC $p$-values \\
 \midrule
-linear-Gaussian & $m_1$: 0.33 \quad $m_2$: 0.17 \quad $m_3$: 0.70 \quad $m_4$: 0.12 \\
-Ornstein--Uhlenbeck & $\theta$: 0.69 \quad $\sigma$: 0.60 \\
-SEIR & $\beta_1$: 0.18 \quad $\beta_2$: 0.36 \quad $\alpha$: 0.50 \quad $\gamma_r$: 0.95 \quad $\gamma_d$: 0.07 \\
-geometric Brownian motion & $\mu$: 0.41 \quad $\sigma$: 0.30 \\
-Cox--Ingersoll--Ross & $a$: 0.80 \quad $b$: 0.33 \quad $\sigma$: 0.96 \\
-double well & $\theta_1$: 0.68 \quad $\theta_2$: 0.58 \quad $\sigma$: 0.56 \\
-stochastic Lotka--Volterra & $\alpha$: 0.14 \quad $\beta$: \textbf{0.04} \quad $\delta$: 0.30 \quad $\gamma$: 0.67 \\
-FitzHugh--Nagumo & $a$: 0.99 \quad $b$: 0.80 \quad $\epsilon$: 0.38 \quad $I$: 0.45 \\
-SINDy-SDE & $c_0$: 0.47 \quad $c_1$: 0.19 \quad $c_2$: 0.37 \quad $c_3$: 0.11 \quad $\sigma$: 0.56 \\
+linear-Gaussian & $m_1$: 0.06 \quad $m_2$: 0.60 \quad $m_3$: 0.38 \quad $m_4$: 0.56 \\
+Ornstein--Uhlenbeck & $\theta$: 0.28 \quad $\sigma$: 0.77 \\
+SEIR & $\beta_1$: 0.33 \quad $\beta_2$: 0.22 \quad $\alpha$: 0.61 \quad $\gamma_r$: 0.34 \quad $\gamma_d$: 0.53 \\
+geometric Brownian motion & $\mu$: 0.26 \quad $\sigma$: 0.44 \\
+Cox--Ingersoll--Ross & $a$: 0.65 \quad $b$: \textbf{0.001} \quad $\sigma$: 0.73 \\
+double well & $\theta_1$: 0.78 \quad $\theta_2$: 0.54 \quad $\sigma$: 0.88 \\
+stochastic Lotka--Volterra & $\alpha$: 0.07 \quad $\beta$: 0.69 \quad $\delta$: 0.08 \quad $\gamma$: 0.35 \\
+FitzHugh--Nagumo & $a$: 0.19 \quad $b$: 0.15 \quad $\epsilon$: 0.90 \quad $I$: 0.63 \\
+SINDy-SDE & $c_0$: 0.06 \quad $c_1$: 0.96 \quad $c_2$: 0.46 \quad $c_3$: 0.80 \quad $\sigma$: 0.50 \\
 \bottomrule
 \end{tabular}
-\caption{Per-parameter SBC uniformity $p$-values for the fixed-design gallery (500 datasets $\times$ 200
-draws; $p > 0.05$ passes). The single failure is marked in bold.}
+\caption{Per-parameter SBC uniformity $p$-values for the fixed-design gallery run of
+Table~\ref{tab:gallery} (500 datasets $\times$ 200 draws; $p > 0.05$ passes). The single failure is
+marked in bold; see Sec.~\ref{sec:gallery} for its behavior across retrainings.}
 \label{tab:pvals}
 \end{table}
 
@@ -1079,6 +1190,9 @@ Fast $\epsilon$-free inference of simulation models with Bayesian conditional de
 
 \bibitem[Papamakarios et al.(2017)]{papamakarios2017} G.~Papamakarios, T.~Pavlakou, I.~Murray.
 Masked autoregressive flow for density estimation. \emph{NeurIPS}, 2017.
+
+\bibitem[Perez et al.(2018)]{perez2018} E.~Perez, F.~Strub, H.~de~Vries, V.~Dumoulin, A.~Courville.
+FiLM: Visual reasoning with a general conditioning layer. \emph{AAAI}, 2018.
 
 \bibitem[Peebles and Xie(2023)]{peebles2023} W.~Peebles, S.~Xie.
 Scalable diffusion models with transformers. \emph{ICCV}, 2023.
