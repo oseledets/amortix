@@ -192,11 +192,19 @@ Concretely, parameters are first mapped componentwise to normalized coordinates
   \tilde m = \Phi^{-1}\!\bigl(F_{\text{prior}}(m)\bigr) \in \R^{d},
   \label{eq:probit}
 \end{equation}
-where $F_{\text{prior}}$ collects the marginal prior CDFs and $\Phi$ is the standard normal CDF; in these normalized coordinates the prior is exactly $\N(0, I)$, box constraints disappear, and --- usefully --- the
-uninformative limit costs nothing: when the data carry no information the posterior coincides with the
-reference and the transport is the identity. Let $\tilde m_0 \sim \N(0, I)$ be a reference draw and $\tilde m_1$ the
-normalized parameter drawn jointly with its dataset $\D$. Define the linear interpolation
-$\tilde m_t = (1 - t) \tilde m_0 + t \tilde m_1$ and train a velocity network by regression:
+where $F_{\text{prior}}$ collects the marginal prior CDFs and $\Phi$ is the standard normal CDF. In
+these coordinates the prior is exactly $\N(0, I)$ and box constraints disappear; usefully, the
+uninformative limit then costs nothing --- when the data carry no information the posterior coincides
+with the reference and the transport is the identity.
+
+The transport lives in this normalized parameter space, and we fix the notation once: $\tilde m$
+denotes a point of that space, and a subscript denotes the position along the transport path. The
+endpoint $\tilde m_1$ is a genuine normalized parameter --- the image under \eqref{eq:probit} of an
+$m$ drawn jointly with its dataset $\D$. The starting point $\tilde m_0 \sim \N(0, I)$ is pure
+reference noise: it is not the transform of any parameter, it is the raw material that the transport
+will have turned \emph{into} a posterior draw by $t = 1$. Between them lies the training interpolation
+$\tilde m_t = (1 - t)\, \tilde m_0 + t\, \tilde m_1$. The velocity network is trained to predict the
+direction of this path by regression:
 \begin{equation}
   \mathcal{L}(\theta) =
   \E_{\,m,\D,\; \tilde m_0 \sim \N(0,I),\; t \sim U[0,1]}
