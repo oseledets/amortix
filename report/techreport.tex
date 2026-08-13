@@ -381,30 +381,37 @@ turn: a learnable transform of the observed values, an optional increment-based 
 directly observed diffusions, and an explicit design-size feature. Each occupies a few lines of code;
 each is load-bearing, as the ablations of Sec.~\ref{sec:ablations} show.
 
-\paragraph{Value transform.} The values $y_i$ enter tokens through a monotone map
+\paragraph{Value transform.} State variables of the benchmark systems live on very different scales,
+and some --- prices, concentrations, populations --- are multiplicative: the information sits in
+relative rather than absolute changes, and the coordinate in which such a variable is well-behaved is
+logarithmic. Rather than prescribing coordinates per problem, each value enters its token through a
+learned monotone map,
 \begin{equation}
   w(x) \;=\; \sum_{k=1}^{S} a_k \,\operatorname{sign}(x) \log\!\bigl(1 + |x| / s_k\bigr),
-  \qquad a_k \ge 0,
+  \qquad a_k \ge 0.
   \label{eq:warp}
 \end{equation}
-a positive mixture over a geometric bank of $S$ scales $s_k$; the same construction (with its own
-weights) is applied to time gaps where they appear. Since $\log(1 + |x|/s) \approx |x|/s$ for
-$|x| \ll s$ and $\approx \log|x| - \log s$ for $|x| \gg s$, each component is linear below its scale
-and logarithmic above it, so the mixture can realize the identity, the signed logarithm, and all
-intermediate compressions, with monotonicity guaranteed by the sign constraint on the weights. The number
-of scales $S$ and their placement are hyperparameters with a transparent role --- the bank must cover the
-dynamic range of the observed values --- and we use one default everywhere, $S = 8$ scales spaced by
-octaves, for all fifteen benchmark systems with no per-problem adjustment. On geometric Brownian motion
-the trained mixture concentrates on its small-scale components: it learns the log-price coordinate in
-which increments become homoscedastic.
+Each basis function is linear for $|x| \ll s_k$ and logarithmic for $|x| \gg s_k$, so the family
+contains the identity, the signed logarithm, and every compression in between; positivity of the
+weights makes $w$ monotone by construction; and --- the operative property --- every candidate
+compression is present from initialization, so training only reweights fixed nonlinearities, and the
+downstream network can exploit whichever coordinate helps from the first optimizer step. The scales
+$s_k$ sit on a fixed geometric grid covering the dynamic range of the data ($S = 8$ octaves by default,
+one setting for all fifteen systems, no per-problem adjustment).
 
-The structure of \eqref{eq:warp} --- monotone by construction, few parameters, containing the useful
-coordinates at nonzero gradient from initialization --- is the point of the design; less structured
-learnable alternatives were evaluated and did not work at matched budget. A trainable Yeo--Johnson
-transform \citep{yeo2000}, which nests the logarithm at $\lambda \to 0$, never left its initialization
-on GBM (the volatility bias stayed at $+0.48$ posterior sd, as with no transform at all), and
-unconstrained feature maps --- a two-layer MLP on raw values, and random Fourier features --- also failed
-to recover the log coordinate.
+This structure has to earn its place against simpler-looking learnable alternatives, and we tested them
+on GBM, where the correct coordinate (log-price) is known and the cost of missing it is a measured
+$+0.48$~sd volatility bias. A generic two-layer MLP on the raw values, and a random-Fourier-feature
+map, both left the bias in place at matched budget: a free-form map must discover the shape and the
+scale of the compression simultaneously, from gradients arriving through the whole downstream network,
+and in practice it does not. A classical one-parameter statistical family --- the Yeo--Johnson power
+transforms \citep{yeo2000}, in essence $x \mapsto ((1+|x|)^{\lambda} - 1)/\lambda$ applied with sign
+symmetry, which passes through the identity at $\lambda = 1$ and tends to the logarithm as
+$\lambda \to 0$ --- also failed, in an instructive way: trained end-to-end, $\lambda$ never left its
+initialization, because a single global exponent must traverse a gradient plateau before the downstream
+network has learned anything that would reward the move. The mixture \eqref{eq:warp} removes the bias
+reliably, and on GBM the trained weights concentrate on the small-scale components: the model learns
+the log-price coordinate.
 
 \paragraph{Increment features for directly observed diffusions.} For scalar SDEs whose state is observed directly --- no latent components --- the package offers a
 second token construction: after sorting by time, consecutive observations contribute
