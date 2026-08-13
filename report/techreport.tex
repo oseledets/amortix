@@ -726,7 +726,39 @@ biases vanish and widths improve but remain inflated; compare Table~\ref{tab:gbm
 \label{tab:oucomp}
 \end{table}
 
-%%KPP_PARAGRAPH%%
+\paragraph{Expensive reference (Fisher--KPP).} The third system inverts the cost relationship that
+makes GBM unrepresentative: one likelihood evaluation is one PDE solve, so the reference itself is the
+expensive object. A single fixed design of $K = 40$ random (time, sensor) points is shared by all
+datasets and methods; the reference is the PDE-likelihood sampler of Sec.~\ref{sec:refs} with two
+validated chains per dataset ($271$\,s per dataset for the pair; two-chain validation over 32 datasets:
+worst mean discrepancy $0.22$~sd, mean $0.07$~sd). Table~\ref{tab:kppcomp} gives the results.
+\amortix\ matches the reference ($1.02$/$1.04$ width, biases within $0.13$~sd) at $31$\,ms per dataset;
+its entire training cost ($379$\,s) equals the reference cost of fewer than three datasets, so
+amortization pays for itself almost immediately in any repeated-inference setting. NPE at defaults shows
+moderate width inflation ($1.26$--$1.28$); FMPE at defaults fails outright on the diffusivity
+($+7.3 \pm 2.7$~sd bias at $12.5\times$ width) while remaining reasonable on the reaction rate --- a
+further instance of default configurations behaving discontinuously across parameters, and detectable
+here only because the expensive reference was computed.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lrrcc@{}}
+\toprule
+method (40 observed values as input) & train & inference & $D$: bias / width & $r$: bias / width \\
+\midrule
+\amortix\ CFM & $379$\,s & $31$\,ms & $-0.05$ / $1.02$ & $+0.13$ / $1.04$ \\
+\texttt{sbi} NPE & $218$\,s & $7$\,ms & $+0.19 \pm 0.12$ / $1.28$ & $-0.06$ / $1.26$ \\
+\texttt{sbi} FMPE & $115$\,s & $405$\,ms & $+7.3 \pm 2.7$ / $12.5$ & $-0.25 \pm 0.10$ / $1.19$ \\
+PDE-likelihood MCMC & --- & $271$\,s & \multicolumn{2}{c}{reference (two chains per dataset)} \\
+\bottomrule
+\end{tabular}
+\caption{Fisher--KPP, fixed $K = 40$ spatio-temporal design, $20{,}000$-simulation budget, 32 test
+datasets, one H200 GPU (MCMC on its CPU pool). One likelihood evaluation is one PDE solve, so the
+reference costs $271$\,s per dataset; the training cost of the amortized model equals the reference
+cost of fewer than three datasets.}
+\label{tab:kppcomp}
+\end{table}
 
 \paragraph{Scope of the comparison.} Every external arm ran at its package defaults under our simulation
 budget; specialists could improve each with problem-specific embedding networks or summary statistics.

@@ -91,6 +91,40 @@ authors' minimal example (joint transformer-diffusion, their architecture
 and settings, full 75k-step training) and ran it on an H200 GPU — timing
 rows not device-comparable, accuracy rows are.
 
+The additive control (OU, fixed 74-point design, same budget, H200; reference
+= exact-likelihood MCMC with two validated chains per dataset — worst
+discrepancy 0.29 sd over 100 datasets):
+
+| arm | train | inference/dataset | theta bias/width | sigma bias/width |
+|---|---|---|---|---|
+| amortix CFM, raw values | 183 s | 32 ms | −0.01 / 1.03 | +0.01 / 1.05 |
+| sbi NPE, raw values | 128 s | 10 ms | +0.07 / 1.15 | +0.19 / 1.88 |
+| sbi FMPE, raw values | 87 s | 147 ms | +0.11 / 1.01 | +0.08 / 1.60 |
+
+On additive data the external BIAS vanishes (the floating-scale mechanism is
+gone by construction) and width inflation halves but persists — the control
+localizes the dominant GBM failure to input conditioning and leaves a smaller
+representation gap even in the benign case. Reproduce:
+`python examples/baseline_ou.py --device cuda`.
+
+The expensive-reference case (Fisher–KPP, fixed K=40 spatio-temporal design;
+one likelihood eval = one PDE solve, so the MCMC reference costs 271 s per
+dataset — two validated chains, worst discrepancy 0.22 sd over 32 datasets):
+
+| arm | train | inference/dataset | D bias/width | r bias/width |
+|---|---|---|---|---|
+| amortix CFM | 379 s | 31 ms | −0.05 / 1.02 | +0.13 / 1.04 |
+| sbi NPE | 218 s | 7 ms | +0.19 / 1.28 | −0.06 / 1.26 |
+| sbi FMPE | 115 s | 405 ms | **+7.3 / 12.5** | −0.25 / 1.19 |
+| PDE-likelihood MCMC | — | 271 s | (reference) | (reference) |
+
+Here amortization pays for itself after fewer than THREE datasets (training
+379 s vs 271 s/dataset for the reference), and FMPE at defaults fails
+catastrophically on the diffusivity while staying reasonable on the reaction
+rate — defaults behave discontinuously across parameters, visible only
+because the expensive reference was computed. Reproduce:
+`python examples/baseline_kpp.py --device cuda`.
+
 Readings: (1) at defaults amortix matches the exact posterior; FOUR external
 engines on raw prices (MAF / two flow matchings / joint diffusion) all fail
 sigma by the floating-scale mechanism (sbi's own z-scoring warning fires) —
