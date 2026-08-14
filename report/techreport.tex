@@ -751,47 +751,71 @@ fixed-grid systems, one or two rejections are expected by chance even from an ex
 \label{sec:summary}
 \label{sec:gallery}
 
-Table~\ref{tab:master} collects the outcome for every system: one default configuration, trained per
-system with no per-system adjustment, passes the calibration screen on 46 of 48 parameters across the
-suite and matches the exact or validated reference posteriors, where they exist, to within a few
-percent in width at the largest budgets. The two exceptions are quantified rather than hidden: a
-$\approx 0.15$~sd location shift on one Cox--Ingersoll--Ross parameter (interval coverage remains
-$48\%$/$88\%$ against nominal $50\%$/$90\%$; the identity of the marginal case moves between
-retrainings, consistent with the resolution limit of SBC at this sample size), and the Merton posterior
-width, which converges to the reference as the training budget grows (Sec.~\ref{sec:budget}).
-Per-parameter $p$-values, rank distributions, and coverage curves are in Appendix~\ref{app:systems}.
+Tables~\ref{tab:master} and \ref{tab:screen} collect the outcome for every system, separated by the
+strength of the available evaluation. One default configuration, trained per system with no per-system
+adjustment, matches the exact or validated reference posteriors to median FID $0.03$--$0.07$ on five of
+the six reference systems; the exception is the Merton jump-diffusion at $0.21$, whose remaining error
+is width on the jump parameters. On the nine systems without a tractable reference, the calibration
+screen passes 34 of 36 parameters for the small model, with the marginal cases moving between
+retrainings as expected at the screen's resolution limit. Both tables also answer the capacity
+question: a model with doubled width and depth, trained on the same $120{,}000$ simulations, is never
+more accurate and is more often marginally miscalibrated --- at these problem sizes the binding
+constraint is training data, not network size. Training runs $19$--$63$ minutes per model on one H200
+GPU depending on the system; the trained model then draws $2{,}000$ posterior samples in $70$\,ms per
+observation set (batched) regardless of the system. Per-parameter $p$-values, rank distributions, and
+coverage curves for the standard-budget gallery run are in Appendix~\ref{app:systems}.
 
 \begin{table}[t]
 \centering
-\footnotesize
-\begin{tabular}{@{}llcclc@{}}
+\small
+\begin{tabular}{@{}llcccc@{}}
 \toprule
-system & reference & $d$ & SBC pass & FID vs reference & train \\
+ &  &  & test & \multicolumn{2}{c}{FID} \\
+\cmidrule(lr){5-6}
+system & reference & $d$ & sets & small & big \\
 \midrule
-linear-Gaussian & exact posterior & 4 & 4/4 & $0.03$ & 11 min \\
-Ornstein--Uhlenbeck & exact-likelihood MCMC & 2 & 2/2 & $0.07$ & 11 min \\
-geometric Brownian motion & conjugate closed form & 2 & 2/2 & $0.04$ & 11 min \\
-Cox--Ingersoll--Ross & --- & 3 & 2/3 & --- & 11 min \\
-double well & --- & 3 & 3/3 & --- & 11 min \\
-stochastic Lotka--Volterra & --- & 4 & 4/4 & --- & 11 min \\
-FitzHugh--Nagumo & --- & 4 & 4/4 & --- & 11 min \\
-SEIR & --- & 5 & 5/5 & --- & 11 min \\
-polynomial-drift SDE & --- & 5 & 5/5 & --- & 11 min \\
-Heston & --- & 5 & 5/5 & --- & 12 min \\
-Merton jump-diffusion & Poisson-mixture MCMC & 5 & 5/5 & $0.2$ (median; at $\times 6$ budget) & 8--66 min \\
-H\'enon--Heiles & --- & 3 & 3/3 & --- & 8 min \\
-Hodgkin--Huxley & --- & 4 & 4/4 & --- & 9 min \\
-pharmacokinetics & log-normal MCMC & 3 & 3/3 & $0.15$ (median; at $\times 3$ budget) & 7--20 min \\
-Fisher--KPP (PDE) & PDE-likelihood MCMC & 2 & 2/2 & $0.07$ & 6 min \\
+linear-Gaussian & exact posterior & 4 & 200 & $0.04$ & $0.04$ \\
+geometric Brownian motion & conjugate closed form & 2 & 200 & $0.03$ & $0.07$ \\
+Ornstein--Uhlenbeck & exact-likelihood MCMC & 2 & 100 & $0.07$ & $0.12$ \\
+Merton jump-diffusion & Poisson-mixture MCMC & 5 & 32 & $0.21$ & $0.21$ \\
+pharmacokinetics & log-normal MCMC & 3 & 32 & $0.06$ & $0.09$ \\
+Fisher--KPP (PDE) & PDE-likelihood MCMC & 2 & 32 & $0.04$ & $0.05$ \\
 \bottomrule
 \end{tabular}
-\caption{All fifteen systems under one default configuration. ``SBC pass'' $x/y$ means $x$ of the system's $y$ parameters have rank distributions consistent with
-uniformity ($p > 0.05$; for random-design systems, over mixed designs). The accuracy column is the median FID \eqref{eq:fid} to the reference posterior over
-the system's test battery (200/100/32 observation sets for GBM/OU/Fisher--KPP, the batteries of
-Sec.~\ref{sec:headtohead}; two to three sets for the remaining reference systems); dashes mean no tractable reference (calibration screen and
-controls only). Training time on one H200 GPU; the
-Merton range spans the budget ladder of Sec.~\ref{sec:budget}.}
+\caption{Systems with reference posteriors: median FID \eqref{eq:fid} of the trained-to-saturation
+models against the reference, over the stated number of test observation sets. \emph{small} is the
+default configuration (width 64, 3+3 blocks), \emph{big} doubles width and depth (128, 4+4); both are
+trained on $120{,}000$ simulations to saturation. The larger model is never better --- capacity is not
+the limiting factor at these problem sizes.}
 \label{tab:master}
+\end{table}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+ &  & \multicolumn{2}{c}{SBC pass} \\
+\cmidrule(lr){3-4}
+system & $d$ & small & big \\
+\midrule
+Cox--Ingersoll--Ross & 3 & 3/3 & 1/3 \\
+double well & 3 & 3/3 & 2/3 \\
+stochastic Lotka--Volterra & 4 & 3/4 & 4/4 \\
+FitzHugh--Nagumo & 4 & 4/4 & 3/4 \\
+SEIR & 5 & 5/5 & 5/5 \\
+polynomial-drift SDE & 5 & 5/5 & 4/5 \\
+Heston & 5 & 5/5 & 5/5 \\
+H\'enon--Heiles & 3 & 3/3 & HHBIG \\
+Hodgkin--Huxley & 4 & 3/4 & HXBIG \\
+\bottomrule
+\end{tabular}
+\caption{Systems without a tractable reference: parameters passing the SBC uniformity screen
+($p > 0.05$, 500 observation sets $\times$ 200 draws; random-design systems over mixed designs), for
+the same saturated small and big models as Table~\ref{tab:master}. Individual marginal cases move
+between configurations and retrainings, as expected at the screen's resolution limit
+(Sec.~\ref{sec:protocol}); the big model is again not better.}
+\label{tab:screen}
 \end{table}
 
 \subsection{Comparison with existing tools}
@@ -1034,9 +1058,10 @@ the $\text{budget}^{-1/2}$ guide.}
 \end{figure}
 
 
-Costs, for orientation. Training takes 6--12 minutes per system at the base budget on one H200 GPU
-(Table~\ref{tab:master}) and about an hour at the $\times 6$ budget behind the sharpest Merton
-numbers; on a laptop CPU, base-budget training takes 8--45 minutes and produces bit-identical
+Costs, for orientation. The saturated models of Tables~\ref{tab:master} and \ref{tab:screen} train
+in $19$--$63$ minutes per system on one H200 GPU ($120{,}000$ simulations; $66$--$72$k optimizer
+steps); at the $20{,}000$-simulation budget of the comparisons above, training takes $6$--$12$
+minutes. On a laptop CPU, training takes roughly four times longer and produces bit-identical
 posteriors, because all stochastic generation is kept on a CPU random number generator by design.
 Inference draws $2{,}000$ posterior samples in $426$\,ms per observation set on the laptop CPU and
 $72$\,ms batched ($135$\,ms single) on the GPU. The small external models of
@@ -1195,7 +1220,8 @@ require a different normalization.
 \section{Calibration detail for the fixed-grid systems}
 \label{app:systems}
 
-Per-parameter SBC $p$-values for the run of Table~\ref{tab:master} are listed in
+Per-parameter SBC $p$-values for the standard-budget gallery run ($40{,}000$ simulations, the run of
+Figs.~\ref{fig:sbc} and \ref{fig:sbcranks}) are listed in
 Table~\ref{tab:pvals}; Fig.~\ref{fig:sbc} shows empirical-vs-nominal coverage of the central credible
 intervals, and Fig.~\ref{fig:sbcranks} the underlying rank distributions.
 
@@ -1218,7 +1244,7 @@ polynomial-drift SDE & $c_0$: 0.06 \quad $c_1$: 0.96 \quad $c_2$: 0.46 \quad $c_
 \bottomrule
 \end{tabular}
 \caption{Per-parameter SBC uniformity $p$-values for the fixed-design gallery run of
-Table~\ref{tab:master} (500 observation sets $\times$ 200 draws; $p > 0.05$ passes). The single failure is
+the standard-budget gallery run (500 observation sets $\times$ 200 draws; $p > 0.05$ passes). The single failure is
 marked in bold; see Sec.~\ref{sec:gallery} for its behavior across retrainings.}
 \label{tab:pvals}
 \end{table}
