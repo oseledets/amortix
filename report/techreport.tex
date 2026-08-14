@@ -747,7 +747,7 @@ FitzHugh--Nagumo & --- & 4 & 4/4 & --- & 11 min \\
 SEIR & --- & 5 & 5/5 & --- & 11 min \\
 SINDy-SDE & --- & 5 & 5/5 & --- & 11 min \\
 Heston & --- & 5 & 5/5 & --- & 12 min \\
-Merton jump-diffusion & Poisson-mixture MCMC & 5 & 5/5 & width $1.25 \to 1.06$ with budget & 8--50 min \\
+Merton jump-diffusion & Poisson-mixture MCMC & 5 & 5/5 & width $1.25 \to 1.06$ with budget & 8--66 min \\
 H\'enon--Heiles & --- & 3 & 3/3 & --- & 8 min \\
 Hodgkin--Huxley & --- & 4 & 4/4 & --- & 9 min \\
 pharmacokinetics & log-normal MCMC & 3 & 3/3 & $-0.06$ / $1.33$ at $K = 6$ & 7 min \\
@@ -1018,7 +1018,7 @@ the $\text{budget}^{-1/2}$ guide.}
 
 
 Costs, for orientation. Training takes 6--12 minutes per system at the base budget on one H200 GPU
-(Table~\ref{tab:master}) and about 50 minutes at the $\times 6$ budget behind the sharpest Merton
+(Table~\ref{tab:master}) and about an hour at the $\times 6$ budget behind the sharpest Merton
 numbers; on a laptop CPU, base-budget training takes 8--45 minutes and produces bit-identical
 posteriors, because all stochastic generation is kept on a CPU random number generator by design.
 Inference draws $2{,}000$ posterior samples in $426$\,ms per observation set on the laptop CPU and
