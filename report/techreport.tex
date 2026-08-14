@@ -757,11 +757,13 @@ adjustment, matches the exact or validated reference posteriors to median FID $0
 the six reference systems; the exception is the Merton jump-diffusion at $0.21$, whose remaining error
 is width on the jump parameters. On the nine systems without a tractable reference, the calibration
 screen passes 34 of 36 parameters for the small model, with the marginal cases moving between
-retrainings as expected at the screen's resolution limit. Both tables also answer the capacity
-question: a model with doubled width and depth, trained on the same $120{,}000$ simulations, is never
-more accurate against the references and is systematically worse on the calibration screen (28 of 36
-parameters) --- at these problem sizes the binding constraint is training data, not network size, and
-the larger model simply has more ways to be slightly miscalibrated at the same data budget. Training runs $19$--$63$ minutes per model on one H200
+retrainings as expected at the screen's resolution limit. Both tables also carry a capacity observation that we flag rather than over-interpret: a model with
+doubled width and depth, trained on the same $120{,}000$ simulations with unchanged hyperparameters,
+is never more accurate against the references and is worse on the calibration screen (28 of 36
+parameters). At face value this is the signature of a data-limited regime --- the larger model has
+more freedom to fit simulation noise at the same data budget --- but it could equally reflect
+hyperparameters tuned for the small model; disentangling the two requires scaling the data with the
+model, which we report with the convergence study of Sec.~\ref{sec:budget}. Training runs $19$--$63$ minutes per model on one H200
 GPU depending on the system; the trained model then draws $2{,}000$ posterior samples in $70$\,ms per
 observation set (batched) regardless of the system. Per-parameter $p$-values, rank distributions, and
 coverage curves for the standard-budget gallery run are in Appendix~\ref{app:systems}.
@@ -786,8 +788,8 @@ Fisher--KPP (PDE) & PDE-likelihood MCMC & 2 & 32 & $0.04$ & $0.05$ \\
 \caption{Systems with reference posteriors: median FID \eqref{eq:fid} of the trained-to-saturation
 models against the reference, over the stated number of test observation sets. \emph{small} is the
 default configuration (width 64, 3+3 blocks), \emph{big} doubles width and depth (128, 4+4); both are
-trained on $120{,}000$ simulations to saturation. The larger model is never better --- capacity is not
-the limiting factor at these problem sizes.}
+trained on $120{,}000$ simulations with unchanged hyperparameters. The larger model is never better at
+this data budget; see Sec.~\ref{sec:summary} for the interpretation.}
 \label{tab:master}
 \end{table}
 
@@ -815,8 +817,8 @@ Hodgkin--Huxley & 4 & 3/4 & 3/4 \\
 ($p > 0.05$, 500 observation sets $\times$ 200 draws; random-design systems over mixed designs), for
 the same saturated small and big models as Table~\ref{tab:master}. Individual marginal cases move
 between configurations and retrainings, as expected at the screen's resolution limit
-(Sec.~\ref{sec:protocol}); the big model is systematically worse at the same data budget (28/36
-vs 34/36).}
+(Sec.~\ref{sec:protocol}); at the same data budget and hyperparameters the big model passes fewer
+(28/36 vs 34/36).}
 \label{tab:screen}
 \end{table}
 
