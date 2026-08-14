@@ -301,7 +301,11 @@ def kpp_logpost_factory(prob: FisherKPPDesign, tidx, cidx, y_obs):
     return log_post
 
 
+from .design_basic import GBMDesign, OUDesign  # noqa: E402
+
 DESIGN_ZOO = {
+    "gbm_rd": GBMDesign,
+    "ou_rd": OUDesign,
     "heston": HestonDesign,
     "merton": MertonDesign,
     "henon_heiles": HenonHeilesDesign,
