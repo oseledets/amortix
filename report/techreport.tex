@@ -526,10 +526,24 @@ a verdict.
 \subsection{Reference posteriors as the record}
 \label{sec:refs}
 
-Wherever a tractable likelihood exists, we compare distributions on the same observed points using two
-statistics per parameter: the signed error of the posterior mean in units of the reference posterior
-standard deviation (\emph{bias}) and the ratio of standard deviations (\emph{width}; $1$ is exact, $> 1$
-conservative, $< 1$ overconfident). References are of three kinds (full details in
+Wherever a tractable likelihood exists, we compare distributions on the same observed points. The
+headline statistic is a single number per observation set, the squared Fr\'echet distance between
+Gaussian fits of the two sample sets in reference-normalized coordinates (each parameter divided by the
+reference posterior standard deviation),
+\begin{equation}
+  d_F^2 \;=\; \lVert \mu_a - \mu_r \rVert^2
+  + \operatorname{tr}\!\bigl(\Sigma_a + \Sigma_r
+  - 2\,(\Sigma_r^{1/2} \Sigma_a \Sigma_r^{1/2})^{1/2}\bigr)
+  \label{eq:fid}
+\end{equation}
+--- the construction used as the FID score in the image-generation literature, and we adopt that name.
+FID here is zero for a perfect match, dimensionless, and combines the three ways a posterior can be wrong: location error, width
+error, and correlation (orientation) error. For scale, a bias of $0.1$ reference-sd in each of $d$
+dimensions gives FID $0.01\,d$, and a posterior $30\%$ too wide in one dimension gives
+FID $\approx 0.09$. Where the \emph{direction} of a failure matters --- too wide is merely wasteful,
+overconfident is silently dangerous --- we additionally quote its decomposition per parameter: the
+signed posterior-mean error in reference-sd units (\emph{bias}) and the ratio of standard deviations
+(\emph{width}; $1$ exact, above one conservative, below one overconfident). References are of three kinds (full details in
 Appendix~\ref{app:refs}):
 \begin{itemize}
   \item \emph{Closed form.} The linear-Gaussian benchmark (exact Gaussian posterior) and geometric Brownian
@@ -726,13 +740,12 @@ only a point-accuracy control unmasks it.
 \section{Experimental results}
 \label{sec:results}
 
-Two conventions hold throughout. Where a reference posterior exists, accuracy is reported as the signed
-error of the posterior mean in units of the reference posterior standard deviation (\emph{bias}) and as
-the ratio of standard deviations (\emph{width}; $1$ is exact, above one conservative, below one
-overconfident). Simulation-based calibration is reported as the number of parameters passing the
-uniformity screen at $p > 0.05$ over 500 simulated observation sets (\emph{SBC pass}); with 32 such
-tests on the fixed-grid systems, one or two rejections are expected by chance even from an exact
-posterior.
+Two conventions hold throughout. Where a reference posterior exists, accuracy is reported as the
+FID of Sec.~\ref{sec:refs} --- one dimensionless number per system, zero for a
+perfect posterior --- with per-parameter bias and width quoted where the direction of a deviation
+matters. Simulation-based calibration is reported as the number of parameters passing the uniformity
+screen at $p > 0.05$ over 500 simulated observation sets (\emph{SBC pass}); with 32 such tests on the
+fixed-grid systems, one or two rejections are expected by chance even from an exact posterior.
 
 \subsection{Summary}
 \label{sec:summary}
@@ -753,11 +766,11 @@ Per-parameter $p$-values, rank distributions, and coverage curves are in Appendi
 \footnotesize
 \begin{tabular}{@{}llcclc@{}}
 \toprule
-system & reference & $d$ & SBC pass & worst-param bias / width vs ref & train \\
+system & reference & $d$ & SBC pass & FID vs reference & train \\
 \midrule
-linear-Gaussian & exact posterior & 4 & 4/4 & $0.00$ / $1.00$ & 11 min \\
-Ornstein--Uhlenbeck & exact-likelihood MCMC & 2 & 2/2 & $+0.01$ / $1.05$ & 11 min \\
-geometric Brownian motion & conjugate closed form & 2 & 2/2 & $-0.00$ / $1.05$ & 11 min \\
+linear-Gaussian & exact posterior & 4 & 4/4 & $0.03$ & 11 min \\
+Ornstein--Uhlenbeck & exact-likelihood MCMC & 2 & 2/2 & $0.07$ & 11 min \\
+geometric Brownian motion & conjugate closed form & 2 & 2/2 & $0.04$ & 11 min \\
 Cox--Ingersoll--Ross & --- & 3 & 2/3 & --- & 11 min \\
 double well & --- & 3 & 3/3 & --- & 11 min \\
 stochastic Lotka--Volterra & --- & 4 & 4/4 & --- & 11 min \\
@@ -765,17 +778,18 @@ FitzHugh--Nagumo & --- & 4 & 4/4 & --- & 11 min \\
 SEIR & --- & 5 & 5/5 & --- & 11 min \\
 polynomial-drift SDE & --- & 5 & 5/5 & --- & 11 min \\
 Heston & --- & 5 & 5/5 & --- & 12 min \\
-Merton jump-diffusion & Poisson-mixture MCMC & 5 & 5/5 & width $1.25 \to 1.06$ with budget & 8--66 min \\
+Merton jump-diffusion & Poisson-mixture MCMC & 5 & 5/5 & $0.2$ (median; at $\times 6$ budget) & 8--66 min \\
 H\'enon--Heiles & --- & 3 & 3/3 & --- & 8 min \\
 Hodgkin--Huxley & --- & 4 & 4/4 & --- & 9 min \\
-pharmacokinetics & log-normal MCMC & 3 & 3/3 & $-0.06$ / $1.33$ at $K = 6$ & 7 min \\
-Fisher--KPP (PDE) & PDE-likelihood MCMC & 2 & 2/2 & $-0.05$ / $1.02$ & 6 min \\
+pharmacokinetics & log-normal MCMC & 3 & 3/3 & $0.15$ (median; at $\times 3$ budget) & 7--20 min \\
+Fisher--KPP (PDE) & PDE-likelihood MCMC & 2 & 2/2 & $0.07$ & 6 min \\
 \bottomrule
 \end{tabular}
 \caption{All fifteen systems under one default configuration. ``SBC pass'' $x/y$ means $x$ of the system's $y$ parameters have rank distributions consistent with
-uniformity ($p > 0.05$; for random-design systems, over mixed designs). The accuracy
-column quotes the least well-determined parameter against the reference where one exists; dashes mean
-no tractable reference (calibration screen and controls only). Training time on one H200 GPU; the
+uniformity ($p > 0.05$; for random-design systems, over mixed designs). The accuracy column is the median FID \eqref{eq:fid} to the reference posterior over
+the system's test battery (200/100/32 observation sets for GBM/OU/Fisher--KPP, the batteries of
+Sec.~\ref{sec:headtohead}; two to three sets for the remaining reference systems); dashes mean no tractable reference (calibration screen and
+controls only). Training time on one H200 GPU; the
 Merton range spans the budget ladder of Sec.~\ref{sec:budget}.}
 \label{tab:master}
 \end{table}
@@ -807,67 +821,54 @@ relationship between reference and amortized inference is inverted. Where inform
 hand-derived inputs --- log-prices, or per-gap log-returns, the exact coordinates of the GBM likelihood
 factorization --- to separate the effect of the input representation from the generative engine.
 
-\paragraph{Multiplicative process (GBM).} Table~\ref{tab:gbmcomp} compares all methods at their
-defaults on raw price data; Table~\ref{tab:gbmhand} repeats the external methods with hand-derived input
-coordinates. On raw data every
-external configuration inflates the volatility posterior --- widths $1.85$ to $3.16$ --- irrespective of
-the generative engine; \texttt{sbi} itself emits a warning about precision loss during z-scoring on this
-data, which is a fair description of the mechanism (Sec.~\ref{sec:anatomy}). Hand-derived coordinates do
-not produce convergent behavior (Table~\ref{tab:gbmhand}): with identical log-return inputs, NPE remains
-$44\%$ over-dispersed, FMPE is nearly exact ($1.09$), both BayesFlow arms become overconfident (widths
-$0.42$--$0.85$), and the Simformer port acquires a $-0.48$~sd bias. Each of these defects is invisible
-without an exact reference, and each lies within or near the blind region of SBC at practical sizes
-(Sec.~\ref{sec:protocol}). At fixed input coordinates the flow-matching engine outperforms the
-autoregressive flow ($1.09$ vs $1.44$), consistent with the engine choice of Sec.~\ref{sec:method}, but
-no external arm matches the learnable representation operating on raw data ($1.05$). The verdicts are
-stable across devices and seeds: re-running the sbi and BayesFlow arms on an H200 GPU with fresh seeds
-reproduces every failure direction (NPE $2.48$, FMPE $2.30$, BayesFlow coupling $1.80$ on raw input;
-BayesFlow overconfident at $0.40$--$0.72$ on log-returns).
+\paragraph{Multiplicative process (GBM).} Table~\ref{tab:gbmcomp} compares all methods on one device
+and one metric. At package defaults on raw price data, every external configuration misses the
+posterior by one to two orders of magnitude more than \amortix: FID $2.3$--$4.8$ against $0.04$.
+The dominant mechanism is the input representation, not the generative engine
+(Sec.~\ref{sec:anatomy}); \texttt{sbi} itself emits a warning about precision loss during z-scoring on
+this data. Hand-derived coordinates (bottom block of the table) help but do not converge to a common
+answer: with identical log-return inputs the external tools land at FID $0.8$--$1.5$, an order of
+magnitude above \amortix\ operating on raw data, and they fail in different directions --- NPE remains
+over-dispersed ($\sigma$ width $1.44$), both BayesFlow arms become overconfident (widths
+$0.42$--$0.85$, the silently dangerous direction), and the Simformer port acquires a $-0.48$~sd bias.
+Log-prices alone do not help NPE at all ($5.8$ vs $4.8$ raw). At fixed input coordinates the
+flow-matching engine beats the autoregressive flow ($0.8$ vs $1.5$ on log-returns), consistent with the
+engine choice of Sec.~\ref{sec:method}. Every defect here is invisible without an exact reference and
+lies within or near the blind region of SBC at practical sizes (Sec.~\ref{sec:protocol}); the failure
+directions replicate across devices and seeds (per-parameter decompositions for an independent
+laptop-CPU run of every arm are in \texttt{results/}).
 
 \begin{table}[t]
 \centering
 \small
-\begin{tabular}{@{}lrrcc@{}}
+\begin{tabular}{@{}llrrr@{}}
 \toprule
-method & train & inference & $\mu$: bias / width & $\sigma$: bias / width \\
+method & input & train & inference & FID \\
 \midrule
-\amortix\ CFM & $488$\,s & $426$\,ms & $+0.00$ / $1.00$ & $-0.00$ / $1.05$ \\
-\texttt{sbi} NPE & $29$\,s & $13$\,ms & $-0.02$ / $1.06$ & $+0.45 \pm 0.19$ / $2.64$ \\
-\texttt{sbi} FMPE & $27$\,s & $370$\,ms & $-0.03$ / $1.03$ & $+0.20 \pm 0.16$ / $2.46$ \\
-BayesFlow~2 coupling & $384$\,s & $4$\,ms & $-0.04$ / $0.95$ & $-0.13 \pm 0.11$ / $1.85$ \\
-BayesFlow~2 flow matching & $220$\,s & $2220$\,ms & $+0.06$ / $1.00$ & $-0.36 \pm 0.11$ / $1.99$ \\
-Simformer port$^{\ast}$ & $591$\,s & $1057$\,ms & $-0.04$ / $1.08$ & $-0.30 \pm 0.20$ / $3.16$ \\
-exact-likelihood MCMC & --- & $42$\,ms & \multicolumn{2}{c}{reference (chain check: $-0.04$ / $+0.01$)} \\
+\amortix\ CFM & raw prices & $236$\,s & $70$\,ms & $0.04$ \\
+\midrule
+\texttt{sbi} NPE & raw prices & $170$\,s & $36$\,ms & $4.8$ \\
+\texttt{sbi} FMPE & raw prices & $215$\,s & $359$\,ms & $3.8$ \\
+BayesFlow~2 coupling & raw prices & $1252$\,s & $0.3$\,ms & $2.6$ \\
+BayesFlow~2 flow matching & raw prices & $790$\,s & $95$\,ms & $2.3$ \\
+Simformer port & raw prices & SFRAWTRAIN & SFRAWINF & SFRAWFID \\
+\midrule
+\texttt{sbi} NPE & log-prices & $157$\,s & $25$\,ms & $5.8$ \\
+\texttt{sbi} NPE & log-returns & $52$\,s & $26$\,ms & $1.5$ \\
+\texttt{sbi} FMPE & log-returns & $99$\,s & $378$\,ms & $0.8$ \\
+BayesFlow~2 coupling & log-returns & $1254$\,s & $0.3$\,ms & $1.2$ \\
+BayesFlow~2 flow matching & log-returns & $771$\,s & $97$\,ms & $1.4$ \\
+Simformer port & log-returns & SFRETTRAIN & SFRETINF & SFRETFID \\
+\midrule
+exact-likelihood MCMC & log-returns (analytic) & --- & $42$\,ms (CPU) & reference \\
 \bottomrule
 \end{tabular}
-\caption{GBM, all methods on raw price data at package defaults: training cost, accuracy against the
-exact posterior (bias in reference-sd units; width ratio, $1$ exact), and inference cost per observation set for
-$2{,}000$ samples. Fixed 95-point design, $20{,}000$-simulation budget, 200 test observation sets; timings on
-one laptop CPU. $^{\ast}$Simformer is research code ported from its authors' minimal example and run on
-an H200 GPU: its timing entries are not device-comparable with the rest, its accuracy entries are.}
+\caption{GBM: all methods at package defaults, one H200 GPU, equal $20{,}000$-simulation budget, 200
+test observation sets against the exact conjugate posterior. FID is the Fr\'echet distance \eqref{eq:fid} to the reference, median over test observation sets (the distribution across sets is
+right-skewed; means are $1.5$--$3\times$ larger, per-arm values in \texttt{results/}). Middle block:
+raw data, the amortized default regime. Bottom block: the same external tools given hand-derived input
+coordinates. Inference time is per observation set for $2{,}000$ samples.}
 \label{tab:gbmcomp}
-\end{table}
-
-\begin{table}[t]
-\centering
-\small
-\begin{tabular}{@{}llcc@{}}
-\toprule
-method & input given & $\mu$: bias / width & $\sigma$: bias / width \\
-\midrule
-\texttt{sbi} NPE & log-prices & $-0.04$ / $1.01$ & $+0.32 \pm 0.17$ / $2.29$ \\
-\texttt{sbi} NPE & log-returns & $+0.07$ / $1.07$ & $+0.13 \pm 0.10$ / $1.44$ \\
-\texttt{sbi} FMPE & log-returns & $+0.01$ / $1.03$ & $-0.02 \pm 0.07$ / $1.09$ \\
-BayesFlow~2 coupling & log-returns & $-0.01$ / $0.42$ & $-0.15 \pm 0.05$ / $0.54$ \\
-BayesFlow~2 flow matching & log-returns & $-0.04$ / $0.46$ & $-0.30 \pm 0.06$ / $0.85$ \\
-Simformer port & log-returns & $-0.08$ / $1.10$ & $-0.48 \pm 0.02$ / $1.36$ \\
-\bottomrule
-\end{tabular}
-\caption{Input sensitivity of the external methods on GBM: the same tools as Table~\ref{tab:gbmcomp}
-given hand-derived coordinates --- log-prices, or the per-gap log-returns that constitute the exact
-coordinates of the likelihood factorization. Widths below one are overconfident. \amortix\ appears only
-in Table~\ref{tab:gbmcomp}: it receives raw data by construction.}
-\label{tab:gbmhand}
 \end{table}
 
 \paragraph{Additive control (Ornstein--Uhlenbeck).} OU is an additive process, so the floating-scale
@@ -882,19 +883,19 @@ reads $1.03$ and $1.05$ on the same observation sets.
 \begin{table}[t]
 \centering
 \small
-\begin{tabular}{@{}lrrcc@{}}
+\begin{tabular}{@{}lrrr@{}}
 \toprule
-method (raw values as input) & train & inference & $\theta$: bias / width & $\sigma$: bias / width \\
+method (raw values) & train & inference & FID \\
 \midrule
-\amortix\ CFM & $183$\,s & $32$\,ms & $-0.01$ / $1.03$ & $+0.01$ / $1.05$ \\
-\texttt{sbi} NPE & $128$\,s & $10$\,ms & $+0.07$ / $1.15$ & $+0.19 \pm 0.19$ / $1.88$ \\
-\texttt{sbi} FMPE & $87$\,s & $147$\,ms & $+0.11$ / $1.01$ & $+0.08 \pm 0.12$ / $1.60$ \\
-exact-likelihood MCMC & --- & $124$\,ms & \multicolumn{2}{c}{reference (two chains per observation set)} \\
+\amortix\ CFM & $226$\,s & $77$\,ms & $0.07$ \\
+\texttt{sbi} NPE & $134$\,s & $19$\,ms & $2.7$ \\
+\texttt{sbi} FMPE & $114$\,s & $279$\,ms & $1.2$ \\
+exact-likelihood MCMC & --- & $124$\,ms (CPU) & reference \\
 \bottomrule
 \end{tabular}
-\caption{Ornstein--Uhlenbeck, fixed 74-point design, $20{,}000$-simulation budget, 100 test observation sets,
-one H200 GPU (MCMC on its CPU; time given for the two validation chains). The additive control: external
-biases vanish and widths improve but remain inflated; compare Table~\ref{tab:gbmcomp}.}
+\caption{Ornstein--Uhlenbeck (additive control), fixed 74-point design, $20{,}000$-simulation budget,
+100 test observation sets, one H200 GPU. FID: median Fr\'echet distance to the exact-likelihood
+MCMC reference (two validated chains per observation set).}
 \label{tab:oucomp}
 \end{table}
 
@@ -908,32 +909,33 @@ at all. The measured ratio below transfers to genuinely expensive simulators, wh
 sampler would take days per observation set. A single fixed design of $K = 40$ random (time, sensor) points is shared by all
 observation sets and methods; the reference is the PDE-likelihood sampler of Sec.~\ref{sec:refs} with two
 validated chains per observation set ($271$\,s per observation set for the pair; two-chain validation over 32 observation sets:
-worst mean discrepancy $0.22$~sd, mean $0.07$~sd). Table~\ref{tab:kppcomp} gives the results.
-\amortix\ matches the reference ($1.02$/$1.04$ width, biases within $0.13$~sd) at $31$\,ms per observation set;
-its entire training cost ($379$\,s) equals the reference cost of fewer than three observation sets, so
-amortization pays for itself almost immediately in any repeated-inference setting. NPE at defaults shows
-moderate width inflation ($1.26$--$1.28$); FMPE at defaults fails outright on the diffusivity
-($+7.3 \pm 2.7$~sd bias at $12.5\times$ width) while remaining reasonable on the reaction rate --- a
-further instance of default configurations behaving discontinuously across parameters, and detectable
-here only because the expensive reference was computed.
+worst mean discrepancy $0.22$~sd, mean $0.07$~sd). Table~\ref{tab:kppcomp} gives the results. \amortix\ matches the
+reference at FID $0.07$, answering in $69$\,ms per observation set, and its entire training cost
+($591$\,s) equals the reference cost of fewer than three observation sets --- amortization pays for
+itself almost immediately in any repeated-inference setting. NPE shows moderate error (FID $0.5$,
+from widths of $1.26$--$1.28$); FMPE at defaults fails outright on the diffusivity ($+7.3 \pm 2.7$~sd
+bias at $12.5\times$ width, FID $76$) while remaining reasonable on the reaction rate --- default
+configurations behave discontinuously across parameters, detectable here only because the expensive
+reference was computed.
 
 \begin{table}[t]
 \centering
 \small
-\begin{tabular}{@{}lrrcc@{}}
+\begin{tabular}{@{}lrrr@{}}
 \toprule
-method (40 observed values as input) & train & inference & $D$: bias / width & $r$: bias / width \\
+method (40 observed values) & train & inference & FID \\
 \midrule
-\amortix\ CFM & $379$\,s & $31$\,ms & $-0.05$ / $1.02$ & $+0.13$ / $1.04$ \\
-\texttt{sbi} NPE & $218$\,s & $7$\,ms & $+0.19 \pm 0.12$ / $1.28$ & $-0.06$ / $1.26$ \\
-\texttt{sbi} FMPE & $115$\,s & $405$\,ms & $+7.3 \pm 2.7$ / $12.5$ & $-0.25 \pm 0.10$ / $1.19$ \\
-PDE-likelihood MCMC & --- & $271$\,s & \multicolumn{2}{c}{reference (two chains per observation set)} \\
+\amortix\ CFM & $591$\,s & $69$\,ms & $0.07$ \\
+\texttt{sbi} NPE & $235$\,s & $19$\,ms & $0.5$ \\
+\texttt{sbi} FMPE & $163$\,s & $703$\,ms & $76$ \\
+PDE-likelihood MCMC & --- & $271$\,s (CPU) & reference \\
 \bottomrule
 \end{tabular}
 \caption{Fisher--KPP, fixed $K = 40$ spatio-temporal design, $20{,}000$-simulation budget, 32 test
-observation sets, one H200 GPU (MCMC on its CPU pool). One likelihood evaluation is one PDE solve, so the
-reference costs $271$\,s per observation set; the training cost of the amortized model equals the reference
-cost of fewer than three observation sets.}
+observation sets, one H200 GPU. FID: median Fr\'echet distance to the PDE-likelihood MCMC reference
+($\approx 12{,}000$ PDE solves per observation set; the amortized model's entire training equals the
+reference cost of fewer than three observation sets). The FMPE value reflects its diffusivity failure
+($+7.3$~sd bias at $12.5\times$ width).}
 \label{tab:kppcomp}
 \end{table}
 
@@ -960,27 +962,15 @@ on the curved ridge $D r \approx \mathrm{const}$ fixed by the observable front s
 posteriors reproduce location, scale, orientation, and --- where present --- the curvature of the
 ridge.
 
-The joint agreement can be summarized in one number per system. Following the construction used as the
-FID score in the image literature, we fit Gaussians to the two sample sets in reference-normalized
-coordinates (each parameter divided by the reference posterior standard deviation) and report the
-squared Fr\'echet distance
-\begin{equation}
-  d_F^2 \;=\; \lVert \mu_a - \mu_r \rVert^2
-  + \operatorname{tr}\!\bigl(\Sigma_a + \Sigma_r
-  - 2\,(\Sigma_r^{1/2} \Sigma_a \Sigma_r^{1/2})^{1/2}\bigr),
-  \label{eq:fid}
-\end{equation}
-which is zero for a perfect match, grows as squared bias in units of reference sd, and penalizes
-covariance (orientation) errors that per-parameter width ratios miss. Averaged over the test
-observation sets of Fig.~\ref{fig:pairs}: linear-Gaussian $0.03$, OU $0.04$, GBM $0.08$, Fisher--KPP
-$0.16$, Merton $0.54$ (dominated by one test set with $\sigma$ width $1.24$; the other two sit at
-$0.1$--$0.2$), pharmacokinetics $0.1$--$0.2$ on two of its three test sets. For scale, a $0.1$~sd bias
-in each of $d$ dimensions gives $d_F^2 = 0.01\,d$. The pharmacokinetics values required tripling the
+In the FID metric of Sec.~\ref{sec:refs} (medians over the largest available test battery per
+system): linear-Gaussian $0.03$, GBM $0.04$, OU and Fisher--KPP $0.07$, pharmacokinetics $0.15$ and
+Merton $0.2$ at their increased budgets. For scale, a $0.1$~sd bias
+in each of $d$ dimensions gives FID $0.01\,d$. The pharmacokinetics values required tripling the
 training budget (at the base budget they were an order of magnitude worse --- the clearest budget
 effect in the suite), and its third test set illustrates a failure mode of the metric rather than of
 the model: the true volume of distribution lies within $3\%$ of the prior boundary and the reference
 posterior for $k_e$ has a standard deviation of $1\%$ of its value, so a $0.02$ absolute shift is
-magnified into $d_F^2 \approx 38$; behavior at prior boundaries is listed as a limitation in
+magnified into FID $\approx 38$; behavior at prior boundaries is listed as a limitation in
 Sec.~\ref{sec:discussion}. Together with Table~\ref{tab:master}, this figure is the central evidence
 that one small default model recovers full posteriors across the suite.
 
