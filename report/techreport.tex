@@ -870,15 +870,14 @@ in Table~\ref{tab:gbmcomp}: it receives raw data by construction.}
 \label{tab:gbmhand}
 \end{table}
 
-\paragraph{Additive control (Ornstein--Uhlenbeck).} The GBM results admit two readings: either the
-external tools are generally inaccurate, or raw multiplicative data is what breaks them. OU decides
-between the readings, because it is an additive process with no floating scale. Under the identical
-protocol (Table~\ref{tab:oucomp}), the external tools improve exactly as the conditioning explanation
-predicts. Their volatility bias disappears ($+0.19 \pm 0.19$~sd for NPE, $+0.08 \pm 0.12$ for FMPE,
-both consistent with zero), and their width inflation drops by roughly half --- $2.6 \to 1.9$ for NPE,
-$2.5 \to 1.6$ for FMPE --- but does not vanish: turning $74$ raw values into quadratic-variation
-information is still a representation task, and a z-scored vector input leaves it entirely to the
-network. \amortix\ reads $1.03$ and $1.05$ on the same observation sets.
+\paragraph{Additive control (Ornstein--Uhlenbeck).} OU is an additive process, so the floating-scale
+problem of raw prices is absent by construction, and running the identical protocol on it shows how
+much of the GBM failure that problem accounts for (Table~\ref{tab:oucomp}). The external tools improve
+substantially: their volatility bias becomes consistent with zero ($+0.19 \pm 0.19$~sd for NPE,
+$+0.08 \pm 0.12$ for FMPE), and their width inflation drops from $2.5$--$2.6$ to $1.9$ (NPE) and
+$1.6$ (FMPE). It does not disappear: extracting quadratic-variation information from $74$ raw values
+remains a representation task that a z-scored vector input leaves entirely to the network. \amortix\
+reads $1.03$ and $1.05$ on the same observation sets.
 
 \begin{table}[t]
 \centering
