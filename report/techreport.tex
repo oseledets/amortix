@@ -827,10 +827,12 @@ posterior by one to two orders of magnitude more than \amortix: FID $2.3$--$4.8$
 The dominant mechanism is the input representation, not the generative engine
 (Sec.~\ref{sec:anatomy}); \texttt{sbi} itself emits a warning about precision loss during z-scoring on
 this data. Hand-derived coordinates (bottom block of the table) help but do not converge to a common
-answer: with identical log-return inputs the external tools land at FID $0.8$--$1.5$, an order of
-magnitude above \amortix\ operating on raw data, and they fail in different directions --- NPE remains
-over-dispersed ($\sigma$ width $1.44$), both BayesFlow arms become overconfident (widths
-$0.42$--$0.85$, the silently dangerous direction), and the Simformer port acquires a $-0.48$~sd bias.
+answer: with identical log-return inputs the external tools land at median FID $0.34$--$1.5$ ---
+the best of them still an order of magnitude above \amortix\ operating on raw data --- and they fail
+in different directions: NPE remains over-dispersed ($\sigma$ width $1.44$), both BayesFlow arms
+become overconfident (widths $0.42$--$0.85$, the silently dangerous direction), and the Simformer
+port, best by median, has the heaviest tail across observation sets (mean FID $1.9$, five times its
+median).
 Log-prices alone do not help NPE at all ($5.8$ vs $4.8$ raw). At fixed input coordinates the
 flow-matching engine beats the autoregressive flow ($0.8$ vs $1.5$ on log-returns), consistent with the
 engine choice of Sec.~\ref{sec:method}. Every defect here is invisible without an exact reference and
@@ -851,14 +853,14 @@ method & input & train & inference & FID \\
 \texttt{sbi} FMPE & raw prices & $215$\,s & $359$\,ms & $3.8$ \\
 BayesFlow~2 coupling & raw prices & $1252$\,s & $0.3$\,ms & $2.6$ \\
 BayesFlow~2 flow matching & raw prices & $790$\,s & $95$\,ms & $2.3$ \\
-Simformer port & raw prices & SFRAWTRAIN & SFRAWINF & SFRAWFID \\
+Simformer port & raw prices & $703$\,s & $1049$\,ms & $8.5$ \\
 \midrule
 \texttt{sbi} NPE & log-prices & $157$\,s & $25$\,ms & $5.8$ \\
 \texttt{sbi} NPE & log-returns & $52$\,s & $26$\,ms & $1.5$ \\
 \texttt{sbi} FMPE & log-returns & $99$\,s & $378$\,ms & $0.8$ \\
 BayesFlow~2 coupling & log-returns & $1254$\,s & $0.3$\,ms & $1.2$ \\
 BayesFlow~2 flow matching & log-returns & $771$\,s & $97$\,ms & $1.4$ \\
-Simformer port & log-returns & SFRETTRAIN & SFRETINF & SFRETFID \\
+Simformer port & log-returns & $586$\,s & $1053$\,ms & $0.34$ \\
 \midrule
 exact-likelihood MCMC & log-returns (analytic) & --- & $42$\,ms (CPU) & reference \\
 \bottomrule
