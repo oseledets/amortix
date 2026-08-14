@@ -1018,47 +1018,32 @@ the moments.}
 \label{sec:budget}
 
 Accuracy against the references is reported systematically rather than at a single operating point.
-Figure~\ref{fig:budgetgrid} shows posterior width and bias against the reference for three systems
-(GBM, OU, Fisher--KPP with the fixed design of Sec.~\ref{sec:headtohead}) over a grid of budgets from
-$5{,}000$ to $40{,}000$ simulations with optimizer steps scaled proportionally, each budget point
-trained with three independent seeds. Posterior widths converge to one from above for every system and
-every seed (Fisher--KPP: $1.45 \to 1.01$). Posterior-mean biases behave differently by
-identifiability: on GBM and OU they stay within about $\pm 0.2$~sd with no budget trend, while on
-Fisher--KPP the bias lies along the weakly identified ridge direction and varies between seeds within
-$\pm 0.5$~sd rather than decaying --- the nearly flat direction contributes little to the loss
-\eqref{eq:cfm} and retains seed-level freedom (Sec.~\ref{sec:method}). Under the variable-design
+Figure~\ref{fig:budgetgrid} shows FID against the reference for three systems (GBM, OU, Fisher--KPP
+with the fixed design of Sec.~\ref{sec:headtohead}) over a grid of budgets from $5{,}000$ to
+$40{,}000$ simulations with optimizer steps scaled proportionally, each budget point trained with
+three independent seeds. FID falls monotonically with budget on all three systems --- GBM
+$0.10 \to 0.03$, OU $0.25 \to 0.06$, Fisher--KPP $0.77 \to 0.15$ in seed means --- and the widening
+of the seed band on Fisher--KPP at large budgets is informative rather than noise: the residual error
+there lies along the weakly identified ridge direction $\ln(r/D)$, which contributes little to the
+loss \eqref{eq:cfm}, so independently trained models retain seed-level freedom along it (one seed sits
+at $0.31$ at the largest budget while the other two reach $0.06$--$0.07$). Under the variable-design
 training procedure, which averages every optimizer step over fresh observation designs, the same ridge
-bias does decay with budget, $+0.41 \to +0.23 \to +0.14$~sd at $\times 1, \times 3, \times 6$,
-and the Merton width excess follows $\propto 1/\text{budget}$ ($0.246 \to 0.120 \to 0.059$). Two
-negative controls exclude the obvious alternatives: doubling network width and depth at fixed budget
-changes the hardest Merton case by less than $0.02$ in width ratio ($1.103$ vs $1.120$ at $\times 3$),
-and refining the sampling ODE solver from 20 midpoint steps to 60 RK4 steps changes nothing
-measurable.
+error decays steadily with budget. Two negative controls exclude the obvious alternatives: doubling
+network width and depth at fixed budget does not improve any point of the grid (the saturated big
+model of Table~\ref{tab:master} confirms this at $120{,}000$ simulations), and refining the sampling
+ODE solver from 20 midpoint steps to 60 RK4 steps changes nothing measurable.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.98\linewidth]{figs/budget_grid.pdf}
-\caption{Convergence to the reference posterior with training budget on three systems (columns):
-posterior width ratio (top) and posterior-mean bias (bottom) per parameter, over budgets of
-$5{,}000$--$40{,}000$ simulations with optimizer steps scaled proportionally. Lines: mean over three
-independent training seeds; shaded bands: seed range. Widths converge to one for every seed; the
-posterior-mean bias of the weakly identified Fisher--KPP ridge direction varies between seeds within
-the band, with no systematic trend --- the residual freedom of a nearly flat posterior direction.
-References: exact conjugate posterior (GBM), exact-likelihood MCMC (OU), PDE-likelihood MCMC
+\caption{Convergence to the reference posterior with training budget: median FID (log scale) on three
+systems over budgets of $5{,}000$--$40{,}000$ simulations with optimizer steps scaled proportionally.
+Lines: mean over three independent training seeds; shaded bands: seed range. The widening Fisher--KPP
+band at large budgets is the seed-level freedom of the weakly identified ridge direction discussed in
+the text. References: exact conjugate posterior (GBM), exact-likelihood MCMC (OU), PDE-likelihood MCMC
 (Fisher--KPP, fixed $K = 40$ design).}
 \label{fig:budgetgrid}
 \end{figure}
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.9\linewidth]{figs/budget_laws.pdf}
-\caption{The two residual defects of the suite against training budget (simulations and steps scaled
-together; model size fixed). Left: Merton width excess on the hardest evaluation case, with the
-$1/\text{budget}$ guide. Right: Fisher--KPP posterior-mean biases in the ridge coordinate system, with
-the $\text{budget}^{-1/2}$ guide.}
-\label{fig:budget}
-\end{figure}
-
 
 Costs, for orientation. The saturated models of Tables~\ref{tab:master} and \ref{tab:screen} train
 in $19$--$63$ minutes per system on one H200 GPU ($120{,}000$ simulations; $66$--$72$k optimizer
@@ -1088,7 +1073,10 @@ $K = 6$ irregular blood draws, bias $-0.01$ to $-0.06$~sd and widths $1.09$--$1.
 exact-likelihood MCMC. Fisher--KPP: the posterior concentrates on the ridge $D \cdot r \approx$ const;
 the residual along-ridge bias decays with budget (Sec.~\ref{sec:budget}).
 
-Table~\ref{tab:designarms} and Fig.~\ref{fig:widthk} compare encoder variants for design amortization on GBM, trained at
+The ablations of this subsection track the posterior width component rather than FID: the mechanism
+under study --- set-size blindness of normalized attention --- expresses itself specifically as width
+error, and FID would mix it with unrelated deviations. Table~\ref{tab:designarms} and
+Fig.~\ref{fig:widthk} compare encoder variants for design amortization on GBM, trained at
 $K \sim$ log-uniform$[2, 128]$ random-time designs and evaluated against the exact per-design posterior
 (96 observation sets per bucket). Three observations organize the table. First, index-based positions combined
 with in-place subsampling during training (leaving kept tokens at spread positions while inference packs
