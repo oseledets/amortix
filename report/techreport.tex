@@ -759,8 +759,9 @@ is width on the jump parameters. On the nine systems without a tractable referen
 screen passes 34 of 36 parameters for the small model, with the marginal cases moving between
 retrainings as expected at the screen's resolution limit. Both tables also answer the capacity
 question: a model with doubled width and depth, trained on the same $120{,}000$ simulations, is never
-more accurate and is more often marginally miscalibrated --- at these problem sizes the binding
-constraint is training data, not network size. Training runs $19$--$63$ minutes per model on one H200
+more accurate against the references and is systematically worse on the calibration screen (28 of 36
+parameters) --- at these problem sizes the binding constraint is training data, not network size, and
+the larger model simply has more ways to be slightly miscalibrated at the same data budget. Training runs $19$--$63$ minutes per model on one H200
 GPU depending on the system; the trained model then draws $2{,}000$ posterior samples in $70$\,ms per
 observation set (batched) regardless of the system. Per-parameter $p$-values, rank distributions, and
 coverage curves for the standard-budget gallery run are in Appendix~\ref{app:systems}.
@@ -806,15 +807,16 @@ FitzHugh--Nagumo & 4 & 4/4 & 3/4 \\
 SEIR & 5 & 5/5 & 5/5 \\
 polynomial-drift SDE & 5 & 5/5 & 4/5 \\
 Heston & 5 & 5/5 & 5/5 \\
-H\'enon--Heiles & 3 & 3/3 & HHBIG \\
-Hodgkin--Huxley & 4 & 3/4 & HXBIG \\
+H\'enon--Heiles & 3 & 3/3 & 1/3 \\
+Hodgkin--Huxley & 4 & 3/4 & 3/4 \\
 \bottomrule
 \end{tabular}
 \caption{Systems without a tractable reference: parameters passing the SBC uniformity screen
 ($p > 0.05$, 500 observation sets $\times$ 200 draws; random-design systems over mixed designs), for
 the same saturated small and big models as Table~\ref{tab:master}. Individual marginal cases move
 between configurations and retrainings, as expected at the screen's resolution limit
-(Sec.~\ref{sec:protocol}); the big model is again not better.}
+(Sec.~\ref{sec:protocol}); the big model is systematically worse at the same data budget (28/36
+vs 34/36).}
 \label{tab:screen}
 \end{table}
 

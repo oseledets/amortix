@@ -1,0 +1,11 @@
+{
+ "case": "linear_gaussian",
+ "size": "small",
+ "params": 483201,
+ "train_s": 2485.9821910858154,
+ "n_train": 120000,
+ "fid_median": 0.03887363863280291,
+ "fid_mean": 0.05312368307703121,
+ "fid_se": 0.0035898721338524305,
+ "n_sets": 200
+}
