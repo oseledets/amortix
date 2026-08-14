@@ -217,11 +217,9 @@ the direction of this path by regression:
   \label{eq:cfm}
 \end{equation}
 The minimizer of \eqref{eq:cfm} is the marginal velocity field whose flow transports $\N(0, I)$ at
-$\tau = 0$ to $p(m_1 \mid \D)$ at $\tau = 1$ \citep{lipman2023}. Sampling integrates
-$dm/d\tau = v_\theta(m, \tau, \D)$ with a fixed-step midpoint scheme and maps back
-through the inverse of \eqref{eq:probit}; the number of steps is a solver-accuracy parameter fixed once
-by a convergence check --- refining the default (20 steps) to fourth-order Runge--Kutta with three times
-as many steps changes no benchmark statistic (Sec.~\ref{sec:budget}). Evaluation uses an exponential moving average of the weights.
+$\tau = 0$ to $p(m_1 \mid \D)$ at $\tau = 1$ \citep{lipman2023}. Sampling draws $m_0 \sim \N(0, I)$, integrates $dm/d\tau = v_\theta(m, \tau, \D)$ from $\tau = 0$
+to $1$, and maps the endpoint back through the inverse of \eqref{eq:probit}; the numerical settings of
+the integration are implementation details, collected in Sec.~\ref{sec:recipe}.
 The same estimator family, with a different conditioning architecture, is available in \texttt{sbi} as
 FMPE \citep{wildberger2023}; the comparison of Sec.~\ref{sec:headtohead} therefore isolates the effect of
 the input representation from the choice of generative engine.
@@ -239,16 +237,9 @@ $t = 1$; equivalently, the sampling procedure above draws exactly from the poste
 \citep{lipman2023, wildberger2023}.
 \end{proposition}
 
-The proposition is an idealization, and the two ways in which practice departs from it shape the rest of
-the paper. With a finite network, a finite simulation budget, and a numerical solver, no calibration
-guarantee survives; the residual error is an empirical quantity, and Sec.~\ref{sec:protocol} builds the
-instruments to measure it rather than assume it away. A second, structural observation: the loss \eqref{eq:cfm} is a plain average over simulated data and
-virtual times, and nothing in it privileges accuracy in directions of parameter space where the posterior
-is nearly flat --- errors there change the regression target little. We offer this as an interpretation,
-not a theorem, and it is consistent with what the experiments show: residual posterior widths sit
-slightly above the reference and decrease with training budget, and the largest residual bias we observe
-anywhere in the suite lies along the flat ridge direction of the Fisher--KPP posterior
-(Sec.~\ref{sec:budget}).
+The proposition is an idealization: with a finite network, a finite simulation budget, and a numerical
+solver, no calibration guarantee survives, and the residual error becomes an empirical quantity.
+Section~\ref{sec:protocol} builds the instruments that measure it.
 
 \section{Conditioning architecture}
 \label{sec:arch}
@@ -256,7 +247,8 @@ anywhere in the suite lies along the flat ridge direction of the Fisher--KPP pos
 The velocity field $v_\theta(m, \tau, \D)$ must be conditioned on an observation set of
 time-stamped measurements, and three properties of that set drive the architecture: the number of
 observations $K$ varies from experiment to experiment (by two orders of magnitude in the variable-design
-setting); the observation times are irregular real numbers, not grid indices; and the times carry all
+setting); the observation times are arbitrary real numbers, in general not equally
+spaced, so positional schemes built for uniform sequences do not apply; and the times carry all
 ordering information, so the output must not depend on how the observations happen to be stored. These
 properties rule out the fixed-length-vector conditioners that are the default in NPE implementations,
 and they are naturally met by a transformer operating on one feature vector per observation ---
@@ -313,11 +305,10 @@ the next subsection; the choice of features is the subject of Sec.~\ref{sec:feat
 
 This scheme was not the first attempt but the survivor of a sequence of measured alternatives; the
 failed ones are retained in the package as reproducible controls and are compared under a common
-protocol in the ablation study of Sec.~\ref{sec:ablations}. All sizes are configuration parameters; the
-package default, used unchanged for every experiment in this paper, is model width 64, four attention
-heads, and three blocks on each side ($4.8 \times 10^5$ trainable parameters). The default is
-deliberately small: Sec.~\ref{sec:budget} shows that doubling width and depth changes no benchmark
-result, so at these problem sizes accuracy is limited by training budget, not capacity.
+protocol in the ablation study of Sec.~\ref{sec:ablations}. All sizes are configuration parameters. One default configuration (width 64, four heads, three blocks
+per side) is used unchanged for every experiment in this paper; at the training-set sizes we use,
+models of this scale proved sufficient --- doubling width and depth changes no benchmark result
+(Sec.~\ref{sec:budget}) --- and nothing in the construction caps the scale.
 
 \subsection{Attention phases from observation times}
 \label{sec:trope}
@@ -366,7 +357,10 @@ differences $t_l - t_i$. The substitution of physical time for position is the s
 attention models for irregular clinical and event series make in other positional schemes
 \citep{horn2020, shukla2021}. Two consequences follow at once: the encoder is exactly
 permutation-invariant (relabeling tokens leaves the right-hand side of \eqref{eq:ropeinv} unchanged;
-verified numerically to $10^{-8}$), and variable designs require no positional bookkeeping.
+verified numerically to $10^{-8}$), and variable designs require no positional bookkeeping. The phases
+enter only the encoder's self-attention; the cross-attention from parameter slots to the observation
+memory is unmodified attention, since parameter slots carry no time stamp and the memory states already
+encode temporal structure.
 
 The adaptation is also motivated by a measured failure. An earlier configuration used integer-position
 rotations, trained with long token sequences subsampled in place (kept tokens retained their spread-out
@@ -476,7 +470,10 @@ with bias unchanged; the residual is closed by the training procedure of the nex
 \section{Training procedures}
 \label{sec:recipe}
 
-\paragraph{Common settings.} All models are trained with Adam at a base learning rate of
+\paragraph{Common settings.} Sampling integrates the velocity field with a fixed-step midpoint
+scheme, 20 steps by default; the step count was fixed once by a convergence check (fourth-order
+Runge--Kutta with three times as many steps changes no benchmark statistic), and evaluation uses an
+exponential moving average of the training weights. All models are trained with Adam at a base learning rate of
 $3 \times 10^{-4}$ under a cosine schedule with linear warmup, batch size 64, and gradient clipping;
 evaluation uses an exponential moving average of the weights with decay $0.999$. At every optimizer step
 the virtual times $\tau$ are drawn afresh (stratified over $[0,1]$) together with fresh reference noise $m_0$,
@@ -572,10 +569,14 @@ stability of its input representation.
 \section{Benchmark suite}
 \label{sec:suite}
 
-The suite contains fifteen systems (Table~\ref{tab:suite}): nine with a fixed observation design used for
-the calibration gallery, and six with variable designs used for design amortization. Every system ships
-with a classical estimator (\texttt{sota()}) and, where a tractable likelihood exists, a reference
-posterior. Full equations, priors, and observation models are given in Appendix~\ref{app:systems}.
+
+The suite contains fifteen systems (Table~\ref{tab:suite}), defined below with their equations, the
+meaning and prior range of every parameter, and the observation model. Variable-design training ---
+observation subsets resampled at every optimizer step --- is the package default and the recommended
+mode: beyond enabling inference at any design, the resampling acts as data augmentation over designs.
+Nine systems are nevertheless benchmarked on conventional fixed grids, for two practical reasons: their
+closed-form or cheap references live on those grids, and the external tools of
+Sec.~\ref{sec:headtohead} consume fixed-length inputs.
 
 \begin{table}[t]
 \centering
@@ -610,6 +611,90 @@ regime that motivates carrying exact-reference systems in the same suite.}
 \label{tab:suite}
 \end{table}
 
+All SDEs are integrated by Euler--Maruyama on the stated fine grid; ODEs by RK4 (Hodgkin--Huxley by a
+semi-implicit scheme for the gating variables); the PDE by finite differences. Fixed-design observations
+are token sets over the union of the stated channels; ``fast/slow'' channels observe every step over a
+short window and every $j$-th step over the horizon respectively. Priors are uniform on the stated boxes.
+Classical estimators (\texttt{sota()}) are listed per system.
+
+\paragraph{Linear-Gaussian.} $y = Am + \varepsilon$, $\varepsilon \sim \N(0, 0.5^2 I_6)$, with a fixed
+correlated design matrix $A \in \R^{6 \times 4}$; $m \in [-3, 3]^4$. Exact Gaussian posterior; the
+classical estimator is the posterior mean itself. This system checks the flow engine in isolation from
+the encoder.
+
+\paragraph{Ornstein--Uhlenbeck.} $dX = -\theta X\,dt + \sigma\,dW$, stationary start
+$X_0 \sim \N(0, \sigma^2/2\theta)$; $dt = 0.02$, $500$ steps; channels: fast $(1 \times 50)$, slow
+$(20 \times 24)$. Prior $\theta \in [0.3, 3]$, $\sigma \in [0.2, 1.5]$. Classical: exact MLE from
+per-gap Gaussian transitions.
+
+\paragraph{Geometric Brownian motion.} $dS = \mu S\,dt + \sigma S\,dW$, $S_0 = 1$; $dt = 0.01$, $500$
+steps (five ``years''); channels: fast $(1 \times 60)$, slow $(10 \times 40)$. Prior
+$\mu \in [-0.2, 0.4]$, $\sigma \in [0.1, 0.6]$. Classical: exact MLE on log-returns. Reference: conjugate
+posterior (Appendix~\ref{app:refs}).
+
+\paragraph{Cox--Ingersoll--Ross.} $dX = a(b - X)\,dt + \sigma\sqrt{X}\,dW$; $dt = 0.02$, $500$ steps;
+channels as OU. Prior $a \in [0.3, 3]$, $b \in [0.3, 1.5]$, $\sigma \in [0.1, 0.5]$. Classical: Euler
+pseudo-likelihood MLE \citep{cox1985}.
+
+\paragraph{Double well.} $dX = (\theta_1 X - \theta_2 X^3)\,dt + \sigma\,dW$; $dt = 0.01$, $1000$ steps,
+noise strong enough for barrier crossings; channels: fast $(1 \times 80)$, slow $(25 \times 36)$. Prior
+$\theta_{1,2} \in [0.5, 3]$, $\sigma \in [0.4, 1.2]$. Classical: Kramers--Moyal regression.
+
+\paragraph{Stochastic Lotka--Volterra.} Prey/predator pair with multiplicative noise,
+$dx_1 = (\alpha x_1 - \beta x_1 x_2)\,dt + 0.1 x_1\,dW_1$,
+$dx_2 = (\delta x_1 x_2 - \gamma x_2)\,dt + 0.1 x_2\,dW_2$; both components observed; $dt = 0.01$, $600$
+steps; channels: fast $(1 \times 50)$, slow $(15 \times 40)$. Prior $\alpha, \gamma \in [0.8, 1.5]$,
+$\beta, \delta \in [0.4, 1.2]$. Classical: multi-start nonlinear least squares.
+
+\paragraph{FitzHugh--Nagumo.} $\dot v = v - v^3/3 - w + I + \text{noise}$,
+$\dot w = \epsilon(v + a - b w)$; only $v$ observed at 25 evenly spaced times over horizon 40
+($dt = 0.05$), observation noise $0.05$. Prior $a, b \in [0.5, 0.9]$, $\epsilon \in [0.05, 0.3]$,
+$I \in [0, 0.5]$. Classical: multi-start nonlinear least squares on the deterministic solve.
+
+\paragraph{SEIR with mortality.} Five-compartment stochastic epidemic (two-phase contact rate $\beta_1
+\to \beta_2$, incubation $\alpha$, recovery $\gamma_r$, mortality $\gamma_d$); infected and deceased
+compartments observed at 20 days over a 60-day horizon ($dt = 0.1$), observation noise $0.004$. Prior $\beta_1 \in [0.2, 0.6]$, $\beta_2 \in [0.05, 0.3]$, $\alpha \in [0.2, 0.5]$,
+$\gamma_r \in [0.05, 0.2]$, $\gamma_d \in [0.005, 0.05]$. Classical: nonlinear least squares on $(I, D)$.
+
+\paragraph{SINDy-SDE.} $dX = (c_0 + c_1 X + c_2 X^2 + c_3 X^3)\,dt + \sigma\,dW$ \citep[in the spirit
+of][]{brunton2016}; $dt = 0.01$, $1000$ steps; channels: fast $(1 \times 80)$, slow $(20 \times 45)$.
+Prior $c_0, c_2 \in [-0.5, 0.5]$, $c_1 \in [-2, 0]$, $c_3 \in [-1, -0.1]$, $\sigma \in [0.3, 0.8]$.
+Classical: SINDy-style least squares on Kramers--Moyal estimates.
+
+\paragraph{Heston (variable designs).} $dS = \mu S\,dt + \sqrt{v}\,S\,dW_1$,
+$dv = \kappa(\bar v - v)\,dt + \xi \sqrt{v}\,dW_2$, $\operatorname{corr}(dW_1, dW_2) = \rho$
+\citep{heston1993}; price observed, volatility latent; $dt = 0.01$, $500$ steps, designs of
+$K \in [2, 128]$ random times. Prior $\mu \in [-0.1, 0.3]$, $\kappa \in [0.5, 5]$,
+$\bar v \in [0.02, 0.3]$, $\xi \in [0.1, 1]$, $\rho \in [-0.9, 0]$.
+
+\paragraph{Merton jump-diffusion (variable designs).} $dS/S = \mu\,dt + \sigma\,dW + d\bigl(\sum_i (e^{J_i}
+- 1)\bigr)$ with Poisson jump rate $\lambda$ and $J_i \sim \N(\mu_J, s_J^2)$ \citep{merton1976};
+$dt = 0.01$, $500$ steps, $K \in [2, 128]$. Prior $\mu \in [-0.1, 0.3]$, $\sigma \in [0.1, 0.5]$,
+$\lambda \in [0.2, 3]$, $\mu_J \in [-0.3, 0.3]$, $s_J \in [0.05, 0.4]$. Reference: Poisson-mixture
+transition density (Appendix~\ref{app:refs}).
+
+\paragraph{H\'enon--Heiles (variable designs).} Two-dimensional Hamiltonian oscillator with the coupling
+potential used in \citet{lubich2015}, frequencies $(\omega_1, \omega_2)$ and coupling $\lambda$; $q_1$
+observed at random times with noise; $dt = 0.05$, $800$ steps, $K \in [4, 64]$. Prior
+$\omega_{1,2} \in [0.7, 1.3]$, $\lambda \in [0.02, 0.22]$.
+
+\paragraph{Hodgkin--Huxley (variable designs).} Standard four-dimensional membrane model
+\citep{hodgkin1952}; voltage observed at random times; parameters $(g_{\mathrm{Na}}, g_K, g_L, I)$ with
+prior $[60, 180] \times [10, 50] \times [0.05, 0.5] \times [4, 12]$; $3000$ integration steps,
+$K \in [4, 96]$.
+
+\paragraph{Pharmacokinetics (variable designs).} One-compartment oral dosing (Bateman function),
+concentration $c(t) = \frac{D_0 k_a}{V(k_a - k_e)}\bigl(e^{-k_e t} - e^{-k_a t}\bigr)$ with dose
+$D_0 = 500$; log-normal assay noise ($10\%$); horizon 24 h, $K \in [3, 64]$ irregular draws. Prior
+$k_a \in [0.5, 4]$, $k_e \in [0.05, 0.4]$, $V \in [20, 100]$. Reference: log-normal likelihood MCMC.
+
+\paragraph{Fisher--KPP (variable designs).} $\partial_t \theta = D\,\partial_{xx} \theta + r\,\theta(1 -
+\theta)$ on $[0, 1]$ with reflecting boundaries, 64-point finite-difference grid, Gaussian initial bump;
+three fixed sensors at $x = 16/63, 32/63, 48/63$ observed at random (time, sensor) pairs with noise
+$0.02$; $dt = 0.01$, $200$ steps, $K \in [4, 96]$. Prior $D \in [0.001, 0.01]$, $r \in [2, 10]$.
+Reference: Gaussian observation model around the deterministic solve; one likelihood evaluation is one
+PDE solve.
+
 \paragraph{Controls and classical baselines.}
 \label{sec:baselines-tiers}
 Every result is read against: (i) a prior-mean predictor (exactly $25\%$ mean absolute error under a
@@ -623,209 +708,61 @@ Sec.~\ref{sec:refs}.
 \section{Experimental results}
 \label{sec:results}
 
-Table~\ref{tab:overview} maps the full set of quantitative results before the details: every benchmark
-system, the strongest evaluation available for it, the outcome for \amortix, the external methods
-measured on it, and where in the paper the numbers appear. Two conventions hold throughout. Where a
-reference posterior exists, results are reported as posterior-mean bias (in units of the reference
-posterior standard deviation) and the width ratio (learned sd over reference sd; $1$ is exact, above one
-conservative, below one overconfident), and the SBC screen is reported as the number of parameters
-passing the uniformity test. External methods were run only on systems with references, since without a
-reference the comparison could not be scored.
+Two conventions hold throughout. Where a reference posterior exists, accuracy is reported as the signed
+error of the posterior mean in units of the reference posterior standard deviation (\emph{bias}) and as
+the ratio of standard deviations (\emph{width}; $1$ is exact, above one conservative, below one
+overconfident). Simulation-based calibration is reported as the number of parameters passing the
+uniformity screen at $p > 0.05$ over 500 simulated observation sets (\emph{SBC pass}); with 32 such
+tests on the fixed-grid systems, one or two rejections are expected by chance even from an exact
+posterior.
 
-\begin{table}[t]
-\centering
-\scriptsize
-\begin{tabular}{@{}lllll@{}}
-\toprule
-system & evaluation & \amortix & externals & details \\
-\midrule
-linear-Gaussian & exact posterior & SBC 4/4; width $\approx 1.00$ & --- & Tab.~\ref{tab:gallery} \\
-Ornstein--Uhlenbeck & exact-lik.\ MCMC & 1.03 / 1.05; SBC 2/2 & NPE 1.88; FMPE 1.60 & Tab.~\ref{tab:oucomp} \\
-geometric BM & conjugate closed form & 1.00 / 1.05; SBC 2/2 & 1.44--3.16 (11 arms) & Tab.~\ref{tab:gbmcomp}, \ref{tab:gbmhand} \\
-Cox--Ingersoll--Ross & SBC + controls & 2/3 (see text) & --- & Tab.~\ref{tab:gallery} \\
-double well & SBC + controls & 3/3 & --- & Tab.~\ref{tab:gallery} \\
-stoch.\ Lotka--Volterra & SBC + controls & 4/4 & --- & Tab.~\ref{tab:gallery} \\
-FitzHugh--Nagumo & SBC + controls & 4/4 & --- & Tab.~\ref{tab:gallery} \\
-SEIR & SBC + controls & 5/5 & --- & Tab.~\ref{tab:gallery} \\
-SINDy-SDE & SBC + controls & 5/5 & --- & Tab.~\ref{tab:gallery} \\
-\midrule
-Heston & SBC (variable designs) & all 25 cases pass & --- & Sec.~\ref{sec:design-amortization} \\
-Merton jump-diff. & Poisson-mixture MCMC & widths $\to 1.06$ w/ budget & --- & Fig.~\ref{fig:budget}, \ref{fig:pairs} \\
-H\'enon--Heiles & SBC (variable designs) & pass at all $K \ge 6$ & --- & Sec.~\ref{sec:design-amortization} \\
-Hodgkin--Huxley & SBC (variable designs) & 4/4 mixed designs & --- & Sec.~\ref{sec:design-amortization} \\
-pharmacokinetics & log-normal MCMC & $|$bias$| \le 0.06$; width 1.09--1.33 & --- & Fig.~\ref{fig:pairs} \\
-Fisher--KPP (PDE) & PDE-likelihood MCMC & 1.02 / 1.04 (fixed design) & NPE 1.28; FMPE fails $D$ & Tab.~\ref{tab:kppcomp} \\
-\bottomrule
-\end{tabular}
-\caption{Overview of all quantitative results. The ``externals'' column quotes the width ratio of the
-least well-conditioned parameter for each external method (GBM row: the range across the eleven external arms of Tables~\ref{tab:gbmcomp} and \ref{tab:gbmhand}). SBC counts are
-parameters passing the uniformity screen at $p > 0.05$. Dashes: not run --- external comparisons require
-a reference to score against.}
-\label{tab:overview}
-\end{table}
-
-\subsection{Fixed-design gallery}
+\subsection{Summary}
+\label{sec:summary}
 \label{sec:gallery}
 
-Table~\ref{tab:gallery} summarizes the nine fixed-design systems. One model configuration (the default
-of Sec.~\ref{sec:arch}) is trained per system on $40{,}000$ simulations for 35 epochs (about 11 minutes
-per system on one H200 GPU). Calibration is assessed by SBC over 500 synthetic observation sets with 200
-posterior draws each, and reported in two forms. \emph{Coverage error} asks the practical question: if
-the posterior's central $q\%$ interval is trusted, how often does it actually contain the truth? The
-table reports the mean absolute deviation of empirical from nominal coverage across levels --- zero is
-perfect, and at 500 observation sets pure sampling noise alone produces about $1$--$1.5$ percentage points, so
-the observed mean of $1.4$\,pp is at the resolution limit of the test. \emph{SBC pass} counts
-parameters whose rank distribution is consistent with uniformity at $p > 0.05$; with 32 tests, one or
-two rejections are expected even from a perfectly calibrated model. Of 32 parameters, 31 pass. The
-failing case in this run is the mean-level parameter $b$ of Cox--Ingersoll--Ross, and the rank data show
-what the failure is: the truth falls above the posterior median in $56\%$ of observation sets instead of
-$50\%$, i.e.\ a location shift of roughly $0.15$ posterior sd, while interval coverage remains intact
-($48\%$ and $88\%$ at nominal $50\%$ and $90\%$). In an independent earlier training run of the same
-configuration, 31 of 32 parameters passed as well but the marginal case was a different one (stochastic
-Lotka--Volterra $\beta$, $p = 0.04$, with Cox--Ingersoll--Ross passing at $p \ge 0.33$): defects of
-$0.1$--$0.2$~sd sit at the resolution limit of SBC at this size, so the identity of the marginal case
-moves between retrainings --- one reason SBC alone is not used as a verdict. On the systems with exact references, the learned posteriors carry
-$89$--$90\%$ of the available information (width relative to the exact posterior). Per-parameter
-$p$-values for the run shown are listed in Appendix~\ref{app:systems}.
-Figure~\ref{fig:sbc} shows the same information as coverage curves: the deviation of empirical from
-nominal coverage of the central credible intervals, for all nine systems and for the individual
-parameters of the least calibrated one.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.98\linewidth]{figs/coverage.pdf}
-\caption{Empirical coverage of central credible intervals for the fixed-design gallery, shown as the
-deviation from the nominal level. For each system, 500 synthetic observation sets are simulated with known
-parameters and the posterior's central $q\%$ interval is checked against the truth; a calibrated
-posterior has zero deviation at every level, and the gray band is the 99\% pointwise range induced by
-the finite number of test observation sets. Left: deviation averaged over each system's parameters. Right:
-individual parameters of Cox--Ingersoll--Ross, the system with the largest deviation in this run; the
-$b$ curve reflects the $\approx 0.15$~sd location shift discussed in the text. Rank-level detail for
-all 32 parameters is in Appendix~\ref{app:systems} (Fig.~\ref{fig:sbcranks}).}
-\label{fig:sbc}
-\end{figure}
+Table~\ref{tab:master} collects the outcome for every system: one default configuration, trained per
+system with no per-system adjustment, passes the calibration screen on 46 of 48 parameters across the
+suite and matches the exact or validated reference posteriors, where they exist, to within a few
+percent in width at the largest budgets. The two exceptions are quantified rather than hidden: a
+$\approx 0.15$~sd location shift on one Cox--Ingersoll--Ross parameter (interval coverage remains
+$48\%$/$88\%$ against nominal $50\%$/$90\%$; the identity of the marginal case moves between
+retrainings, consistent with the resolution limit of SBC at this sample size), and the Merton posterior
+width, which converges to the reference as the training budget grows (Sec.~\ref{sec:budget}).
+Per-parameter $p$-values, rank distributions, and coverage curves are in Appendix~\ref{app:systems}.
 
 \begin{table}[t]
 \centering
-\small
-\begin{tabular}{@{}lccccc@{}}
+\footnotesize
+\begin{tabular}{@{}llcclc@{}}
 \toprule
-system & $d$ & coverage err. & SBC pass & cov.\ $50\%$ & cov.\ $90\%$ \\
+system & reference & $d$ & SBC pass & worst-param bias / width vs ref & train \\
 \midrule
-linear-Gaussian            & 4 & 1.3\,pp & 4/4 & 51\% & 90\% \\
-Ornstein--Uhlenbeck        & 2 & 1.8\,pp & 2/2 & 47\% & 88\% \\
-SEIR                       & 5 & 1.5\,pp & 5/5 & 49\% & 90\% \\
-geometric Brownian motion  & 2 & 1.5\,pp & 2/2 & 50\% & 90\% \\
-Cox--Ingersoll--Ross       & 3 & 1.5\,pp & 2/3 & 49\% & 88\% \\
-double well                & 3 & 0.8\,pp & 3/3 & 50\% & 90\% \\
-stochastic Lotka--Volterra & 4 & 1.9\,pp & 4/4 & 48\% & 88\% \\
-FitzHugh--Nagumo           & 4 & 1.1\,pp & 4/4 & 51\% & 90\% \\
-SINDy-SDE (cubic drift)    & 5 & 1.4\,pp & 5/5 & 50\% & 89\% \\
-\midrule
-total / mean               & 32 & 1.4\,pp & 31/32 & 49\% & 89\% \\
+linear-Gaussian & exact posterior & 4 & 4/4 & $0.00$ / $1.00$ & 11 min \\
+Ornstein--Uhlenbeck & exact-likelihood MCMC & 2 & 2/2 & $+0.01$ / $1.05$ & 11 min \\
+geometric Brownian motion & conjugate closed form & 2 & 2/2 & $-0.00$ / $1.05$ & 11 min \\
+Cox--Ingersoll--Ross & --- & 3 & 2/3 & --- & 11 min \\
+double well & --- & 3 & 3/3 & --- & 11 min \\
+stochastic Lotka--Volterra & --- & 4 & 4/4 & --- & 11 min \\
+FitzHugh--Nagumo & --- & 4 & 4/4 & --- & 11 min \\
+SEIR & --- & 5 & 5/5 & --- & 11 min \\
+SINDy-SDE & --- & 5 & 5/5 & --- & 11 min \\
+Heston & --- & 5 & 5/5 & --- & 12 min \\
+Merton jump-diffusion & Poisson-mixture MCMC & 5 & 5/5 & width $1.25 \to 1.06$ with budget & 8--50 min \\
+H\'enon--Heiles & --- & 3 & 3/3 & --- & 8 min \\
+Hodgkin--Huxley & --- & 4 & 4/4 & --- & 9 min \\
+pharmacokinetics & log-normal MCMC & 3 & 3/3 & $-0.06$ / $1.33$ at $K = 6$ & 7 min \\
+Fisher--KPP (PDE) & PDE-likelihood MCMC & 2 & 2/2 & $-0.05$ / $1.02$ & 6 min \\
 \bottomrule
 \end{tabular}
-\caption{Fixed-design gallery: one default model per system, $40{,}000$ simulations, 35 epochs.
-Coverage error is the mean absolute deviation of central-interval coverage from its nominal level ---
-zero is perfect, and pure sampling noise at 500 test observation sets contributes about $1$--$1.5$\,pp, so
-values in this range indicate calibration at the resolution limit of the test. ``SBC pass'' counts
-parameters consistent with uniformity at $p > 0.05$; with 32 tests, one or two rejections are expected
-by chance even from an exact posterior.}
-\label{tab:gallery}
+\caption{All fifteen systems under one default configuration. ``SBC pass'' counts parameters consistent
+with rank uniformity ($p > 0.05$; for variable-design systems, over mixed random designs). The accuracy
+column quotes the least well-determined parameter against the reference where one exists; dashes mean
+no tractable reference (calibration screen and controls only). Training time on one H200 GPU; the
+Merton range spans the budget ladder of Sec.~\ref{sec:budget}.}
+\label{tab:master}
 \end{table}
 
-\subsection{Posterior geometry against validated references}
-\label{sec:pairs}
-
-Scalar summaries answer whether the posterior is calibrated on average; Fig.~\ref{fig:pairs} shows the
-posteriors themselves. For every system with an exact or validated reference, the joint posterior of the
-trained model is overlaid on the reference for one representative test observation set --- three systems with
-simple posteriors that serve as checks (linear-Gaussian, GBM, OU), and three whose posterior geometry
-is nontrivial: the Merton
-jump-diffusion, where volatility and jump rate compete to explain the same variance; pharmacokinetics at
-six irregular blood draws, the data-poor clinical regime; and Fisher--KPP, whose posterior concentrates
-on the curved ridge $D r \approx \mathrm{const}$ fixed by the observable front speed. The learned
-posteriors reproduce location, scale, orientation, and --- where present --- the curvature of the ridge.
-This figure, together with the calibration curves of Fig.~\ref{fig:sbc} and the summary of
-Table~\ref{tab:overview}, is the evidence for the claim that one small default model recovers full
-posteriors across the suite; the remaining subsections quantify the edges.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.98\linewidth]{figs/pairs_hard.pdf}
-\caption{Joint posteriors of \amortix\ (filled contours: 39\% and 86\% highest-density regions) against
-exact or validated-MCMC reference posteriors (open contours, same levels) on one test observation set per
-system; crosses mark the true parameters. Top row: systems with closed-form or cheap exact references.
-Bottom row: systems where the reference itself required exact-likelihood MCMC with two-chain validation
---- including the ridge-shaped Fisher--KPP posterior, where the model reproduces the curvature, not just
-the moments.}
-\label{fig:pairs}
-\end{figure}
-
-\subsection{Variable designs}
-\label{sec:design-amortization}
-
-\paragraph{Variable-design zoo.} With the class rule and training procedure fixed, six further systems
-were trained without per-system adjustments. Heston (five parameters, latent volatility): all 25 SBC cases
-pass, and pair tokens give no advantage over point tokens, consistent with the class boundary
-(Sec.~\ref{sec:features}). Merton jump-diffusion: 25 of 25 cases after the heavy-tail treatment of
-Sec.~\ref{sec:anatomy}, including dense-design cases that failed at $p < 10^{-3}$ before it; the residual
-width sits on the budget curve below. H\'enon--Heiles (parameters of the potential of
-\citealt{lubich2015}, observing one coordinate at random times): calibrated at every design size down to
-$K = 6$, where the posterior widens honestly rather than degrading. Hodgkin--Huxley \citep{hodgkin1952}:
-calibrated on mixed designs; one dense-design case shows the budget signature. Pharmacokinetics: at
-$K = 6$ irregular blood draws, bias $-0.01$ to $-0.06$~sd and widths $1.09$--$1.33$ against
-exact-likelihood MCMC. Fisher--KPP: the posterior concentrates on the ridge $D \cdot r \approx$ const;
-the residual along-ridge bias decays with budget (next subsection).
-
-\subsection{Residuals scale as power laws in the training budget}
-\label{sec:budget}
-
-Accuracy against the exact references is a smooth, monotone function of the training budget, and we
-report it systematically rather than at a single operating point. Figure~\ref{fig:budgetgrid} shows
-posterior width and bias against the reference for three systems (GBM, OU, Fisher--KPP with the fixed
-design of Sec.~\ref{sec:headtohead}) over a grid of budgets from $5{,}000$ to $40{,}000$ simulations
-with optimizer steps scaled proportionally. Posterior widths converge to one from above on all three
-systems (Fisher--KPP: $1.45 \to 1.01$). Posterior-mean biases behave differently by identifiability:
-on GBM and OU they stay within $\pm 0.1$~sd throughout, while on Fisher--KPP the bias lies along the
-weakly identified ridge direction and does not decay monotonically --- independently trained models land
-at different points within $\pm 0.5$~sd along the ridge, consistent with the flat direction carrying
-the weakest training signal (Sec.~\ref{sec:method}). Under the variable-design training procedure,
-which averages every optimizer step over fresh observation designs, the same ridge bias does decay with
-budget. Beyond it, the two residual defects of the variable-design suite --- inflated width on the
-hardest Merton case and along-ridge bias on Fisher--KPP under random designs --- respond to the same
-budget lever (Fig.~\ref{fig:budget}). The Merton width excess follows
-$\propto 1/\text{budget}$ ($0.246 \to 0.120 \to 0.059$ at $\times 1, \times 3, \times 6$); the KPP ridge
-bias follows $\approx \text{budget}^{-1/2}$ ($+0.41 \to +0.23 \to +0.14$~sd along the ridge, with the
-sharply identified front-speed component decaying in parallel). Two negative controls exclude the obvious
-alternatives: doubling network width and depth at fixed budget changes the Merton case by less than
-$0.02$ in width ratio ($1.103$ vs $1.120$ at $\times 3$), and refining the sampling ODE solver from 20
-midpoint steps to 60 RK4 steps changes nothing measurable. The weakly identified posterior direction
-carries the weakest regression signal in \eqref{eq:cfm} and converges last; we find no evidence of a
-floor within the measured range.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.98\linewidth]{figs/budget_grid.pdf}
-\caption{Convergence to the reference posterior with training budget on three systems (columns):
-posterior width ratio (top) and posterior-mean bias (bottom) per parameter, over budgets of
-$5{,}000$--$40{,}000$ simulations with optimizer steps scaled proportionally. References: exact
-conjugate posterior (GBM), exact-likelihood MCMC (OU), PDE-likelihood MCMC (Fisher--KPP, fixed
-$K = 40$ design).}
-\label{fig:budgetgrid}
-\end{figure}
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.9\linewidth]{figs/budget_laws.pdf}
-\caption{The two residual defects of the suite against training budget (simulations and steps scaled
-together; model size fixed). Left: Merton width excess on the hardest evaluation case, with the
-$1/\text{budget}$ guide. Right: Fisher--KPP posterior-mean biases in the ridge coordinate system, with
-the $\text{budget}^{-1/2}$ guide.}
-\label{fig:budget}
-\end{figure}
-
-\subsection{Comparison with existing implementations}
+\subsection{Comparison with existing tools}
 \label{sec:headtohead}
 
 \paragraph{Protocol.} We compare against the directly comparable amortized estimators available in
@@ -838,7 +775,12 @@ $75{,}000$-step training). All arms receive the same simulation budget ($20{,}00
 prior and simulator), run with their package defaults and their own stopping rules, and are compared on
 exactly three axes: training cost (wall-clock time to fit at this budget), accuracy (posterior-mean bias
 and width ratio per parameter against the reference posterior, as in Sec.~\ref{sec:refs}), and
-inference cost (wall-clock time per observation set for $2{,}000$ posterior samples). Because these estimators consume fixed-length vectors, the comparison uses fixed
+inference cost (wall-clock time per observation set for $2{,}000$ posterior samples). Non-amortized
+inference sets the scale on both ends: on GBM, whose likelihood is a three-line formula, adaptive
+Metropolis costs $42$\,ms per observation set and nothing amortized is worth its training bill for a
+single instance; on Fisher--KPP, one likelihood evaluation is one PDE solve, so the same reference
+sampler spends ${\approx}12{,}000$ solves --- minutes of computation --- on \emph{each} observation
+set; and for Heston or Hodgkin--Huxley no likelihood formula exists at any price. Because these estimators consume fixed-length vectors, the comparison uses fixed
 observation designs. Three systems are used, chosen to separate the possible explanations of any
 performance gap: a multiplicative process where input conditioning is hostile (GBM, exact conjugate
 reference), an additive process where it is comparatively benign (OU, exact-likelihood MCMC reference,
@@ -999,8 +941,108 @@ recipe, not of the method's ceiling. Conversely, the variable-design capability 
 Sec.~\ref{sec:design-amortization} is not exercised here at all, since the external estimators consume
 fixed-length inputs by default.
 
-\subsection{Ablations: what each architecture component contributes}
+\subsection{Posterior approximation}
+\label{sec:pairs}
+
+Scalar summaries answer whether the posterior is calibrated on average; Fig.~\ref{fig:pairs} shows the
+posteriors themselves. For every system with an exact or validated reference, the joint posterior of the
+trained model is overlaid on the reference for one representative test observation set --- three systems with
+simple posteriors that serve as checks (linear-Gaussian, GBM, OU), and three whose posterior geometry
+is nontrivial: the Merton
+jump-diffusion, where volatility and jump rate compete to explain the same variance; pharmacokinetics at
+six irregular blood draws, the data-poor clinical regime; and Fisher--KPP, whose posterior concentrates
+on the curved ridge $D r \approx \mathrm{const}$ fixed by the observable front speed. The learned
+posteriors reproduce location, scale, orientation, and --- where present --- the curvature of the ridge.
+This figure, together with the calibration curves of Fig.~\ref{fig:sbc} and the summary of
+Table~\ref{tab:overview}, is the evidence for the claim that one small default model recovers full
+posteriors across the suite; the remaining subsections quantify the edges.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.98\linewidth]{figs/pairs_hard.pdf}
+\caption{Joint posteriors of \amortix\ (filled contours: 39\% and 86\% highest-density regions) against
+exact or validated-MCMC reference posteriors (open contours, same levels) on one test observation set per
+system; crosses mark the true parameters. Top row: systems with closed-form or cheap exact references.
+Bottom row: systems where the reference itself required exact-likelihood MCMC with two-chain validation
+--- including the ridge-shaped Fisher--KPP posterior, where the model reproduces the curvature, not just
+the moments.}
+\label{fig:pairs}
+\end{figure}
+
+\subsection{Convergence and computational cost}
+\label{sec:budget}
+
+Accuracy against the exact references is a smooth, monotone function of the training budget, and we
+report it systematically rather than at a single operating point. Figure~\ref{fig:budgetgrid} shows
+posterior width and bias against the reference for three systems (GBM, OU, Fisher--KPP with the fixed
+design of Sec.~\ref{sec:headtohead}) over a grid of budgets from $5{,}000$ to $40{,}000$ simulations
+with optimizer steps scaled proportionally. Posterior widths converge to one from above on all three
+systems (Fisher--KPP: $1.45 \to 1.01$). Posterior-mean biases behave differently by identifiability:
+on GBM and OU they stay within $\pm 0.1$~sd throughout, while on Fisher--KPP the bias lies along the
+weakly identified ridge direction and does not decay monotonically --- independently trained models land
+at different points within $\pm 0.5$~sd along the ridge, consistent with the flat direction carrying
+the weakest training signal (Sec.~\ref{sec:method}). Under the variable-design training procedure,
+which averages every optimizer step over fresh observation designs, the same ridge bias does decay with
+budget. Beyond it, the two residual defects of the variable-design suite --- inflated width on the
+hardest Merton case and along-ridge bias on Fisher--KPP under random designs --- respond to the same
+budget lever (Fig.~\ref{fig:budget}). The Merton width excess follows
+$\propto 1/\text{budget}$ ($0.246 \to 0.120 \to 0.059$ at $\times 1, \times 3, \times 6$); the KPP ridge
+bias follows $\approx \text{budget}^{-1/2}$ ($+0.41 \to +0.23 \to +0.14$~sd along the ridge, with the
+sharply identified front-speed component decaying in parallel). Two negative controls exclude the obvious
+alternatives: doubling network width and depth at fixed budget changes the Merton case by less than
+$0.02$ in width ratio ($1.103$ vs $1.120$ at $\times 3$), and refining the sampling ODE solver from 20
+midpoint steps to 60 RK4 steps changes nothing measurable. The weakly identified posterior direction
+carries the weakest regression signal in \eqref{eq:cfm} and converges last; we find no evidence of a
+floor within the measured range.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.98\linewidth]{figs/budget_grid.pdf}
+\caption{Convergence to the reference posterior with training budget on three systems (columns):
+posterior width ratio (top) and posterior-mean bias (bottom) per parameter, over budgets of
+$5{,}000$--$40{,}000$ simulations with optimizer steps scaled proportionally. References: exact
+conjugate posterior (GBM), exact-likelihood MCMC (OU), PDE-likelihood MCMC (Fisher--KPP, fixed
+$K = 40$ design).}
+\label{fig:budgetgrid}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\linewidth]{figs/budget_laws.pdf}
+\caption{The two residual defects of the suite against training budget (simulations and steps scaled
+together; model size fixed). Left: Merton width excess on the hardest evaluation case, with the
+$1/\text{budget}$ guide. Right: Fisher--KPP posterior-mean biases in the ridge coordinate system, with
+the $\text{budget}^{-1/2}$ guide.}
+\label{fig:budget}
+\end{figure}
+
+
+Costs, for orientation. Training takes 6--12 minutes per system at the base budget on one H200 GPU
+(Table~\ref{tab:master}) and about 50 minutes at the $\times 6$ budget behind the sharpest Merton
+numbers; on a laptop CPU, base-budget training takes 8--45 minutes and produces bit-identical
+posteriors, because all stochastic generation is kept on a CPU random number generator by design.
+Inference draws $2{,}000$ posterior samples in $426$\,ms per observation set on the laptop CPU and
+$72$\,ms batched ($135$\,ms single) on the GPU. The small external models of
+Sec.~\ref{sec:headtohead} train and sample faster at their defaults; the tiny-model regime is
+kernel-launch-bound on GPUs (\texttt{sbi}'s default flow trains $6\times$ slower there than on the
+laptop CPU).
+
+\subsection{Variable designs and ablations}
+\label{sec:design-amortization}
 \label{sec:ablations}
+
+\paragraph{Variable-design zoo.} With the class rule and training procedure fixed, six further systems
+were trained without per-system adjustments. Heston (five parameters, latent volatility): all 25 SBC cases
+pass, and pair tokens give no advantage over point tokens, consistent with the class boundary
+(Sec.~\ref{sec:features}). Merton jump-diffusion: 25 of 25 cases after the heavy-tail treatment of
+Sec.~\ref{sec:anatomy}, including dense-design cases that failed at $p < 10^{-3}$ before it; the residual
+width sits on the budget curve below. H\'enon--Heiles (parameters of the potential of
+\citealt{lubich2015}, observing one coordinate at random times): calibrated at every design size down to
+$K = 6$, where the posterior widens honestly rather than degrading. Hodgkin--Huxley \citep{hodgkin1952}:
+calibrated on mixed designs; one dense-design case shows the budget signature. Pharmacokinetics: at
+$K = 6$ irregular blood draws, bias $-0.01$ to $-0.06$~sd and widths $1.09$--$1.33$ against
+exact-likelihood MCMC. Fisher--KPP: the posterior concentrates on the ridge $D \cdot r \approx$ const;
+the residual along-ridge bias decays with budget (next subsection).
 
 Table~\ref{tab:designarms} and Fig.~\ref{fig:widthk} compare encoder variants for design amortization on GBM, trained at
 $K \sim$ log-uniform$[2, 128]$ random-time designs and evaluated against the exact per-design posterior
@@ -1056,24 +1098,6 @@ become dense; dashed: partial repairs; solid: increment tokens, and increment to
 training procedure of Sec.~\ref{sec:recipe}, which is flat in $K$.}
 \label{fig:widthk}
 \end{figure}
-
-\subsection{Computational cost}
-\label{sec:cost}
-
-The default model trains in minutes to tens of minutes per system: on one H200 GPU, a variable-design zoo
-system at base budget ($20{,}000$ simulations, $12{,}000$ steps) takes 8--12 minutes, and the $\times 6$
-budget behind the sharpest numbers of Fig.~\ref{fig:budget} takes about 50 minutes; on a laptop CPU the
-fixed-design gallery systems take 8--45 minutes. Inference draws $2{,}000$ posterior samples for a
-observation set in $426$\,ms on the laptop CPU and $72$\,ms (batched; $135$\,ms single) on the GPU. GPU and CPU
-runs produce bit-identical posteriors because all stochastic generation is kept on a CPU random number
-generator by design, so a device change cannot silently alter results. For orientation against
-non-amortized inference: on GBM, whose likelihood is a three-line formula, adaptive Metropolis costs
-$42$\,ms per observation set and amortization buys nothing for a single observation set; on Fisher--KPP, where one
-likelihood evaluation is one PDE solve ($16$\,ms), the same reference sampler costs minutes per observation set
-(measured in Table~\ref{tab:kppcomp}); and for Heston or Hodgkin--Huxley no likelihood formula is
-available at any price. The regime where amortization pays is determined by the likelihood cost, the
-number of observation sets, and --- as Table~\ref{tab:gbmcomp} indicates --- by whether a trustworthy input
-representation for a conditional density estimator is available without one.
 
 \section{Failure analysis: conditioning of the encoder input}
 \label{sec:anatomy}
@@ -1148,92 +1172,12 @@ require a different normalization.
 
 \appendix
 
-\section{Benchmark system definitions}
+\section{Calibration detail for the fixed-grid systems}
 \label{app:systems}
 
-All SDEs are integrated by Euler--Maruyama on the stated fine grid; ODEs by RK4 (Hodgkin--Huxley by a
-semi-implicit scheme for the gating variables); the PDE by finite differences. Fixed-design observations
-are token sets over the union of the stated channels; ``fast/slow'' channels observe every step over a
-short window and every $j$-th step over the horizon respectively. Priors are uniform on the stated boxes.
-Classical estimators (\texttt{sota()}) are listed per system.
-
-\paragraph{Linear-Gaussian.} $y = Am + \varepsilon$, $\varepsilon \sim \N(0, 0.5^2 I_6)$, with a fixed
-correlated design matrix $A \in \R^{6 \times 4}$; $m \in [-3, 3]^4$. Exact Gaussian posterior; the
-classical estimator is the posterior mean itself. This system checks the flow engine in isolation from
-the encoder.
-
-\paragraph{Ornstein--Uhlenbeck.} $dX = -\theta X\,dt + \sigma\,dW$, stationary start
-$X_0 \sim \N(0, \sigma^2/2\theta)$; $dt = 0.02$, $500$ steps; channels: fast $(1 \times 50)$, slow
-$(20 \times 24)$. Prior $\theta \in [0.3, 3]$, $\sigma \in [0.2, 1.5]$. Classical: exact MLE from
-per-gap Gaussian transitions.
-
-\paragraph{Geometric Brownian motion.} $dS = \mu S\,dt + \sigma S\,dW$, $S_0 = 1$; $dt = 0.01$, $500$
-steps (five ``years''); channels: fast $(1 \times 60)$, slow $(10 \times 40)$. Prior
-$\mu \in [-0.2, 0.4]$, $\sigma \in [0.1, 0.6]$. Classical: exact MLE on log-returns. Reference: conjugate
-posterior (Appendix~\ref{app:refs}).
-
-\paragraph{Cox--Ingersoll--Ross.} $dX = a(b - X)\,dt + \sigma\sqrt{X}\,dW$; $dt = 0.02$, $500$ steps;
-channels as OU. Prior $a \in [0.3, 3]$, $b \in [0.3, 1.5]$, $\sigma \in [0.1, 0.5]$. Classical: Euler
-pseudo-likelihood MLE \citep{cox1985}.
-
-\paragraph{Double well.} $dX = (\theta_1 X - \theta_2 X^3)\,dt + \sigma\,dW$; $dt = 0.01$, $1000$ steps,
-noise strong enough for barrier crossings; channels: fast $(1 \times 80)$, slow $(25 \times 36)$. Prior
-$\theta_{1,2} \in [0.5, 3]$, $\sigma \in [0.4, 1.2]$. Classical: Kramers--Moyal regression.
-
-\paragraph{Stochastic Lotka--Volterra.} Prey/predator pair with multiplicative noise,
-$dx_1 = (\alpha x_1 - \beta x_1 x_2)\,dt + 0.1 x_1\,dW_1$,
-$dx_2 = (\delta x_1 x_2 - \gamma x_2)\,dt + 0.1 x_2\,dW_2$; both components observed; $dt = 0.01$, $600$
-steps; channels: fast $(1 \times 50)$, slow $(15 \times 40)$. Prior $\alpha, \gamma \in [0.8, 1.5]$,
-$\beta, \delta \in [0.4, 1.2]$. Classical: multi-start nonlinear least squares.
-
-\paragraph{FitzHugh--Nagumo.} $\dot v = v - v^3/3 - w + I + \text{noise}$,
-$\dot w = \epsilon(v + a - b w)$; only $v$ observed at 25 evenly spaced times over horizon 40
-($dt = 0.05$), observation noise $0.05$. Prior $a, b \in [0.5, 0.9]$, $\epsilon \in [0.05, 0.3]$,
-$I \in [0, 0.5]$. Classical: multi-start nonlinear least squares on the deterministic solve.
-
-\paragraph{SEIR with mortality.} Five-compartment stochastic epidemic (two-phase contact rate $\beta_1
-\to \beta_2$, incubation $\alpha$, recovery $\gamma_r$, mortality $\gamma_d$); infected and deceased
-compartments observed at 20 days over a 60-day horizon ($dt = 0.1$), observation noise $0.004$. Prior in
-Table~\ref{tab:pvals}. Classical: nonlinear least squares on $(I, D)$.
-
-\paragraph{SINDy-SDE.} $dX = (c_0 + c_1 X + c_2 X^2 + c_3 X^3)\,dt + \sigma\,dW$ \citep[in the spirit
-of][]{brunton2016}; $dt = 0.01$, $1000$ steps; channels: fast $(1 \times 80)$, slow $(20 \times 45)$.
-Prior $c_0, c_2 \in [-0.5, 0.5]$, $c_1 \in [-2, 0]$, $c_3 \in [-1, -0.1]$, $\sigma \in [0.3, 0.8]$.
-Classical: SINDy-style least squares on Kramers--Moyal estimates.
-
-\paragraph{Heston (variable designs).} $dS = \mu S\,dt + \sqrt{v}\,S\,dW_1$,
-$dv = \kappa(\bar v - v)\,dt + \xi \sqrt{v}\,dW_2$, $\operatorname{corr}(dW_1, dW_2) = \rho$
-\citep{heston1993}; price observed, volatility latent; $dt = 0.01$, $500$ steps, designs of
-$K \in [2, 128]$ random times. Prior $\mu \in [-0.1, 0.3]$, $\kappa \in [0.5, 5]$,
-$\bar v \in [0.02, 0.3]$, $\xi \in [0.1, 1]$, $\rho \in [-0.9, 0]$.
-
-\paragraph{Merton jump-diffusion (variable designs).} $dS/S = \mu\,dt + \sigma\,dW + d\bigl(\sum_i (e^{J_i}
-- 1)\bigr)$ with Poisson jump rate $\lambda$ and $J_i \sim \N(\mu_J, s_J^2)$ \citep{merton1976};
-$dt = 0.01$, $500$ steps, $K \in [2, 128]$. Prior $\mu \in [-0.1, 0.3]$, $\sigma \in [0.1, 0.5]$,
-$\lambda \in [0.2, 3]$, $\mu_J \in [-0.3, 0.3]$, $s_J \in [0.05, 0.4]$. Reference: Poisson-mixture
-transition density (Appendix~\ref{app:refs}).
-
-\paragraph{H\'enon--Heiles (variable designs).} Two-dimensional Hamiltonian oscillator with the coupling
-potential used in \citet{lubich2015}, frequencies $(\omega_1, \omega_2)$ and coupling $\lambda$; $q_1$
-observed at random times with noise; $dt = 0.05$, $800$ steps, $K \in [4, 64]$. Prior
-$\omega_{1,2} \in [0.7, 1.3]$, $\lambda \in [0.02, 0.22]$.
-
-\paragraph{Hodgkin--Huxley (variable designs).} Standard four-dimensional membrane model
-\citep{hodgkin1952}; voltage observed at random times; parameters $(g_{\mathrm{Na}}, g_K, g_L, I)$ with
-prior $[60, 180] \times [10, 50] \times [0.05, 0.5] \times [4, 12]$; $3000$ integration steps,
-$K \in [4, 96]$.
-
-\paragraph{Pharmacokinetics (variable designs).} One-compartment oral dosing (Bateman function),
-concentration $c(t) = \frac{D_0 k_a}{V(k_a - k_e)}\bigl(e^{-k_e t} - e^{-k_a t}\bigr)$ with dose
-$D_0 = 500$; log-normal assay noise ($10\%$); horizon 24 h, $K \in [3, 64]$ irregular draws. Prior
-$k_a \in [0.5, 4]$, $k_e \in [0.05, 0.4]$, $V \in [20, 100]$. Reference: log-normal likelihood MCMC.
-
-\paragraph{Fisher--KPP (variable designs).} $\partial_t \theta = D\,\partial_{xx} \theta + r\,\theta(1 -
-\theta)$ on $[0, 1]$ with reflecting boundaries, 64-point finite-difference grid, Gaussian initial bump;
-three fixed sensors at $x = 16/63, 32/63, 48/63$ observed at random (time, sensor) pairs with noise
-$0.02$; $dt = 0.01$, $200$ steps, $K \in [4, 96]$. Prior $D \in [0.001, 0.01]$, $r \in [2, 10]$.
-Reference: Gaussian observation model around the deterministic solve; one likelihood evaluation is one
-PDE solve.
+Per-parameter SBC $p$-values for the run of Table~\ref{tab:master} are listed in
+Table~\ref{tab:pvals}; Fig.~\ref{fig:sbc} shows empirical-vs-nominal coverage of the central credible
+intervals, and Fig.~\ref{fig:sbcranks} the underlying rank distributions.
 
 \begin{table}[t]
 \centering
@@ -1254,10 +1198,24 @@ SINDy-SDE & $c_0$: 0.06 \quad $c_1$: 0.96 \quad $c_2$: 0.46 \quad $c_3$: 0.80 \q
 \bottomrule
 \end{tabular}
 \caption{Per-parameter SBC uniformity $p$-values for the fixed-design gallery run of
-Table~\ref{tab:gallery} (500 observation sets $\times$ 200 draws; $p > 0.05$ passes). The single failure is
+Table~\ref{tab:master} (500 observation sets $\times$ 200 draws; $p > 0.05$ passes). The single failure is
 marked in bold; see Sec.~\ref{sec:gallery} for its behavior across retrainings.}
 \label{tab:pvals}
 \end{table}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.98\linewidth]{figs/coverage.pdf}
+\caption{Empirical coverage of central credible intervals for the fixed-design gallery, shown as the
+deviation from the nominal level. For each system, 500 synthetic observation sets are simulated with known
+parameters and the posterior's central $q\%$ interval is checked against the truth; a calibrated
+posterior has zero deviation at every level, and the gray band is the 99\% pointwise range induced by
+the finite number of test observation sets. Left: deviation averaged over each system's parameters. Right:
+individual parameters of Cox--Ingersoll--Ross, the system with the largest deviation in this run; the
+$b$ curve reflects the $\approx 0.15$~sd location shift discussed in the text. Rank-level detail for
+all 32 parameters is in Appendix~\ref{app:systems} (Fig.~\ref{fig:sbcranks}).}
+\label{fig:sbc}
+\end{figure}
 
 \begin{figure}[p]
 \centering
