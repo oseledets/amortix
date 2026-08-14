@@ -98,6 +98,10 @@ def main():
         val[i] = [abs(c1[:, j].mean() - c2[:, j].mean())
                   / max(c1[:, j].std(), 1e-12) for j in range(2)]
     t_mcmc = (time.time() - t0) / (2 * args.n_test)
+    dump = os.environ.get("AMX_DUMP", "")
+    if dump:
+        os.makedirs(dump, exist_ok=True)
+        np.savez(f"{dump}/ref_ou.npz", samples=np.stack(exact))
     print(f"[reference] MCMC {1e3 * t_mcmc:.0f} ms/chain; two-chain "
           f"validation worst {val.max():.3f} sd, mean {val.mean():.3f} sd",
           flush=True)
@@ -119,6 +123,8 @@ def main():
     t0 = time.time()
     amx = post.sample_batch(tokens_test, n=args.n_draw, seed=0).numpy()
     t_inf = time.time() - t0
+    if dump:
+        np.savez(f"{dump}/ou_amortix.npz", samples=amx)
     res = score(amx, exact, names)
     print(f"[amortix] {n_par:,} params, train {t_train:.0f}s, "
           f"inference {1e3 * t_inf / args.n_test:.0f} ms/dataset", flush=True)
@@ -151,8 +157,10 @@ def main():
                             show_progress_bars=False).cpu().numpy()
             for i in range(args.n_test)])
         t_inf = time.time() - t0
-        res = score(smp, exact, names)
         tag = method.lower()
+        if dump:
+            np.savez(f"{dump}/ou_{tag}.npz", samples=smp)
+        res = score(smp, exact, names)
         print(f"[sbi {sbi.__version__} {tag}] train {t_train:.0f}s, "
               f"inference {1e3 * t_inf / args.n_test:.0f} ms/dataset",
               flush=True)

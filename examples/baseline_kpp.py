@@ -128,6 +128,10 @@ def main():
           f"validation worst {val.max():.3f} sd, mean {val.mean():.3f} sd",
           flush=True)
 
+    dump = os.environ.get("AMX_DUMP", "")
+    if dump:
+        os.makedirs(dump, exist_ok=True)
+        np.savez(f"{dump}/ref_kpp.npz", samples=np.stack(exact))
     report = dict(n_train=args.n_train, steps=args.steps, n_test=args.n_test,
                   n_draw=args.n_draw, k_obs=K_OBS, device=args.device,
                   mcmc_s_per_ds_two_chains=t_ref_per_ds,
@@ -154,6 +158,8 @@ def main():
     t0 = time.time()
     amx = post.sample_batch(tokens_test, n=args.n_draw, seed=0).numpy()
     t_inf = time.time() - t0
+    if dump:
+        np.savez(f"{dump}/kpp_amortix.npz", samples=amx)
     res = score(amx, exact, names)
     print(f"[amortix] {n_par:,} params, train {t_train:.0f}s, "
           f"inference {1e3 * t_inf / args.n_test:.0f} ms/dataset", flush=True)
@@ -189,8 +195,10 @@ def main():
                             show_progress_bars=False).cpu().numpy()
             for i in range(args.n_test)])
         t_inf = time.time() - t0
-        res = score(smp, exact, names)
         tag = method.lower()
+        if dump:
+            np.savez(f"{dump}/kpp_{tag}.npz", samples=smp)
+        res = score(smp, exact, names)
         print(f"[sbi {sbi.__version__} {tag}] train {t_train:.0f}s, "
               f"inference {1e3 * t_inf / args.n_test:.0f} ms/dataset",
               flush=True)

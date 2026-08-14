@@ -105,6 +105,10 @@ def main():
                             num_samples=args.n_draw)["theta"]
         t_inf = time.time() - t0
         smp = np.asarray(smp)
+        dump = os.environ.get("AMX_DUMP", "")
+        if dump:
+            os.makedirs(dump, exist_ok=True)
+            np.savez(f"{dump}/gbm_bf_{tag}_{args.input}.npz", samples=smp)
         res = score(smp, exact, names)
         print(f"[bayesflow {tag}] {n_par:,} params, train {t_train:.0f}s, "
               f"inference {1e3 * t_inf / args.n_test:.1f} ms/dataset",

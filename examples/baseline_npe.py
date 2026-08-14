@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 
 import numpy as np
@@ -132,6 +133,10 @@ def main():
     exact = [exact_posterior(prob, traj[i, :, 0].numpy(), idx, seed=5000 + i)
              for i in range(args.n_test)]
     print("[setup] exact references ready", flush=True)
+    dump = os.environ.get("AMX_DUMP", "")
+    if dump:
+        os.makedirs(dump, exist_ok=True)
+        np.savez(f"{dump}/ref_gbm.npz", samples=np.stack(exact))
 
     report = dict(n_train=args.n_train, steps=args.steps, n_test=args.n_test,
                   n_draw=args.n_draw, device=args.device,
@@ -153,6 +158,8 @@ def main():
         t0 = time.time()
         post.sample_batch(tokens_test[:1], n=args.n_draw, seed=1)
         t_one_amx = time.time() - t0
+        if dump:
+            np.savez(f"{dump}/gbm_amortix.npz", samples=amx)
         res_amx = score(amx, exact, names)
         print(f"[amortix] {n_par:,} params, train {t_train_amx:.0f}s, "
               f"batch inference {1e3 * t_inf_amx / args.n_test:.0f} ms/dataset, "
@@ -188,6 +195,8 @@ def main():
                             show_progress_bars=False).cpu().numpy()
             for i in range(args.n_test)])
         t_inf = time.time() - t0
+        if dump:
+            np.savez(f"{dump}/gbm_{tag}.npz", samples=smp)
         res = score(smp, exact, names)
         print(f"[sbi {sbi.__version__} {tag}] {n_par:,} params, "
               f"train {t_train:.0f}s, "
