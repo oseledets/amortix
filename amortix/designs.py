@@ -104,11 +104,22 @@ class DesignProblem:
         kf = torch.full_like(y, math.log(tidx.numel()) / math.log(obs.k_max))
         return torch.stack([t, y, z, z, kf, cidx.float()], dim=-1)
 
-    def make_retokenizer(self, seed: int = 7001):
+    def make_retokenizer(self, seed: int = 7001, vectorized: bool = True):
+        """Fresh designs for a whole batch at every optimizer step.
+
+        The default path draws the batch's designs with whole-tensor
+        operations. The per-set Python loop it replaces is not a small cost:
+        at the default batch of 64 it takes 15 ms against 9 ms for the network
+        forward pass, i.e. roughly half of a design-amortized training run is
+        spent building tokens rather than training. The two paths draw from
+        the same design law and produce statistically identical batches, but
+        not the same random stream; ``vectorized=False`` reproduces runs made
+        before the fast path existed.
+        """
         gen = torch.Generator().manual_seed(seed)
         obs = self.observer
 
-        def retok(raw, _g):
+        def retok_loop(raw, _g):
             B = raw.shape[0]
             tokens = torch.zeros(B, obs.k_max, 6)
             mask = torch.zeros(B, obs.k_max, dtype=torch.bool)
@@ -118,7 +129,50 @@ class DesignProblem:
                 tokens[i, :k] = self.tokens_for(raw[i], tidx, cidx, gen)
                 mask[i, :k] = True
             return tokens, mask
-        return retok
+
+        def retok_vec(raw, _g):
+            B, T1, C = raw.shape
+            K = obs.k_max
+            dev = raw.device
+            # design sizes: the "mix" law of sample_k, drawn for the batch
+            dense = torch.randint(K // 2, K + 1, (B,), generator=gen)
+            u = torch.rand(B, generator=gen)
+            sparse = torch.round(
+                self.k_min * (K / self.k_min) ** u).long().clamp(self.k_min, K)
+            k_i = torch.where(torch.rand(B, generator=gen) < 0.5,
+                              dense, sparse).to(dev)
+            mask = torch.arange(K, device=dev)[None, :] < k_i[:, None]
+            # observation times: k_i i.i.d. draws per set, sorted, padding last
+            r = torch.rand(B, K, generator=gen).to(dev)
+            r = torch.where(mask, r, torch.full_like(r, 2.0))
+            r, _ = r.sort(dim=1)
+            tidx = (r * obs.n_steps).long().clamp(0, obs.n_steps - 1) + 1
+            tidx = torch.where(mask, tidx, torch.ones_like(tidx))
+            if obs.n_channels == 1:
+                cidx = torch.zeros(B, K, dtype=torch.long, device=dev)
+            else:
+                cidx = torch.randint(0, obs.n_channels, (B, K),
+                                     generator=gen).to(dev)
+            vals = raw.gather(1, tidx[..., None].expand(B, K, C))
+            y = vals.gather(2, cidx[..., None]).squeeze(-1)
+            y = self._noisy_vec(y, gen, dev)
+            t = tidx.float() * obs.dt_sim / obs.horizon
+            kf = (torch.log(k_i.float()) / math.log(obs.k_max))[:, None] \
+                .expand(B, K)
+            z = torch.zeros_like(y)
+            tokens = torch.stack([t, y, z, z, kf, cidx.float()], dim=-1)
+            return tokens * mask[..., None], mask
+
+        return retok_vec if vectorized else retok_loop
+
+    def _noisy_vec(self, y: torch.Tensor, gen: torch.Generator, dev) -> torch.Tensor:
+        if self.LOGSD > 0:
+            e = torch.randn(y.shape, generator=gen).to(dev)
+            return y.clamp_min(1e-6) * torch.exp(self.LOGSD * e)
+        if self.obs_noise > 0:
+            e = torch.randn(y.shape, generator=gen).to(dev)
+            return y + self.obs_noise * e
+        return y
 
 
 def sbc_design(post, prob: DesignProblem, n_sims: int = 400,

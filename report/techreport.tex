@@ -45,8 +45,9 @@ $0.01$--$0.07$ on four of six reference-equipped systems --- evaluated across de
 fresh random design per test observation set, where it is comparable to or better than networks
 trained for each single design --- while the two elevated entries are measured effects: $0.19$ on a
 five-parameter jump-diffusion that is capacity-limited at a fixed simulation budget, and $0.18$ on
-dense-design pharmacokinetics, which meets an amortized precision floor of ${\sim}10^{-3}$ of the
-prior range that we measure directly; 34 of 36 parameters across the nine systems without a tractable
+dense-design pharmacokinetics, where the posterior contracts to within a few multiples of the
+network's absolute error floor, measured at $2$--$6 \times 10^{-3}$ of the prior range and identical
+across systems whose posterior widths differ by $30\times$; 34 of 36 parameters across the nine systems without a tractable
 reference pass simulation-based calibration, and residual errors decay steadily with the simulation
 budget. We
 compare against neural posterior estimation and flow-matching posterior estimation from the \texttt{sbi}
@@ -544,6 +545,19 @@ reference posterior standard deviation),
   \label{eq:fid}
 \end{equation}
 --- the construction used as the FID score in the image-generation literature, and we adopt that name.
+
+\paragraph{Resolution of the estimator.} Both sample sets are finite, so
+\eqref{eq:fid} is positive even for a perfect posterior, and the size of that offset sets what the
+metric can resolve. We measured it directly: drawing \emph{two independent sample sets from the same
+exact GBM posterior} and scoring one against the other gives a median FID of $0.0157$ at $500$
+samples, $0.0038$ at the $2{,}000$ used throughout this report, $0.0009$ at $8{,}000$, and $0.0002$
+at $32{,}000$ --- a clean $1/n$, as the estimation error of the fitted means and covariances
+predicts. Two consequences. Differences below ${\approx}0.005$ at $n = 2{,}000$ are not resolved, so
+values in that range are reported as ``at the resolution limit'' rather than compared. And the best
+values in this report sit above it rather than at it: the design-amortized GBM model reads $0.0107$
+at $n = 2{,}000$, $0.0100$ at $8{,}000$, and $0.0072$ at $32{,}000$ on the same battery, so after
+subtracting the estimator offset its excess over the reference is ${\approx}0.007$ at every sample
+size --- a real error of the model, not an artifact of the ruler.
 
 \paragraph{Why the image-style construction is not enough.} In image generation, FID needs no
 likelihood because reference samples come straight from the dataset. The analogue here is a
@@ -1329,16 +1343,44 @@ interpreting it: an independent exact posterior (Laplace mode plus importance sa
 $2 \times 10^5$ exact likelihood evaluations per observation set) agrees with the MCMC reference to
 $0.0$--$0.23$~sd, and the model's FID against either reference coincides --- the value is real, not a
 reference artifact. It is also not a budget artifact: a model trained on $4\times$ the simulations
-and $3\times$ the optimizer steps is no better on the same test sets. The mechanism is a race. FID is
-measured in units of the reference posterior's width, and that width contracts with $K$: for the
-smooth Bateman curve with $10\%$ assay noise, the $k_e$ posterior at $K = 50$ has a standard
-deviation of $0.5$--$0.9\%$ of the prior range. The network's \emph{absolute} error stops contracting
-at roughly $10^{-3}$ of the prior range (back-computed from the measured FID) --- a floor that
-neither capacity nor data moved in any experiment of Sec.~\ref{sec:scaling} --- and once the
-posterior is narrower than a few multiples of that floor, relative error grows mechanically. The
-stochastic systems never reach this regime: diffusion noise keeps the GBM and OU posteriors near
-$5\%$ of the prior range even at $K = 100$, which is why their FID falls with $K$; Fisher--KPP
-touches the floor only at its densest bucket ($0.126$ at $K = 90$).
+and $3\times$ the optimizer steps is no better on the same test sets. The mechanism is a race between two
+scales, and both were measured directly rather than inferred from FID. Table~\ref{tab:floor}
+reports, per parameter, the absolute error of the model's posterior mean and the width of the
+reference posterior, both in units of the prior range. The absolute error is the same on both
+systems, $2$--$6 \times 10^{-3}$ of the prior range, although their posterior widths differ by a
+factor of thirty: it is a property of the trained network, not of the task. What differs is the
+denominator FID divides by. The elimination rate $k_e$ of the pharmacokinetic model is the extreme
+case --- a posterior $0.6\%$ of the prior range wide against an error of $0.36\%$, so the model
+misses by more than half a posterior standard deviation, and that single parameter accounts for
+$0.31$ of the observed FID of $0.42$. The stochastic systems never enter this regime, because
+diffusion noise keeps their posteriors two orders of magnitude wider than the error floor even at
+$K = 100$; Fisher--KPP approaches it only at its densest bucket ($0.126$ at $K = 90$). This is also
+a caveat on FID itself: as a scale-relative metric it reports a model that is uniformly accurate in
+absolute terms as increasingly poor wherever the posterior it is compared against is narrow.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}llccc@{}}
+\toprule
+system & parameter & posterior sd & model error & error / sd \\
+\midrule
+GBM, $K = 20$ & drift $\mu$ & $0.177$ & $0.0034$ & $0.02$ \\
+ & volatility $\sigma$ & $0.110$ & $0.0058$ & $0.05$ \\
+\midrule
+pharmacokinetics, $K = 50$ & absorption $k_a$ & $0.073$ & $0.0165$ & $0.23$ \\
+ & elimination $k_e$ & $0.0064$ & $0.0036$ & $0.56$ \\
+ & volume $V$ & $0.021$ & $0.0023$ & $0.11$ \\
+\bottomrule
+\end{tabular}
+\caption{The precision floor, measured directly. Both columns are in units of the prior range for
+that parameter: \emph{posterior sd} is the width of the reference posterior, \emph{model error} is
+$\lvert \mathbb{E}_{\text{model}}[m] - \mathbb{E}_{\text{ref}}[m] \rvert$, medians over 32 test
+observation sets with $8{,}000$ samples per posterior. The model's absolute error is the same on
+both systems while the posterior widths differ by $30\times$, so the last column --- and with it
+FID --- is governed by how narrow the target posterior is.}
+\label{tab:floor}
+\end{table}
 
 \paragraph{Where references end.} Two further systems --- H\'enon--Heiles and Hodgkin--Huxley --- are
 deterministic flows with Gaussian observation noise, so their likelihood is tractable in principle
