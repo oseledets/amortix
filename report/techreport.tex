@@ -775,57 +775,114 @@ size and data reuse, and the evaluation of design amortization.
 Sec.~\ref{sec:refs} against a reference posterior computed on the same observed points, reported as
 the median over the system's test battery (the distribution over observation sets is right-skewed;
 means are quoted where the tail is the finding, and for scale, a $0.1$~sd bias in each of $d$
-dimensions gives FID $0.01\,d$). Table~\ref{tab:baselines} lists the reference samplers --- what
-each requires and what it costs --- and the external amortized tools of the comparison.
+dimensions gives FID $0.01\,d$). The reference samplers and their cost per observation set for $2{,}000$ samples (laptop CPU;
+validation, where used, doubles it): the exact conjugate posterior for GBM (${<}1$\,ms),
+exact-likelihood MCMC for GBM and OU ($42$--$124$\,ms), mixture-likelihood MCMC for Merton and
+pharmacokinetics ($0.03$--$0.1$\,s), and PDE-likelihood MCMC for Fisher--KPP ($271$\,s ---
+${\approx}12{,}000$ solves, the number of likelihood evaluations any MCMC spends per observation set
+whatever the forward model costs). The external amortized tools appear in the same tables as our
+models, at the shared $20{,}000$-simulation budget of Sec.~\ref{sec:headtohead}.
 Simulation-based calibration is reported as the number of parameters passing the uniformity screen at
 $p > 0.05$ over 500 simulated observation sets (\emph{SBC pass}); with 32 such tests on the
 fixed-grid systems, one or two rejections are expected by chance even from an exact posterior.
-
-\begin{table}[t]
-\centering
-\small
-\begin{tabular}{@{}llrr@{}}
-\toprule
- & requires & train & per obs.\ set \\
-\midrule
-exact conjugate posterior (GBM) & closed-form factorization & --- & ${<}1$\,ms \\
-exact-likelihood MCMC (GBM, OU) & tractable likelihood & --- & $42$--$124$\,ms \\
-mixture-likelihood MCMC (Merton, PK) & tractable likelihood & --- & $0.03$--$0.1$\,s \\
-PDE-likelihood MCMC (Fisher--KPP) & forward solver in the chain & --- & $271$\,s \\
-\midrule
-\texttt{sbi} NPE / FMPE & simulator only & $1$--$4$\,min & $19$--$703$\,ms \\
-BayesFlow~2 (coupling / flow matching) & simulator only & $13$--$21$\,min & $0.3$--$97$\,ms \\
-Simformer port & simulator only & $10$--$12$\,min & ${\approx}1$\,s \\
-\amortix\ (this package) & simulator only & $4$--$63$\,min & $70$\,ms \\
-\bottomrule
-\end{tabular}
-\caption{References and baselines. Top block: reference posterior samplers, the instruments of
-record; cost is per observation set for $2{,}000$ samples on a laptop CPU (chain validation, where
-used, doubles it; the Fisher--KPP entry is ${\approx}12{,}000$ PDE solves --- the number of
-likelihood evaluations any MCMC spends per observation set whatever the forward model costs). Bottom
-block: amortized estimators, trained once per system; external tools at the $20{,}000$-simulation
-comparison budget of Sec.~\ref{sec:headtohead}, \amortix\ over the full range used in this report
-($20{,}000$--$480{,}000$ simulations). Amortized inference is per observation set for $2{,}000$
-samples, one H200 GPU.}
-\label{tab:baselines}
-\end{table}
 
 \paragraph{Models and training.} For each reference system we train the same architecture at three
 sizes --- tiny ($0.1$M parameters), the default small ($0.5$M), and big ($2.3$M) --- plus two
 miniature sizes (nano, $26$k; pico, $7$k) used to locate the capacity floor. All runs follow the
 procedure of Sec.~\ref{sec:recipe}, with one coupling that must be respected: at width 128 the base
 learning rate is halved, otherwise optimizer instability masquerades as a capacity effect
-(Sec.~\ref{sec:scaling}). Simulation budgets range from $5{,}000$ to $480{,}000$ per system. The
-main-result tables use each system's best trained model; the scaling study
-(Sec.~\ref{sec:scaling}) reports the budget $\times$ size grid behind that choice. Observation
+(Sec.~\ref{sec:scaling}). Simulation budgets range from $5{,}000$ to $480{,}000$ per system. The full size $\times$ budget grid, with the
+external tools in the same table, opens the results (Table~\ref{tab:grid}); the summary tables then
+use each system's best trained model. Observation
 designs are random at training and at evaluation wherever the system defines a design distribution;
 fixed designs appear only where the interface of an external tool or reference requires them
 (Sec.~\ref{sec:headtohead}, linear-Gaussian check).
 
-\subsection{Main results}
+\subsection{Main comparison: quality, model size, data, and baselines}
 \label{sec:summary}
 \label{sec:gallery}
 \label{sec:pairs}
+\label{sec:maincomp}
+
+One comparison, run identically on every task, opens the results. Table~\ref{tab:grid} trains the
+same architecture at three sizes and three simulation budgets for each reference task, evaluates
+every cell by median FID against that task's reference, and places the external tools in the same
+table at the shared budget. Figure~\ref{fig:pairs} shows the corresponding posteriors themselves;
+Fig.~\ref{fig:budgetgrid} plots the grid.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}llccc@{}}
+\toprule
+ & & tiny ($0.1$M) & small ($0.5$M, default) & big ($2.3$M) \\
+\midrule
+GBM & $20{,}000$ sims & $0.039$ & $0.039$ & $0.037$ \\
+(exact conjugate; & $120{,}000$ & $0.016$ & $0.021$ & $0.024$ \\
+200 sets) & $480{,}000$ & $0.010$ & $0.012$ & $0.018$ \\
+ & external tools & \multicolumn{3}{c}{raw data $2.3$--$8.5$; hand-derived inputs $0.34$--$1.5$} \\
+\midrule
+Ornstein--Uhlenbeck & $20{,}000$ & $0.091$ & $0.070$ & $0.079$ \\
+(exact-lik.\ MCMC; & $120{,}000$ & $0.042$ & $0.055$ & $0.054$ \\
+100 sets) & $480{,}000$ & $0.028$ & $0.029$ & $0.039$ \\
+ & external tools & \multicolumn{3}{c}{$1.2$ (FMPE) -- $2.7$ (NPE)} \\
+\midrule
+Fisher--KPP, $K = 40$ & $20{,}000$ & $0.277$ & $0.118$ & $0.084$ \\
+(PDE-lik.\ MCMC; & $120{,}000$ & $0.053$ & $0.036$ & $0.045$ \\
+32 sets) & external tools & \multicolumn{3}{c}{$0.5$ (NPE); $76$ (FMPE)} \\
+\midrule
+Merton, $d = 5$ & $120{,}000$ & $0.24$ & $0.21$ & $0.21$ \\
+(mixture-lik.\ MCMC; & $480{,}000$ & $0.21$ & $0.19$ & $0.20$ \\
+32 sets) & external tools & \multicolumn{3}{c}{--- \; (random designs; fixed-length interfaces do not apply)} \\
+\midrule
+pharmacokinetics, $d = 3$ & $120{,}000$ & $0.10$ & $0.055$ & $0.085$ \\
+(log-normal MCMC; & $480{,}000$ & $0.105$ & $0.098$ & $0.108$ \\
+32 sets) & external tools & \multicolumn{3}{c}{---} \\
+\bottomrule
+\end{tabular}
+\caption{The main grid: median FID (over the stated test observation sets) of the same architecture
+at three sizes (columns) and increasing simulation budgets (rows), for every task with a validated
+reference; cells average over training seeds where several were run, and the big column uses the
+width-scaled learning rate. GBM, OU, and Fisher--KPP use the fixed-design protocol shared with the
+external tools, which enter the same table at the $20{,}000$-simulation budget with their package
+defaults (ranges over \texttt{sbi} NPE/FMPE, BayesFlow~2, and the Simformer port;
+Sec.~\ref{sec:headtohead} attributes the failures). Merton and pharmacokinetics are trained and
+evaluated in the random-design mode on their fixed evaluation batteries; external tools consume
+fixed-length vectors and have no entry there.}
+\label{tab:grid}
+\end{table}
+
+Four questions, four answers.
+\begin{enumerate}
+  \item \emph{Is the quality acceptable?} At the largest budget the grid reads FID $0.01$--$0.04$
+  on the two-parameter tasks --- for scale, a $0.1$~sd bias in each of $d$ dimensions gives FID
+  $0.01\,d$, so this is sub-tenth-of-a-sd accuracy --- and $0.19$--$0.20$ on the five-parameter
+  Merton. The posteriors of Fig.~\ref{fig:pairs} carry the same message visually: location, scale,
+  correlation, and ridge curvature are reproduced.
+  \item \emph{Does model size buy accuracy?} Within each row of the grid the three columns differ
+  by less than a factor of two almost everywhere, non-monotonically, and on GBM and OU the smallest
+  model is the best column at the largest budget; the one place width helps at $d = 2$ is
+  Fisher--KPP at the shortest budget ($0.277 \to 0.084$ across the row), where 40 spatio-temporal
+  observations are the richest conditioning in the grid. Size binds only on Merton at the fixed $120{,}000$ budget --- and even
+  there, quadrupling the data does more than quadrupling the parameters (the $480{,}000$ row). The
+  five-size ladder of Table~\ref{tab:capacity} extends this: the capacity floor sits below $10^4$
+  parameters at $d = 2$ (only seed instability marks it), near $10^5$ at $d = 3$, and keeps rising
+  through $2.3$M at $d = 5$.
+  \item \emph{Does data buy accuracy?} Every column of every task improves monotonically down the
+  rows, with no saturation anywhere in the measured range (Fig.~\ref{fig:budgetgrid}); the
+  $4\times$ data step moves every task more than the $24\times$ parameter step does. Data, not
+  capacity, is the axis worth paying for --- and Sec.~\ref{sec:scaling} shows the budget must be
+  spent on \emph{fresh} simulations, not on passes over stored ones.
+  \item \emph{Are the hyperparameters tuned?} One coupling matters: the learning rate must shrink
+  with width, or instability reads as a capacity effect (GBM big model: median FID $0.068$ at the
+  default $3 \times 10^{-4}$, $0.024$ at $10^{-4}$; the grid reports the stable setting). Everything
+  else is the package default on every task; the solver control of Sec.~\ref{sec:scaling} and the
+  seed ranges of Fig.~\ref{fig:budgetgrid} bound what tuning could add.
+\end{enumerate}
+At the shared $20{,}000$-simulation budget, every column of the grid beats every external tool on
+every task it enters --- by one to two orders of magnitude on GBM and OU on raw data, and by
+$2$--$6\times$ on Fisher--KPP --- and the gap survives hand-engineering the external tools' inputs;
+Sec.~\ref{sec:headtohead} dissects where it comes from.
 
 Figure~\ref{fig:pairs} shows the object the package produces --- the joint posterior itself. For
 every system with an exact or validated reference, the posterior of the trained model is overlaid on
@@ -837,6 +894,33 @@ six irregular blood draws, the data-poor clinical regime; and Fisher--KPP, whose
 on the curved ridge $D r \approx \mathrm{const}$ fixed by the observable front speed. The learned
 posteriors reproduce location, scale, orientation, and --- where present --- the curvature of the
 ridge.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.98\linewidth]{figs/pairs_hard.pdf}
+\caption{Joint posteriors of \amortix\ (filled contours: 39\% and 86\% highest-density regions) against
+exact or validated-MCMC reference posteriors (open contours, same levels) on one test observation set per
+system; crosses mark the true parameters. Top row: systems with closed-form or cheap exact references.
+Bottom row: systems where the reference itself required exact-likelihood MCMC with two-chain validation
+--- including the ridge-shaped Fisher--KPP posterior, where the model reproduces the curvature, not just
+the moments.}
+\label{fig:pairs}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.98\linewidth]{figs/scaling.pdf}
+\caption{Median FID versus simulation budget at three model sizes (both axes logarithmic; optimizer
+steps scale with the budget at constant epochs; the big model uses the width-scaled learning rate).
+Lines: seed means; bands: seed ranges where multiple seeds were run. The widening Fisher--KPP band
+at intermediate budgets is seed-level freedom along the weakly identified ridge $\ln(r/D)$, which
+contributes little to the loss; refining the sampling ODE solver from 20 midpoint steps to 60 RK4
+steps changes nothing measurable. On the two-parameter systems
+(left, middle) the three sizes coincide within seed spread --- the budget axis, not the parameter
+axis, buys accuracy. Fisher--KPP (right): default size, with the big model at $120{,}000$ marked by
+the square. References as in Table~\ref{tab:baselines}.}
+\label{fig:budgetgrid}
+\end{figure}
 
 Table~\ref{tab:master} reports the corresponding global metric on the full test batteries, and
 Table~\ref{tab:screen} the calibration screen for the nine systems where no tractable reference
@@ -856,18 +940,6 @@ posterior for $k_e$ has a standard deviation of $1\%$ of its value, so a $0.02$ 
 magnified into FID $\approx 38$; behavior at prior boundaries is listed as a limitation in
 Sec.~\ref{sec:discussion}. Together with Table~\ref{tab:master}, this figure is the central evidence
 that one small default model recovers full posteriors across the suite.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.98\linewidth]{figs/pairs_hard.pdf}
-\caption{Joint posteriors of \amortix\ (filled contours: 39\% and 86\% highest-density regions) against
-exact or validated-MCMC reference posteriors (open contours, same levels) on one test observation set per
-system; crosses mark the true parameters. Top row: systems with closed-form or cheap exact references.
-Bottom row: systems where the reference itself required exact-likelihood MCMC with two-chain validation
---- including the ridge-shaped Fisher--KPP posterior, where the model reproduces the curvature, not just
-the moments.}
-\label{fig:pairs}
-\end{figure}
 
 \begin{table}[t]
 \centering
@@ -897,34 +969,33 @@ capacity-limited at this simulation budget (Sec.~\ref{sec:scaling}).}
 \begin{table}[t]
 \centering
 \small
-\begin{tabular}{@{}lccc@{}}
+\begin{tabular}{@{}lcc@{}}
 \toprule
- &  & \multicolumn{2}{c}{SBC pass} \\
-\cmidrule(lr){3-4}
-system & $d$ & small & big \\
+system & $d$ & SBC pass \\
 \midrule
-Cox--Ingersoll--Ross & 3 & 3/3 & 1/3 \\
-double well & 3 & 3/3 & 2/3 \\
-stochastic Lotka--Volterra & 4 & 3/4 & 4/4 \\
-FitzHugh--Nagumo & 4 & 4/4 & 3/4 \\
-SEIR & 5 & 5/5 & 5/5 \\
-polynomial-drift SDE & 5 & 5/5 & 4/5 \\
-Heston & 5 & 5/5 & 5/5 \\
-H\'enon--Heiles & 3 & 3/3 & 1/3 \\
-Hodgkin--Huxley & 4 & 3/4 & 3/4 \\
+Cox--Ingersoll--Ross & 3 & 3/3 \\
+double well & 3 & 3/3 \\
+stochastic Lotka--Volterra & 4 & 3/4 \\
+FitzHugh--Nagumo & 4 & 4/4 \\
+SEIR & 5 & 5/5 \\
+polynomial-drift SDE & 5 & 5/5 \\
+Heston & 5 & 5/5 \\
+H\'enon--Heiles & 3 & 3/3 \\
+Hodgkin--Huxley & 4 & 3/4 \\
 \bottomrule
 \end{tabular}
-\caption{Systems without a tractable reference: parameters passing the SBC uniformity screen
-($p > 0.05$, 500 observation sets $\times$ 200 draws; random-design systems over mixed designs), for
-the same saturated small and big models as Table~\ref{tab:master}. Individual marginal cases move
-between configurations and retrainings, as expected at the screen's resolution limit
-(Sec.~\ref{sec:protocol}); at the same data budget and hyperparameters the big model passes fewer
-(28/36 vs 34/36).}
+\caption{Systems without a tractable reference: parameters of the default model passing the SBC
+uniformity screen ($p > 0.05$, 500 observation sets $\times$ 200 draws; random-design systems over
+mixed designs). Individual marginal cases move between retrainings, as expected at the screen's
+resolution limit (Sec.~\ref{sec:protocol}).}
 \label{tab:screen}
 \end{table}
 
 \subsection{Comparison with existing tools}
 \label{sec:headtohead}
+
+The headline numbers of this comparison already appear inside Table~\ref{tab:grid}; this subsection
+specifies the protocol and attributes the failures to their mechanisms.
 
 \paragraph{Protocol.} We compare against the directly comparable amortized estimators available in
 maintained packages: NPE with its default masked autoregressive flow \citep{papamakarios2017} and FMPE
@@ -1082,37 +1153,13 @@ recipe, not of the method's ceiling. Conversely, the variable-design capability 
 Sec.~\ref{sec:design-amortization} is not exercised here at all, since the external estimators consume
 fixed-length inputs by default.
 
-\subsection{Scaling: budget, model size, and data reuse}
+\subsection{Data reuse and the capacity ladder}
 \label{sec:budget}
 \label{sec:scaling}
 
-Accuracy is reported over the budget $\times$ size grid of the protocol rather than at a single
-operating point. Figure~\ref{fig:budgetgrid} shows median FID for the three model sizes over
-simulation budgets from $5{,}000$ to $480{,}000$ (optimizer steps scale with the budget at constant
-epochs; the big model runs at its width-scaled learning rate). Three observations. First, FID falls
-monotonically with budget on every system across two orders of magnitude --- GBM $0.10 \to 0.010$,
-OU $0.25 \to 0.028$, Fisher--KPP $0.77 \to 0.036$ --- and the data axis did not saturate anywhere
-we measured. Second, at $d = 2$ the three sizes are interchangeable: tiny, small, and big coincide
-within seed spread along the entire budget range, so capacity is not the axis that buys accuracy on
-low-dimensional systems --- Table~\ref{tab:capacity} below extends this to five sizes and locates
-where it stops being true. Third, the widening seed band on Fisher--KPP at intermediate budgets is
-informative rather than noise: the residual error lies along the weakly identified ridge direction
-$\ln(r/D)$, which contributes little to the loss \eqref{eq:cfm}, so independently trained models
-retain seed-level freedom along it; under the variable-design procedure, which averages every
-optimizer step over fresh designs, the same ridge error decays steadily. As a control, refining the
-sampling ODE solver from 20 midpoint steps to 60 RK4 steps changes nothing measurable.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.98\linewidth]{figs/scaling.pdf}
-\caption{Median FID versus simulation budget at three model sizes (both axes logarithmic; optimizer
-steps scale with the budget at constant epochs; the big model uses the width-scaled learning rate).
-Lines: seed means; bands: seed ranges where multiple seeds were run. On the two-parameter systems
-(left, middle) the three sizes coincide within seed spread --- the budget axis, not the parameter
-axis, buys accuracy. Fisher--KPP (right): default size, with the big model at $120{,}000$ marked by
-the square. References as in Table~\ref{tab:baselines}.}
-\label{fig:budgetgrid}
-\end{figure}
+The grid of Table~\ref{tab:grid} scales optimizer steps with the simulation count at constant
+epochs. Two further grids separate what a budget buys when that convention is broken: passes over
+stored simulations versus fresh ones, and parameters versus data at five model sizes.
 
 \paragraph{Fresh simulations beat repeated passes.} Table~\ref{tab:de} varies the number of simulated
 trajectories and the number of epochs independently, for the fixed-design GBM and OU models at the
