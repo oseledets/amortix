@@ -36,5 +36,17 @@
    ]
   }
  },
- "note": "model: design-amortized small, 480k simulations; errors are medians over 32 sets at 8000 samples"
+ "note": "model: design-amortized small, 480k simulations; errors are medians over 32 sets at 8000 samples",
+ "retokenizer_ab": {
+  "protocol": "GBM design-amortized, 40k simulations / 24k steps, batch 64, one H200; FID at n=8000 on the K=20 battery",
+  "loop": {
+   "wall_s": 3322,
+   "fid": 0.0223
+  },
+  "vectorized": {
+   "wall_s": 3334,
+   "fid": 0.0364
+  },
+  "conclusion": "no end-to-end speedup at the default batch, despite a 6-12x isolated microbenchmark; single seed each, so the FID difference is within seed spread and not evidence either way"
+ }
 }

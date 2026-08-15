@@ -104,17 +104,19 @@ class DesignProblem:
         kf = torch.full_like(y, math.log(tidx.numel()) / math.log(obs.k_max))
         return torch.stack([t, y, z, z, kf, cidx.float()], dim=-1)
 
-    def make_retokenizer(self, seed: int = 7001, vectorized: bool = True):
+    def make_retokenizer(self, seed: int = 7001, vectorized: bool = False):
         """Fresh designs for a whole batch at every optimizer step.
 
-        The default path draws the batch's designs with whole-tensor
-        operations. The per-set Python loop it replaces is not a small cost:
-        at the default batch of 64 it takes 15 ms against 9 ms for the network
-        forward pass, i.e. roughly half of a design-amortized training run is
-        spent building tokens rather than training. The two paths draw from
-        the same design law and produce statistically identical batches, but
-        not the same random stream; ``vectorized=False`` reproduces runs made
-        before the fast path existed.
+        Two paths, drawing from the same design law. ``vectorized=True``
+        builds the batch with whole-tensor operations and is 6--12x faster
+        than the per-set loop *in isolation* (0.25 ms vs 1.5 ms at batch 64 on
+        one machine) -- but an end-to-end A/B at the training batch of 64
+        measured no wall-clock difference at all (3334 s vs 3322 s for
+        40k simulations / 24k steps), so the loop is not the bottleneck a
+        microbenchmark suggests and the fast path is worth using only at the
+        large batches of second-order experiments. It is therefore opt-in: the
+        loop remains the default, and it is also the stream every published
+        number in this repository was produced with.
         """
         gen = torch.Generator().manual_seed(seed)
         obs = self.observer
