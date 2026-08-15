@@ -1084,32 +1084,31 @@ fixed-length inputs by default.
 \label{sec:budget}
 \label{sec:scaling}
 
-Accuracy against the references is reported systematically rather than at a single operating point.
-Figure~\ref{fig:budgetgrid} shows FID against the reference for three systems (GBM, OU, Fisher--KPP
-with the fixed design of Sec.~\ref{sec:headtohead}) over a grid of budgets from $5{,}000$ to
-$40{,}000$ simulations with optimizer steps scaled proportionally, each budget point trained with
-three independent seeds. FID falls monotonically with budget on all three systems --- GBM
-$0.10 \to 0.03$, OU $0.25 \to 0.06$, Fisher--KPP $0.77 \to 0.15$ in seed means --- and the widening
-of the seed band on Fisher--KPP at large budgets is informative rather than noise: the residual error
-there lies along the weakly identified ridge direction $\ln(r/D)$, which contributes little to the
-loss \eqref{eq:cfm}, so independently trained models retain seed-level freedom along it (one seed sits
-at $0.31$ at the largest budget while the other two reach $0.06$--$0.07$). Under the variable-design
-training procedure, which averages every optimizer step over fresh observation designs, the same ridge
-error decays steadily with budget. Two negative controls exclude the obvious alternatives: doubling
-network width and depth at fixed budget does not improve any point of the grid on these
-low-dimensional systems (the full capacity ladder, including the five-parameter system where this
-reverses, is in Table~\ref{tab:capacity} below), and refining the sampling
-ODE solver from 20 midpoint steps to 60 RK4 steps changes nothing measurable.
+Accuracy is reported over the budget $\times$ size grid of the protocol rather than at a single
+operating point. Figure~\ref{fig:budgetgrid} shows median FID for the three model sizes over
+simulation budgets from $5{,}000$ to $480{,}000$ (optimizer steps scale with the budget at constant
+epochs; the big model runs at its width-scaled learning rate). Three observations. First, FID falls
+monotonically with budget on every system across two orders of magnitude --- GBM $0.10 \to 0.010$,
+OU $0.25 \to 0.028$, Fisher--KPP $0.77 \to 0.036$ --- and the data axis did not saturate anywhere
+we measured. Second, at $d = 2$ the three sizes are interchangeable: tiny, small, and big coincide
+within seed spread along the entire budget range, so capacity is not the axis that buys accuracy on
+low-dimensional systems --- Table~\ref{tab:capacity} below extends this to five sizes and locates
+where it stops being true. Third, the widening seed band on Fisher--KPP at intermediate budgets is
+informative rather than noise: the residual error lies along the weakly identified ridge direction
+$\ln(r/D)$, which contributes little to the loss \eqref{eq:cfm}, so independently trained models
+retain seed-level freedom along it; under the variable-design procedure, which averages every
+optimizer step over fresh designs, the same ridge error decays steadily. As a control, refining the
+sampling ODE solver from 20 midpoint steps to 60 RK4 steps changes nothing measurable.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.98\linewidth]{figs/budget_grid.pdf}
-\caption{Convergence to the reference posterior with training budget: median FID (log scale) on three
-systems over budgets of $5{,}000$--$40{,}000$ simulations with optimizer steps scaled proportionally.
-Lines: mean over three independent training seeds; shaded bands: seed range. The widening Fisher--KPP
-band at large budgets is the seed-level freedom of the weakly identified ridge direction discussed in
-the text. References: exact conjugate posterior (GBM), exact-likelihood MCMC (OU), PDE-likelihood MCMC
-(Fisher--KPP, fixed $K = 40$ design).}
+\includegraphics[width=0.98\linewidth]{figs/scaling.pdf}
+\caption{Median FID versus simulation budget at three model sizes (both axes logarithmic; optimizer
+steps scale with the budget at constant epochs; the big model uses the width-scaled learning rate).
+Lines: seed means; bands: seed ranges where multiple seeds were run. On the two-parameter systems
+(left, middle) the three sizes coincide within seed spread --- the budget axis, not the parameter
+axis, buys accuracy. Fisher--KPP (right): default size, with the big model at $120{,}000$ marked by
+the square. References as in Table~\ref{tab:baselines}.}
 \label{fig:budgetgrid}
 \end{figure}
 
