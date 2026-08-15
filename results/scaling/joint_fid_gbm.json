@@ -1,0 +1,53 @@
+{
+ "protocol": "joint (m,D) pairs, 50 draws/set, 200 sets, reference-normalized Frechet",
+ "arms": {
+  "amortix": {
+   "perdesign_fid_median": 0.041013454612020835,
+   "joint_fid": 0.002108110118503447
+  },
+  "npe": {
+   "perdesign_fid_median": 4.750723819545033,
+   "joint_fid": 0.027697939840850717
+  },
+  "npe_log": {
+   "perdesign_fid_median": 5.830664738061405,
+   "joint_fid": 0.0266189533874314
+  },
+  "npe_ret": {
+   "perdesign_fid_median": 1.5227980742424636,
+   "joint_fid": 0.045169820274028265
+  },
+  "fmpe": {
+   "perdesign_fid_median": 3.7767348106091116,
+   "joint_fid": 0.013325618896215806
+  },
+  "fmpe_ret": {
+   "perdesign_fid_median": 0.7784876747302375,
+   "joint_fid": 0.0076878065772929055
+  },
+  "bf_coupling_raw": {
+   "perdesign_fid_median": 2.546940160420313,
+   "joint_fid": 0.02278258750317772
+  },
+  "bf_flow_matching_raw": {
+   "perdesign_fid_median": 2.2720076855602267,
+   "joint_fid": 0.01847659855896125
+  },
+  "bf_coupling_returns": {
+   "perdesign_fid_median": 1.2415889054133111,
+   "joint_fid": 0.049710261964259816
+  },
+  "bf_flow_matching_returns": {
+   "perdesign_fid_median": 1.39557426970803,
+   "joint_fid": 0.04877186436925722
+  },
+  "simformer_raw": {
+   "perdesign_fid_median": 8.45282764540555,
+   "joint_fid": 0.031612209735389044
+  },
+  "simformer_returns": {
+   "perdesign_fid_median": 0.3399687975096215,
+   "joint_fid": 0.011482368398622584
+  }
+ }
+}
