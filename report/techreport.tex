@@ -39,10 +39,14 @@ explicit set-cardinality features; (ii)~a benchmark suite of fifteen systems spa
 epidemiology, ecology, pharmacokinetics, classical mechanics, and reaction--diffusion PDEs; and (iii)~an
 evaluation harness in which simulation-based calibration is used only as a screen, and the instrument of
 record is comparison against exact or validated Markov chain Monte Carlo reference posteriors on the same
-observed points. On the fixed-design suite, 31 of 32 parameters across nine systems pass simulation-based
-calibration with a mean coverage error of $1.3$ percentage points; on the variable-design suite, posterior
-widths match exact references to within $5$--$7\%$ uniformly over design sizes $K = 5$--$100$, and the two
-residual defects found anywhere in the suite decay as measured power laws of the training budget. We
+observed points. Trained once per system in this design-amortized mode, the default network matches exact or validated
+reference posteriors to median Fr\'echet distances (in reference-normalized coordinates) of
+$0.01$--$0.06$ on systems with up to four parameters --- evaluated across design sizes $K = 2$--$100$
+with a fresh random design per test observation set, where it is comparable to or better than networks
+trained for each single design --- and $0.19$ on a five-parameter jump-diffusion that we show to be
+capacity- rather than data-limited at a fixed simulation budget; 34 of 36 parameters across the nine systems without a tractable
+reference pass simulation-based calibration, and residual errors decay steadily with the simulation
+budget. We
 compare against neural posterior estimation and flow-matching posterior estimation from the \texttt{sbi}
 package, both network families of BayesFlow~2, and a port of the Simformer, on three systems with exact or
 validated references. On a multiplicative process, all external configurations either inflate the
@@ -498,7 +502,8 @@ FitzHugh--Nagumo):
   dense-$K$ SBC failure at $p < 10^{-3}$ disappears, $p = 0.54$).
   \item \emph{Budget scaling.} When higher accuracy is required, simulations and optimizer steps are scaled
   together at constant epochs; Sec.~\ref{sec:budget} shows the residuals then follow power laws in this
-  single budget variable.
+  single budget variable, and Sec.~\ref{sec:scaling} measures why the scaling must be joint: passes
+  over reused observation vectors eventually destroy accuracy, while fresh simulations do not.
 \end{enumerate}
 With this procedure, the GBM posterior width matches the exact per-design posterior to $5$--$7\%$
 uniformly over $K = 5, 9, 20, 100$ (Fig.~\ref{fig:widthk}).
@@ -752,44 +757,45 @@ fixed-grid systems, one or two rejections are expected by chance even from an ex
 \label{sec:gallery}
 
 Tables~\ref{tab:master} and \ref{tab:screen} collect the outcome for every system, separated by the
-strength of the available evaluation. One default configuration, trained per system with no per-system
-adjustment, matches the exact or validated reference posteriors to median FID $0.03$--$0.07$ on five of
-the six reference systems; the exception is the Merton jump-diffusion at $0.21$, whose remaining error
-is width on the jump parameters. On the nine systems without a tractable reference, the calibration
-screen passes 34 of 36 parameters for the small model, with the marginal cases moving between
-retrainings as expected at the screen's resolution limit. Both tables also carry a capacity observation that we flag rather than over-interpret: a model with
-doubled width and depth, trained on the same $120{,}000$ simulations with unchanged hyperparameters,
-is never more accurate against the references and is worse on the calibration screen (28 of 36
-parameters). At face value this is the signature of a data-limited regime --- the larger model has
-more freedom to fit simulation noise at the same data budget --- but it could equally reflect
-hyperparameters tuned for the small model; disentangling the two requires scaling the data with the
-model, which we report with the convergence study of Sec.~\ref{sec:budget}. Training runs $19$--$63$ minutes per model on one H200
-GPU depending on the system; the trained model then draws $2{,}000$ posterior samples in $70$\,ms per
-observation set (batched) regardless of the system. Per-parameter $p$-values, rank distributions, and
-coverage curves for the standard-budget gallery run are in Appendix~\ref{app:systems}.
+strength of the available evaluation. All models in this section are the default architecture operating
+in the package's default mode: one network per system, conditioned on a variable observation design
+wherever the system defines one, and trained until accuracy stops improving; how a budget is best spent
+to get there --- simulations, passes, or parameters --- is measured separately in
+Sec.~\ref{sec:scaling}. Against exact or validated references the trained models read median FID
+$0.01$--$0.06$ on systems with up to four parameters, with the design-amortized systems evaluated
+across design sizes rather than at a single design, and $0.19$ on the five-parameter Merton
+jump-diffusion --- the one system in the suite where accuracy is limited by model capacity rather than
+by data at a fixed simulation budget (Sec.~\ref{sec:scaling}). On the nine systems without a tractable reference, the calibration
+screen passes 34 of 36 parameters for the default model, with the marginal cases moving between
+retrainings as expected at the screen's resolution limit. Offline, training runs $19$--$63$ minutes per
+model on one H200 GPU depending on the system; online, the trained model draws $2{,}000$ posterior
+samples in $70$\,ms per observation set (batched) regardless of the system. Per-parameter $p$-values,
+rank distributions, and coverage curves for the standard-budget gallery run are in
+Appendix~\ref{app:systems}.
 
 \begin{table}[t]
 \centering
 \small
-\begin{tabular}{@{}llcccc@{}}
+\begin{tabular}{@{}lclll@{}}
 \toprule
- &  &  & test & \multicolumn{2}{c}{FID} \\
-\cmidrule(lr){5-6}
-system & reference & $d$ & sets & small & big \\
+system & $d$ & reference & evaluation designs & FID \\
 \midrule
-linear-Gaussian & exact posterior & 4 & 200 & $0.04$ & $0.04$ \\
-geometric Brownian motion & conjugate closed form & 2 & 200 & $0.03$ & $0.07$ \\
-Ornstein--Uhlenbeck & exact-likelihood MCMC & 2 & 100 & $0.07$ & $0.12$ \\
-Merton jump-diffusion & Poisson-mixture MCMC & 5 & 32 & $0.21$ & $0.21$ \\
-pharmacokinetics & log-normal MCMC & 3 & 32 & $0.06$ & $0.09$ \\
-Fisher--KPP (PDE) & PDE-likelihood MCMC & 2 & 32 & $0.04$ & $0.05$ \\
+linear-Gaussian & 4 & exact posterior & fixed grid; 200 sets & $0.04$ \\
+geometric Brownian motion & 2 & conjugate, per design & random, $K = 2$--$100$; 600 sets & $0.01$ \\
+Ornstein--Uhlenbeck & 2 & exact-likelihood MCMC, per design & random, $K = 2$--$100$; 600 sets & $0.05$ \\
+Merton jump-diffusion & 5 & Poisson-mixture MCMC & random draw, $K = 56$; 32 sets & $0.19$ \\
+pharmacokinetics & 3 & log-normal MCMC & random draw, $K = 6$; 32 sets & $0.06$ \\
+Fisher--KPP (PDE) & 2 & PDE-likelihood MCMC & fixed, $K = 40$; 32 sets & $0.04$ \\
 \bottomrule
 \end{tabular}
-\caption{Systems with reference posteriors: median FID \eqref{eq:fid} of the trained-to-saturation
-models against the reference, over the stated number of test observation sets. \emph{small} is the
-default configuration (width 64, 3+3 blocks), \emph{big} doubles width and depth (128, 4+4); both are
-trained on $120{,}000$ simulations with unchanged hyperparameters. The larger model is never better at
-this data budget; see Sec.~\ref{sec:summary} for the interpretation.}
+\caption{Systems with reference posteriors: median FID \eqref{eq:fid} of the best trained model of the
+default architecture, over the stated test observation sets. GBM and Ornstein--Uhlenbeck are single
+design-amortized networks evaluated across design sizes, with a fresh random design and an exact
+per-design reference for every test set (per-$K$ breakdown in Table~\ref{tab:fidk}); Merton and
+pharmacokinetics are design-amortized networks evaluated on one held-out random design draw. The two
+fixed-design rows are the linear-Gaussian closed-form check and Fisher--KPP, whose evaluation battery
+is shared with the tool comparison of Sec.~\ref{sec:headtohead}. Dependence on model size and training
+budget: Sec.~\ref{sec:scaling}.}
 \label{tab:master}
 \end{table}
 
@@ -822,6 +828,136 @@ between configurations and retrainings, as expected at the screen's resolution l
 \label{tab:screen}
 \end{table}
 
+\subsection{Amortization over observation designs}
+\label{sec:design-amortization}
+\label{sec:ablations}
+
+The package's central claim is that one trained network answers $p(m \mid S)$ for \emph{every}
+observation design $S$ --- any number of points, any placement. Table~\ref{tab:fidk} tests the claim
+directly on the two systems where an exact reference exists for every design: each test observation
+set draws a fresh random design, the reference posterior is computed on exactly those points, and FID
+is evaluated per design-size bucket. Accuracy is flat or improving across a $50\times$ range of design
+sizes. The comparison row of the table is a network of the same architecture and the same simulation
+budget trained on one fixed design: at that design size the two are comparable (GBM $0.018$ vs
+$0.012$; OU $0.023$ vs $0.029$), at every sparser bucket the amortized network is more accurate than
+the specialist ever is (GBM reads $0.006$--$0.009$ for $K \le 50$), and designs away from the
+specialist's own it cannot answer at all. Amortization over designs is not a trade-off against
+accuracy at any point we measured --- and it removes a failure mode: resampling the observation subset
+at every optimizer step doubles as data augmentation, and Sec.~\ref{sec:scaling} measures what the
+fixed-design procedure pays for reusing identical tokens across passes.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+ & \multicolumn{2}{c}{FID (median over 100 sets)} \\
+\cmidrule(lr){2-3}
+evaluation design size & GBM & Ornstein--Uhlenbeck \\
+\midrule
+$K = 2$ & $0.007$ & $0.096$ \\
+$K = 5$ & $0.006$ & $0.072$ \\
+$K = 10$ & $0.009$ & $0.072$ \\
+$K = 20$ & $0.008$ & $0.045$ \\
+$K = 50$ & $0.009$ & $0.028$ \\
+$K = 100$ & $0.018$ & $0.023$ \\
+\midrule
+fixed-design network at its own $K$ & $0.012$ \;($K = 95$) & $0.029$ \;($K = 74$) \\
+\bottomrule
+\end{tabular}
+\caption{One design-amortized network per system, evaluated at design sizes never fixed in advance:
+each test observation set draws a fresh random design of the stated size, and the reference posterior
+is recomputed on exactly those points (GBM: conjugate closed form; OU: exact-likelihood MCMC including
+the stationary initial condition). Both the amortized network and the
+fixed-design specialist of the bottom row are trained to saturation on $480{,}000$ simulations; the
+specialist exists only at its own design size. Fig.~\ref{fig:fidk} shows the same data with
+interquartile detail.}
+\label{tab:fidk}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\linewidth]{figs/fid_vs_k.pdf}
+\caption{The data of Table~\ref{tab:fidk} with distributional detail: median FID (line) and
+interquartile range (band) over 100 test observation sets per design-size bucket, for one
+design-amortized network per system evaluated with a fresh random design and an exact per-design
+reference for every test set. The star is the fixed-design network of the same architecture and
+simulation budget, which exists only at its own $K$. Both axes logarithmic.}
+\label{fig:fidk}
+\end{figure}
+
+
+\paragraph{Variable-design zoo.} With the class rule and training procedure fixed, six further systems
+were trained without per-system adjustments. Heston (five parameters, latent volatility): all 25 SBC cases
+pass, and increment tokens give no advantage over point tokens, consistent with the class boundary
+(Sec.~\ref{sec:features}). Merton jump-diffusion: 25 of 25 cases after the heavy-tail treatment of
+Sec.~\ref{sec:anatomy}, including dense-design cases that failed at $p < 10^{-3}$ before it; the residual
+width sits on the budget curve below. H\'enon--Heiles (parameters of the potential of
+\citealt{lubich2015}, observing one coordinate at random times): calibrated at every design size down to
+$K = 6$, where the posterior widens honestly rather than degrading. Hodgkin--Huxley \citep{hodgkin1952}:
+calibrated on mixed designs; one dense-design case shows the budget signature. Pharmacokinetics: at
+$K = 6$ irregular blood draws, bias $-0.01$ to $-0.06$~sd and widths $1.09$--$1.33$ against
+exact-likelihood MCMC. Fisher--KPP: the posterior concentrates on the ridge $D \cdot r \approx$ const;
+the residual along-ridge bias decays with budget (Sec.~\ref{sec:budget}).
+
+The ablations of this subsection track the posterior width component rather than FID: the mechanism
+under study --- set-size blindness of normalized attention --- expresses itself specifically as width
+error, and FID would mix it with unrelated deviations. Table~\ref{tab:designarms} and
+Fig.~\ref{fig:widthk} compare encoder variants for design amortization on GBM, trained at
+$K \sim$ log-uniform$[2, 128]$ random-time designs and evaluated against the exact per-design posterior
+(96 observation sets per bucket). Three observations organize the table. First, index-based positions combined
+with in-place subsampling during training (leaving kept tokens at spread positions while inference packs
+contiguously) produce biases of $+1.1$ to $+3.3$ posterior sd with no individually incorrect component ---
+the positional pathology of Sec.~\ref{sec:trope}; repacking or replacing positions with time phases
+removes the bias entirely. Second, all point-token variants share inflated widths at dense designs, in
+proportion to how poorly their pooled representation encodes $\log K$ (rightmost column; the probe of
+Sec.~\ref{sec:features}) --- including two attention mechanisms specifically constructed to exploit
+continuous time (a learned per-head time-kernel logit bias in the spirit of relative-position methods, and
+edge-message attention carrying gap-modulated increments on all pairs). Third, pair tokens with time-phase
+attention, plus the training procedure of Sec.~\ref{sec:recipe}, bring every bucket to within $7\%$ of the
+exact width.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+ & \multicolumn{4}{c}{$\sigma$ width ratio at $K$} & \\
+\cmidrule(lr){2-5}
+encoder variant & 5 & 9 & 20 & 100 & $R^2(\log K)$ \\
+\midrule
+point tokens, index positions, spread subsampling & 0.94$^{\ast}$ & 1.13$^{\ast}$ & 1.42$^{\ast}$ & 2.08$^{\ast}$ & --- \\
+point tokens, index positions, contiguous & 1.05 & 1.17 & 1.13 & 1.73 & 0.957 \\
+point tokens, time-kernel attention bias & 1.03 & 1.14 & 1.31 & 2.51 & 0.712 \\
+point tokens, edge-message attention & 1.03 & 1.15 & 1.29 & 2.45 & 0.498 \\
+point tokens, time phases & 1.01 & 1.10 & 1.14 & 1.95 & --- \\
+\quad + explicit $\log K$ feature & 1.01 & 1.05 & 1.08 & 1.49 & --- \\
+pair tokens, time phases & 1.02 & 1.02 & 1.02 & 1.27 & 0.985 \\
+pair tokens + full training procedure & 1.06 & 1.06 & 1.05 & 1.07 & --- \\
+\bottomrule
+\end{tabular}
+\caption{GBM with variable designs: posterior width for the volatility $\sigma$ against the exact
+per-design posterior (96 observation sets per design-size bucket) and, where measured, the probe $R^2$ for
+$\log K$ from the pooled encoder output. The table tracks $\sigma$ because it is the parameter whose
+posterior width is governed by the observation density --- the drift $\mu$ is weakly informed at every
+$K$, and all variants recover its posterior within a few percent, so it does not discriminate between
+architectures. $^{\ast}$This row also carries biases of $+1.09$ to $+3.30$ posterior sd (the positional
+train/test mismatch of Sec.~\ref{sec:trope}); all other rows have biases consistent with zero.}
+\label{tab:designarms}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.62\linewidth]{figs/width_vs_k.pdf}
+\caption{The data of Table~\ref{tab:designarms} in graphical form: excess posterior width for the GBM
+volatility --- the width ratio against the exact posterior minus one, so $0.1$ means a posterior $10\%$
+too wide and lower is better --- as a function of the number of observation points $K$ (both axes
+logarithmic). Dotted curves: point-token variants with no set-size information, which degrade as designs
+become dense; dashed: partial repairs; solid: increment tokens, and increment tokens combined with the
+training procedure of Sec.~\ref{sec:recipe}, which is flat in $K$.}
+\label{fig:widthk}
+\end{figure}
+
 \subsection{Comparison with existing tools}
 \label{sec:headtohead}
 
@@ -840,8 +976,10 @@ inference sets the scale on both ends: on GBM, whose likelihood is a three-line 
 Metropolis costs $42$\,ms per observation set and nothing amortized is worth its training bill for a
 single instance; on Fisher--KPP, one likelihood evaluation is one PDE solve, so the same reference
 sampler spends ${\approx}12{,}000$ solves --- minutes of computation --- on \emph{each} observation
-set; and for Heston or Hodgkin--Huxley no likelihood formula exists at any price. Because these estimators consume fixed-length vectors, the comparison uses fixed
-observation designs. Three systems are used, chosen to separate the possible explanations of any
+set; and for Heston or Hodgkin--Huxley no likelihood formula exists at any price. Because these estimators consume fixed-length
+vectors, the comparison uses fixed observation designs --- the only experiments in this report, apart
+from the linear-Gaussian check, run in that mode: a fixed design is the interface the external tools
+require, not the mode this package is built for (Sec.~\ref{sec:design-amortization}). Three systems are used, chosen to separate the possible explanations of any
 performance gap: a multiplicative process where input conditioning is hostile (GBM, exact conjugate
 reference), an additive process where it is comparatively benign (OU, exact-likelihood MCMC reference,
 two validated chains per observation set), and a PDE where every likelihood evaluation requires a forward solve (Fisher--KPP), so that the cost
@@ -992,12 +1130,10 @@ on the curved ridge $D r \approx \mathrm{const}$ fixed by the observable front s
 posteriors reproduce location, scale, orientation, and --- where present --- the curvature of the
 ridge.
 
-In the FID metric of Sec.~\ref{sec:refs} (medians over the largest available test battery per
-system): linear-Gaussian $0.03$, GBM $0.04$, OU and Fisher--KPP $0.07$, pharmacokinetics $0.15$ and
-Merton $0.2$ at their increased budgets. For scale, a $0.1$~sd bias
-in each of $d$ dimensions gives FID $0.01\,d$. The pharmacokinetics values required tripling the
-training budget (at the base budget they were an order of magnitude worse --- the clearest budget
-effect in the suite), and its third test set illustrates a failure mode of the metric rather than of
+In the FID metric of Sec.~\ref{sec:refs}, the trained models read the medians of
+Table~\ref{tab:master}: $0.01$--$0.06$ everywhere except Merton at $0.19$. For scale, a $0.1$~sd bias
+in each of $d$ dimensions gives FID $0.01\,d$. Pharmacokinetics shows the clearest budget effect in
+the suite --- at a third of the saturation budget its FID is an order of magnitude worse --- and its third test set illustrates a failure mode of the metric rather than of
 the model: the true volume of distribution lies within $3\%$ of the prior boundary and the reference
 posterior for $k_e$ has a standard deviation of $1\%$ of its value, so a $0.02$ absolute shift is
 magnified into FID $\approx 38$; behavior at prior boundaries is listed as a limitation in
@@ -1031,8 +1167,9 @@ loss \eqref{eq:cfm}, so independently trained models retain seed-level freedom a
 at $0.31$ at the largest budget while the other two reach $0.06$--$0.07$). Under the variable-design
 training procedure, which averages every optimizer step over fresh observation designs, the same ridge
 error decays steadily with budget. Two negative controls exclude the obvious alternatives: doubling
-network width and depth at fixed budget does not improve any point of the grid (the saturated big
-model of Table~\ref{tab:master} confirms this at $120{,}000$ simulations), and refining the sampling
+network width and depth at fixed budget does not improve any point of the grid on these
+low-dimensional systems (the full capacity ladder, including the five-parameter system where this
+reverses, is in Sec.~\ref{sec:scaling}), and refining the sampling
 ODE solver from 20 midpoint steps to 60 RK4 steps changes nothing measurable.
 
 \begin{figure}[t]
@@ -1058,80 +1195,107 @@ Sec.~\ref{sec:headtohead} train and sample faster at their defaults; the tiny-mo
 kernel-launch-bound on GPUs (\texttt{sbi}'s default flow trains $6\times$ slower there than on the
 laptop CPU).
 
-\subsection{Variable designs and ablations}
-\label{sec:design-amortization}
-\label{sec:ablations}
+\subsection{Data, passes, and capacity}
+\label{sec:scaling}
 
-\paragraph{Variable-design zoo.} With the class rule and training procedure fixed, six further systems
-were trained without per-system adjustments. Heston (five parameters, latent volatility): all 25 SBC cases
-pass, and increment tokens give no advantage over point tokens, consistent with the class boundary
-(Sec.~\ref{sec:features}). Merton jump-diffusion: 25 of 25 cases after the heavy-tail treatment of
-Sec.~\ref{sec:anatomy}, including dense-design cases that failed at $p < 10^{-3}$ before it; the residual
-width sits on the budget curve below. H\'enon--Heiles (parameters of the potential of
-\citealt{lubich2015}, observing one coordinate at random times): calibrated at every design size down to
-$K = 6$, where the posterior widens honestly rather than degrading. Hodgkin--Huxley \citep{hodgkin1952}:
-calibrated on mixed designs; one dense-design case shows the budget signature. Pharmacokinetics: at
-$K = 6$ irregular blood draws, bias $-0.01$ to $-0.06$~sd and widths $1.09$--$1.33$ against
-exact-likelihood MCMC. Fisher--KPP: the posterior concentrates on the ridge $D \cdot r \approx$ const;
-the residual along-ridge bias decays with budget (Sec.~\ref{sec:budget}).
+A training budget can be spent in three directions: more simulations, more passes over them, or more
+parameters. The three are commonly conflated under a single ``budget'' axis; the following two grids
+separate them on the systems with exact references.
 
-The ablations of this subsection track the posterior width component rather than FID: the mechanism
-under study --- set-size blindness of normalized attention --- expresses itself specifically as width
-error, and FID would mix it with unrelated deviations. Table~\ref{tab:designarms} and
-Fig.~\ref{fig:widthk} compare encoder variants for design amortization on GBM, trained at
-$K \sim$ log-uniform$[2, 128]$ random-time designs and evaluated against the exact per-design posterior
-(96 observation sets per bucket). Three observations organize the table. First, index-based positions combined
-with in-place subsampling during training (leaving kept tokens at spread positions while inference packs
-contiguously) produce biases of $+1.1$ to $+3.3$ posterior sd with no individually incorrect component ---
-the positional pathology of Sec.~\ref{sec:trope}; repacking or replacing positions with time phases
-removes the bias entirely. Second, all point-token variants share inflated widths at dense designs, in
-proportion to how poorly their pooled representation encodes $\log K$ (rightmost column; the probe of
-Sec.~\ref{sec:features}) --- including two attention mechanisms specifically constructed to exploit
-continuous time (a learned per-head time-kernel logit bias in the spirit of relative-position methods, and
-edge-message attention carrying gap-modulated increments on all pairs). Third, pair tokens with time-phase
-attention, plus the training procedure of Sec.~\ref{sec:recipe}, bring every bucket to within $7\%$ of the
-exact width.
+\paragraph{Fresh simulations beat repeated passes.} Table~\ref{tab:de} varies the number of simulated
+trajectories and the number of epochs independently, for the fixed-design GBM and OU models at the
+default size. Two readings. Along constant compute --- $10{,}000$ trajectories $\times$ 120 epochs
+versus $120{,}000 \times 10$, equal optimizer steps --- fresh data wins by an order of magnitude or
+more in FID. And passes are not merely diminishing but destructive: at 120 epochs every configuration
+is worse than at 35, including the largest training set (OU: $0.066 \to 0.648$). The mechanism is
+memorization of the tokens: virtual times and reference noise are redrawn at every step
+(Sec.~\ref{sec:recipe}), so what repeats across passes is only the fixed observation vectors.
+Consistent with this, redrawing a random $75\%$ token subset at every optimizer step
+(\texttt{token\_dropout}) largely repairs the 120-epoch column --- OU $1.89 \to 0.25$ at $10{,}000$
+trajectories, $0.65 \to 0.14$ at $120{,}000$ --- while slightly hurting the one cell that had barely
+overfitted (GBM at $120{,}000$: $0.13 \to 0.28$): training on subsets while evaluating on the full
+design is its own train/test mismatch, so subsampling is a repair, not a free improvement. The
+design-amortized procedure performs the same augmentation natively and without the mismatch --- every
+optimizer step sees a fresh design drawn from the law used at evaluation --- which is why the
+amortized network of Table~\ref{tab:fidk} is at least as accurate as its fixed-design counterpart at
+the same budget.
 
 \begin{table}[t]
 \centering
 \small
-\begin{tabular}{@{}lccccc@{}}
+\begin{tabular}{@{}lrcccc@{}}
 \toprule
- & \multicolumn{4}{c}{$\sigma$ width ratio at $K$} & \\
-\cmidrule(lr){2-5}
-encoder variant & 5 & 9 & 20 & 100 & $R^2(\log K)$ \\
+ & & \multicolumn{4}{c}{FID at epochs} \\
+\cmidrule(lr){3-6}
+system & trajectories & 10 & 35 & 120 & $120$ + subsampling \\
 \midrule
-point tokens, index positions, spread subsampling & 0.94$^{\ast}$ & 1.13$^{\ast}$ & 1.42$^{\ast}$ & 2.08$^{\ast}$ & --- \\
-point tokens, index positions, contiguous & 1.05 & 1.17 & 1.13 & 1.73 & 0.957 \\
-point tokens, time-kernel attention bias & 1.03 & 1.14 & 1.31 & 2.51 & 0.712 \\
-point tokens, edge-message attention & 1.03 & 1.15 & 1.29 & 2.45 & 0.498 \\
-point tokens, time phases & 1.01 & 1.10 & 1.14 & 1.95 & --- \\
-\quad + explicit $\log K$ feature & 1.01 & 1.05 & 1.08 & 1.49 & --- \\
-pair tokens, time phases & 1.02 & 1.02 & 1.02 & 1.27 & 0.985 \\
-pair tokens + full training procedure & 1.06 & 1.06 & 1.05 & 1.07 & --- \\
+GBM & $10{,}000$  & $0.105$ & $0.059$ & $0.965$ & $0.114$ \\
+    & $30{,}000$  & $0.036$ & $0.047$ & $0.659$ & --- \\
+    & $120{,}000$ & $0.044$ & $0.026$ & $0.131$ & $0.277$ \\
+\midrule
+OU  & $10{,}000$  & $0.206$ & $0.151$ & $1.892$ & $0.253$ \\
+    & $30{,}000$  & $0.090$ & $0.095$ & $1.648$ & --- \\
+    & $120{,}000$ & $0.038$ & $0.066$ & $0.648$ & $0.143$ \\
 \bottomrule
 \end{tabular}
-\caption{GBM with variable designs: posterior width for the volatility $\sigma$ against the exact
-per-design posterior (96 observation sets per design-size bucket) and, where measured, the probe $R^2$ for
-$\log K$ from the pooled encoder output. The table tracks $\sigma$ because it is the parameter whose
-posterior width is governed by the observation density --- the drift $\mu$ is weakly informed at every
-$K$, and all variants recover its posterior within a few percent, so it does not discriminate between
-architectures. $^{\ast}$This row also carries biases of $+1.09$ to $+3.30$ posterior sd (the positional
-train/test mismatch of Sec.~\ref{sec:trope}); all other rows have biases consistent with zero.}
-\label{tab:designarms}
+\caption{Median FID when the same fixed-design training is given more simulated trajectories (rows) or
+more passes over them (columns), at the default model size; cells on an anti-diagonal cost equal
+compute. The last column repeats the 120-epoch run with a fresh random $75\%$ token subset at every
+optimizer step.}
+\label{tab:de}
 \end{table}
 
-\begin{figure}[t]
+\paragraph{The capacity floor moves with the parameter dimension.} Table~\ref{tab:capacity} trains the
+same architecture at five sizes spanning $7$ thousand to $2.3$ million parameters, at a fixed budget of
+$120{,}000$ simulations, on four systems of increasing parameter dimension. At $d = 2$ the ladder is
+flat: a $7{,}000$-parameter model, $70\times$ smaller than the default, matches the default within seed
+noise on GBM. At $d = 3$ the floor is visible: below ${\sim}10^5$ parameters accuracy degrades
+several-fold. In both places the floor announces itself first as seed instability rather than as a
+shift of the median --- OU at the smallest size spans $0.05$--$0.10$ across seeds and pharmacokinetics
+$0.33$--$0.57$, while the better-provisioned rows reproduce to a few thousandths. At $d = 5$ the ladder is
+monotone through its entire range --- every halving of width costs accuracy, and this is the one column
+where the largest model is not worse than the default --- so the Merton entry of
+Table~\ref{tab:master} is capacity-limited, not data-limited. Two couplings matter when reading such
+ladders. The learning rate must shrink with width: at width 128 the default $3 \times 10^{-4}$ is
+unstable and masquerades as ``bigger is worse'' (GBM median FID $0.068$), while halving it restores
+parity ($0.024$); the big row of the table reports the stable setting. And adding parameters without
+adding data buys nothing here, whereas adding data does: at $480{,}000$ simulations the default model
+reaches FID $0.012$ (GBM) and $0.029$ (OU), while the big model at the same enlarged budget and
+rescaled learning rate reads $0.018$ and $0.039$. The same lever closes the capacity gap at $d = 5$:
+quadrupling the simulations improves the default Merton model from $0.213$ to $0.186$ and the big one
+from $0.206$ to $0.200$, so once data is scaled the default \emph{overtakes} the big model ---
+capacity binds at a fixed simulation budget, but the data axis ultimately outbids the parameter axis
+everywhere we measured. The one exception is pharmacokinetics, where the enlarged budget does not
+improve the 32-set battery median ($0.055 \to 0.098$); we report it as unresolved: the battery's mean
+is dominated by the single prior-boundary set discussed in Sec.~\ref{sec:pairs}, and at this battery
+size such shifts are within its spread. On low-dimensional systems the parameter axis saturates by a
+few thousand weights; the simulation axis did not saturate on any other system.
+
+\begin{table}[t]
 \centering
-\includegraphics[width=0.62\linewidth]{figs/width_vs_k.pdf}
-\caption{The data of Table~\ref{tab:designarms} in graphical form: excess posterior width for the GBM
-volatility --- the width ratio against the exact posterior minus one, so $0.1$ means a posterior $10\%$
-too wide and lower is better --- as a function of the number of observation points $K$ (both axes
-logarithmic). Dotted curves: point-token variants with no set-size information, which degrade as designs
-become dense; dashed: partial repairs; solid: increment tokens, and increment tokens combined with the
-training procedure of Sec.~\ref{sec:recipe}, which is flat in $K$.}
-\label{fig:widthk}
-\end{figure}
+\small
+\begin{tabular}{@{}lrcccc@{}}
+\toprule
+ & & GBM & OU & pharmacokin. & Merton \\
+model (width $\times$ blocks) & params & $d=2$ & $d=2$ & $d=3$ & $d=5$ \\
+\midrule
+pico ($8 \times 2$)   & $7{,}114$   & $0.028$--$0.029$ & $0.052$--$0.095$ & $0.33$--$0.57$ & $0.48$ \\
+nano ($16 \times 2$)  & $25{,}730$  & $0.021$--$0.027$ & $0.042$--$0.054$ & $0.26$--$0.29$ & $0.30$ \\
+tiny ($32 \times 2$)  & $97{,}522$  & $0.014$--$0.018$ & $0.042$--$0.043$ & $0.10$--$0.12$ & $0.23$--$0.25$ \\
+small ($64 \times 3$, default) & $483{,}346$ & $0.018$--$0.026$ & $0.045$--$0.066$ & $0.055$ & $0.21$ \\
+big ($128 \times 4$)  & $2{,}321{,}554$ & $0.024$ & $0.054$ & $0.085$ & $0.21$ \\
+\bottomrule
+\end{tabular}
+\caption{Capacity ladder: median FID at a fixed budget of $120{,}000$ simulations; sizes are given as
+width $\times$ transformer blocks, with parameter counts for the GBM instance (counts vary by a few
+percent across systems with the input dimension). Ranges span independent training seeds. GBM and OU
+use the fixed-design protocol of Table~\ref{tab:de}; pharmacokinetics and Merton use the
+design-amortized protocol and the evaluation batteries of Table~\ref{tab:master}. The big row uses the
+width-rescaled learning rate (see text). The ladder is flat at $d = 2$, develops a floor near $10^5$
+parameters at $d = 3$, and is monotone through the full range at $d = 5$.}
+\label{tab:capacity}
+\end{table}
+
 
 \section{Failure analysis: conditioning of the encoder input}
 \label{sec:anatomy}
