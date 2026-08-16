@@ -1,0 +1,10 @@
+{
+ "case": "merton",
+ "K": 20,
+ "short_chain": 2000,
+ "short_null": 0.3040343870068843,
+ "short_model": 0.2061362524100926,
+ "long_chain": 200000,
+ "long_null": 0.013143383866233694,
+ "long_model": 0.04567711590490382
+}

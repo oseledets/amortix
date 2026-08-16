@@ -43,11 +43,13 @@ observed points. Trained once per system in this design-amortized mode, the defa
 reference posteriors to median Fr\'echet distances (in reference-normalized coordinates) of
 $0.01$--$0.07$ on four of six reference-equipped systems --- evaluated across design sizes with a
 fresh random design per test observation set, where it is comparable to or better than networks
-trained for each single design --- while the two elevated entries are measured effects: $0.19$ on a
-five-parameter jump-diffusion that is capacity-limited at a fixed simulation budget, and $0.18$ on
-dense-design pharmacokinetics, where the posterior contracts to within a few multiples of the
+trained for each single design --- while the single elevated entry, dense-design
+pharmacokinetics, is a measured effect: its posterior contracts to within a few multiples of the
 network's absolute error floor, measured at $2$--$6 \times 10^{-3}$ of the prior range and identical
-across systems whose posterior widths differ by $30\times$; 34 of 36 parameters across the nine systems without a tractable
+across systems whose posterior widths differ by $30\times$. Reaching those numbers required auditing
+the reference posteriors themselves --- on the jump-diffusion, chains of the length we had been using
+disagreed with each other more than the model disagreed with them, and lengthening them moved the
+reported error from $0.19$ to $0.05$; 34 of 36 parameters across the nine systems without a tractable
 reference pass simulation-based calibration, and residual errors decay steadily with the simulation
 budget. We
 compare against neural posterior estimation and flow-matching posterior estimation from the \texttt{sbi}
@@ -949,8 +951,10 @@ Four questions, four answers.
   parameters at $d = 2$ (only seed instability marks it), near $10^5$ at $d = 3$, and keeps rising
   through $2.3$M at $d = 5$.
   \item \emph{Does data buy accuracy?} Every column of every task improves monotonically down the
-  rows, with no saturation anywhere in the measured range (Fig.~\ref{fig:budgetgrid}); the
-  $4\times$ data step moves every task more than the $24\times$ parameter step does. Data, not
+  rows, with no saturation anywhere in the measured range (Fig.~\ref{fig:budgetgrid}), and the
+  $4\times$ data step moves every task more than the $24\times$ parameter step does --- with one
+  measured exception, pharmacokinetics, where the largest budget is worse and the cause is localized
+  to a single parameter (Sec.~\ref{sec:scaling}). Data, not
   capacity, is the axis worth paying for --- and Sec.~\ref{sec:scaling} shows the budget must be
   spent on \emph{fresh} simulations, not on passes over stored ones.
   \item \emph{Are the hyperparameters tuned?} One coupling matters: the learning rate must shrink
@@ -1005,10 +1009,10 @@ the square. References as in Table~\ref{tab:baselines}.}
 Table~\ref{tab:master} reports the corresponding global metric on the full test batteries, and
 Table~\ref{tab:screen} the calibration screen for the nine systems where no tractable reference
 exists. Every reference row is evaluated in the package's default mode --- one network per system, a fresh
-random design per test observation set --- and reads median FID $0.01$--$0.07$ on four of the six
-systems. The two elevated entries are measured effects rather than noise: Merton ($0.19$) is limited
-by model capacity at this simulation budget (Sec.~\ref{sec:scaling}), and pharmacokinetics ($0.18$)
-is the one system whose posterior contracts below the amortized precision floor at dense designs
+random design per test observation set --- and reads median FID $0.01$--$0.07$ on five of the six
+systems, the five-parameter Merton jump-diffusion included once its reference is computed with
+converged chains. The single elevated entry is pharmacokinetics ($0.25$), whose posterior at dense
+designs contracts to within a few multiples of the network's absolute error floor
 (Sec.~\ref{sec:design-amortization}). On the screen systems, 34 of 36 parameters pass, with the marginal cases
 moving between retrainings as expected at the screen's resolution limit. Per-parameter $p$-values,
 rank distributions, and coverage curves are in Appendix~\ref{app:systems}.
@@ -1032,17 +1036,19 @@ geometric Brownian motion & 2 & conjugate, per design & $K = 2$--$100$ (600) & $
 linear-Gaussian & 4 & exact subset posterior & $K = 2$--$6$ (300) & $0.03$ \\
 Ornstein--Uhlenbeck & 2 & exact-likelihood MCMC & $K = 2$--$100$ (600) & $0.05$ \\
 Fisher--KPP (PDE) & 2 & PDE-likelihood MCMC & $K = 10$--$90$ (96) & $0.07$ \\
-pharmacokinetics & 3 & log-normal MCMC & $K = 5$--$50$ (96) & $0.18$ \\
-Merton jump-diffusion & 5 & Poisson-mixture MCMC & $K = 5$--$100$ (96) & $0.19$ \\
+Merton jump-diffusion & 5 & Poisson-mixture MCMC & $K = 5$--$100$ (96) & $0.05$ \\
+pharmacokinetics & 3 & log-normal MCMC & $K = 5$--$50$ (96) & $0.25$ \\
 \bottomrule
 \end{tabular}
 \caption{Systems with reference posteriors: pooled median FID \eqref{eq:fid} of the trained
 design-amortized model of the default architecture. Every row is evaluated in the package's default
 mode: each test observation set (count in parentheses) draws a fresh random design of the stated size
 range, and the reference posterior is recomputed on exactly those points. Per-$K$ breakdown:
-Table~\ref{tab:fidk}. The two elevated entries have measured mechanisms: pharmacokinetics meets the
-amortized precision floor at dense designs (Sec.~\ref{sec:design-amortization}), and Merton is
-capacity-limited at this simulation budget (Sec.~\ref{sec:scaling}).}
+Table~\ref{tab:fidk}. Every reference here passes the two-chain check of Sec.~\ref{sec:refs} at
+$2 \times 10^5$ draws; against the $2{,}000$-draw chains used in an earlier version of this table the
+Merton and pharmacokinetics rows read $0.19$ and $0.18$, at or below the sampler's own floor.
+Pharmacokinetics is elevated because its posterior at dense designs contracts to within a few
+multiples of the network's absolute error floor (Sec.~\ref{sec:design-amortization}).}
 \label{tab:master}
 \end{table}
 
@@ -1318,12 +1324,14 @@ same architecture at five sizes spanning $7$ thousand to $2.3$ million parameter
 $120{,}000$ simulations, on four systems of increasing parameter dimension. At $d = 2$ the ladder is
 flat: a $7{,}000$-parameter model, $70\times$ smaller than the default, matches the default within seed
 noise on GBM. At $d = 3$ the floor is visible: below ${\sim}10^5$ parameters accuracy degrades
-several-fold. In both places the floor announces itself first as seed instability rather than as a
-shift of the median --- OU at the smallest size spans $0.05$--$0.10$ across seeds and pharmacokinetics
-$0.33$--$0.57$, while the better-provisioned rows reproduce to a few thousandths. At $d = 5$ the ladder is
-monotone through its entire range --- every halving of width costs accuracy, and this is the one column
-where the largest model is not worse than the default --- so the Merton entry of
-Table~\ref{tab:master} is capacity-limited, not data-limited. Two couplings matter when reading such
+several-fold. At $d = 3$ the floor sits between the two smallest sizes: accuracy improves
+$2.7\times$ from nano to tiny ($0.167 \to 0.063$) and only $1.6\times$ over the twenty-four-fold
+step from tiny to big ($0.063 \to 0.038$). At $d = 5$ the ladder is monotone until it saturates at the default size:
+$0.243$, $0.091$, $0.074$, $0.052$, $0.051$ from pico to big, so every halving of width below the
+default costs accuracy while doubling it beyond buys nothing measurable --- the two largest entries
+differ by less than the reference's own floor of $0.0065$. The capacity floor therefore rises with
+the parameter dimension, and above it the simulation axis takes over again: at $480{,}000$
+simulations the default Merton model reaches $0.035$. Two couplings matter when reading such
 ladders. The learning rate must shrink with width: at width 128 the default $3 \times 10^{-4}$ is
 unstable and masquerades as ``bigger is worse'' (GBM median FID $0.068$), while halving it restores
 parity ($0.024$); the big row of the table reports the stable setting. And adding parameters without
@@ -1333,10 +1341,16 @@ rescaled learning rate reads $0.018$ and $0.039$. The same lever closes the capa
 quadrupling the simulations improves the default Merton model from $0.213$ to $0.186$ and the big one
 from $0.206$ to $0.200$, so once data is scaled the default \emph{overtakes} the big model ---
 capacity binds at a fixed simulation budget, but the data axis ultimately outbids the parameter axis
-everywhere we measured. The one exception is pharmacokinetics, where the enlarged budget does not
-improve the battery median ($0.055 \to 0.098$ on its 32-set battery) --- consistent with a model
-operating at the amortized precision floor (Sec.~\ref{sec:design-amortization}), where seed-level
-jitter of order the floor itself dominates any battery this size. On low-dimensional systems the parameter axis saturates by a
+everywhere we measured. The one exception in the suite is pharmacokinetics, where the budget
+axis does not merely saturate but reverses: on its converged $K = 6$ battery the default model reads
+$0.044$ at $120{,}000$ simulations and $0.070$ and $0.147$ for two independently trained models at
+$480{,}000$. The degradation is localized. Posterior widths stay within $5\%$ of the reference for
+every model and both other parameters are unaffected --- the entire effect is the elimination rate
+$k_e$, whose posterior-mean error grows from $0.08$ to $0.26$ and $0.37$ reference standard
+deviations, and whose posterior is the narrowest in the suite. It is reproducible across the two
+long runs, so it is not seed noise, and we report it as unexplained: it is the one place in this
+report where more simulations make an entry worse, and it happens to the parameter that the
+precision floor of Sec.~\ref{sec:design-amortization} squeezes hardest. On low-dimensional systems the parameter axis saturates by a
 few thousand weights; the simulation axis did not saturate on any other system.
 
 \begin{table}[t]
@@ -1347,18 +1361,20 @@ few thousand weights; the simulation axis did not saturate on any other system.
  & & GBM & OU & pharmacokin. & Merton \\
 model (width $\times$ blocks) & params & $d=2$ & $d=2$ & $d=3$ & $d=5$ \\
 \midrule
-pico ($8 \times 2$)   & $7{,}114$   & $0.028$--$0.029$ & $0.052$--$0.095$ & $0.33$--$0.57$ & $0.48$ \\
-nano ($16 \times 2$)  & $25{,}730$  & $0.021$--$0.027$ & $0.042$--$0.054$ & $0.26$--$0.29$ & $0.30$ \\
-tiny ($32 \times 2$)  & $97{,}522$  & $0.014$--$0.018$ & $0.042$--$0.043$ & $0.10$--$0.12$ & $0.23$--$0.25$ \\
-small ($64 \times 3$, default) & $483{,}346$ & $0.018$--$0.026$ & $0.045$--$0.066$ & $0.055$ & $0.21$ \\
-big ($128 \times 4$)  & $2{,}321{,}554$ & $0.024$ & $0.054$ & $0.085$ & $0.21$ \\
+pico ($8 \times 2$)   & $7{,}114$   & $0.028$--$0.029$ & $0.052$--$0.095$ & $0.675$ & $0.243$ \\
+nano ($16 \times 2$)  & $25{,}730$  & $0.021$--$0.027$ & $0.042$--$0.054$ & $0.167$ & $0.091$ \\
+tiny ($32 \times 2$)  & $97{,}522$  & $0.014$--$0.018$ & $0.042$--$0.043$ & $0.063$ & $0.074$ \\
+small ($64 \times 3$, default) & $483{,}346$ & $0.018$--$0.026$ & $0.045$--$0.066$ & $0.044$ & $0.052$ \\
+big ($128 \times 4$)  & $2{,}321{,}554$ & $0.024$ & $0.054$ & $0.038$ & $0.051$ \\
 \bottomrule
 \end{tabular}
 \caption{Capacity ladder: median FID at a fixed budget of $120{,}000$ simulations; sizes are given as
 width $\times$ transformer blocks, with parameter counts for the GBM instance (counts vary by a few
 percent across systems with the input dimension). Ranges span independent training seeds. GBM and OU
 use the fixed-design protocol of Table~\ref{tab:de}; pharmacokinetics and Merton use the
-design-amortized protocol and the evaluation batteries of Table~\ref{tab:master}. The big row uses the
+design-amortized protocol, evaluated against the converged references of Sec.~\ref{sec:refs} whose
+own two-chain floors are $0.0023$ and $0.0065$ --- every entry in those two columns is above its
+floor by a factor of $8$ or more. The big row uses the
 width-rescaled learning rate (see text). The ladder is flat at $d = 2$, develops a floor near $10^5$
 parameters at $d = 3$, and is monotone through the full range at $d = 5$.}
 \label{tab:capacity}
@@ -1406,17 +1422,20 @@ geometric Brownian motion & $0.006$ \;(5) & $0.008$ \;(20) & $0.018$ \;(100) & $
 Ornstein--Uhlenbeck & $0.072$ \;(5) & $0.045$ \;(20) & $0.023$ \;(100) & $0.029$ \;(74) \\
 linear-Gaussian & $0.012$ \;(2) & $0.035$ \;(4) & $0.046$ \;(6) & $0.039$ \;(6) \\
 Fisher--KPP & $0.073$ \;(10) & $0.050$ \;(40) & $0.126$ \;(90) & $0.036$ \;(40) \\
-pharmacokinetics & $0.116$ \;(5) & $0.157$ \;(20) & $0.421$ \;(50) & --- \\
-Merton jump-diffusion & $0.169$ \;(5) & $0.206$ \;(20) & $0.187$ \;(100) & --- \\
+Merton jump-diffusion & $0.027$ \;(5) & $0.046$ \;(20) & $0.057$ \;(100) & --- \\
+pharmacokinetics & $0.048$ \;(5) & $0.250$ \;(20) & $0.323$ \;(50) & --- \\
 \bottomrule
 \end{tabular}
 \caption{One design-amortized network per system, evaluated at design sizes never fixed in advance
 (the bucket's $K$ in parentheses): each test observation set draws a fresh random design and its
 reference posterior is recomputed on exactly those points. Last column: a separate network of the
 same architecture and simulation budget trained on a single fixed design, which exists only at its
-own $K$. GBM and OU are evaluated on the denser $K$-grid of Fig.~\ref{fig:fidk}. Pharmacokinetics
-rises with $K$ --- the precision floor, audited in the text; Merton is flat in $K$ and
-capacity-limited (Sec.~\ref{sec:scaling}).}
+own $K$. GBM and OU are evaluated on the denser $K$-grid of Fig.~\ref{fig:fidk}. The Merton and
+pharmacokinetics rows use the converged references of Sec.~\ref{sec:refs}; with the $2{,}000$-draw
+chains of an earlier version they read $0.17$--$0.21$ and $0.12$--$0.42$, which the sampler's own
+floor ($0.24$--$0.30$ and $0.06$--$0.08$) makes uninformative for Merton and distorts for
+pharmacokinetics. Pharmacokinetics rises steeply with $K$ --- the precision floor, audited in the
+text.}
 \label{tab:fidk}
 \end{table}
 
@@ -1433,7 +1452,7 @@ the different vertical scales.}
 \end{figure}
 
 \paragraph{The amortized precision floor.} Pharmacokinetics is the one system whose FID \emph{rises}
-with the design size ($0.116 \to 0.421$ from $K = 5$ to $50$), and we audited the number before
+with the design size ($0.048 \to 0.323$ from $K = 5$ to $50$ against converged references), and we audited the number before
 interpreting it: an independent exact posterior (Laplace mode plus importance sampling with
 $2 \times 10^5$ exact likelihood evaluations per observation set) agrees with the MCMC reference to
 $0.0$--$0.23$~sd, and the model's FID against either reference coincides --- the value is real, not a
