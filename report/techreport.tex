@@ -131,7 +131,7 @@ The remainder of the report presents the method (Sec.~\ref{sec:method}), the arc
 (Sec.~\ref{sec:arch}), training procedures (Sec.~\ref{sec:recipe}), the evaluation methodology
 (Sec.~\ref{sec:protocol}), the benchmark suite (Sec.~\ref{sec:suite}), experimental results including
 comparisons with \texttt{sbi}, BayesFlow, and the Simformer on three systems with exact or validated
-references (Sec.~\ref{sec:results}), an analysis of the failure modes encountered during development
+references (Sec.~\ref{sec:results}), the three input-conditioning problems the architecture solves
 (Sec.~\ref{sec:anatomy}), and limitations (Sec.~\ref{sec:discussion}). Appendix~\ref{app:systems} defines
 every benchmark system with its equations, priors, and observation model; Appendix~\ref{app:refs} details
 the reference posteriors; Appendix~\ref{app:package} maps the terminology of this report to package
@@ -457,10 +457,9 @@ are mapped by a zero-initialized MLP to per-channel scale and shift corrections,
 contribution is specific and modest: it removes a residual $+0.27$~sd bias that survives on the densest
 Merton designs (the effective jump-detection threshold shifts with the unknown volatility), and it does
 so as well as a hand-crafted per-observation-set rescaling, within error bars
-($+0.13 \pm 0.06$ vs $+0.09 \pm 0.05$~sd; Sec.~\ref{sec:anatomy}). Three implementation conditions are
-necessary and were each found through a failure: zero initialization (training starts from the working
-baseline), modulation applied \emph{after} the running normalization (the reverse ordering re-creates
-the drift it corrects), and pooled statistics that exclude padding positions.
+($+0.13 \pm 0.06$ vs $+0.09 \pm 0.05$~sd; Sec.~\ref{sec:anatomy}). Three conditions are required for
+it to help: zero initialization, modulation applied \emph{after} the running normalization, and
+pooled statistics that exclude padding positions.
 
 \paragraph{Design size.} Posterior width is governed by the number of observations --- in regular
 models the error scales as $K^{-1/2}$ --- but $K$ is a global property of the set, and softmax
@@ -548,23 +547,25 @@ reference posterior standard deviation),
 \end{equation}
 --- the construction used as the FID score in the image-generation literature, and we adopt that name.
 
-\paragraph{Every reference carries its own floor.} A reference posterior is itself a finite
-sample, and if it is produced by MCMC it is a finite sample from a chain that may not have converged.
-We therefore compute, for every system and at the sample size actually reported, the same statistic
-between \emph{two independent reference draws} --- a second exact draw, or a second chain from a
-different seed. That number is the floor below which nothing can be measured, and it is quoted
-alongside the model's value throughout.
+FID is zero for a perfect match, dimensionless, and combines the three ways a posterior can be
+wrong: location, width, and orientation error. For scale, a bias of $0.1$ reference-sd in each of
+$d$ dimensions gives FID $0.01\,d$, and a posterior $30\%$ too wide in one dimension gives
+FID $\approx 0.09$. Where the direction of a failure matters --- too wide is merely wasteful,
+overconfident is silently dangerous --- we additionally quote the per-parameter decomposition: the
+signed posterior-mean error in reference-sd units (\emph{bias}) and the ratio of standard deviations
+(\emph{width}; $1$ exact, above one conservative, below one overconfident).
 
-The check is not a formality: it caught a broken reference in this suite. The Merton jump-diffusion
-battery, built with $2{,}000$-draw adaptive-Metropolis chains like every other MCMC reference here,
-has a two-chain floor of $0.259$ --- larger than the $0.186$ we were reporting as the model's error,
-so that entry measured the sampler rather than the network. Lengthening the chains repairs it:
-at $20{,}000$ draws the floor falls to $0.023$ against a model value of $0.031$, and at $10^5$ draws
-to $0.005$ against $0.021$. The corrected references used in Sec.~\ref{sec:results} are
-$2 \times 10^5$-draw chains thinned to $4{,}000$ draws, whose two chains agree to $0.016$ posterior
-standard deviations in the median and $0.060$ at worst. No other system in the suite failed the
-check; the systems that cannot pass it at any chain length we could afford are reported under the
-calibration screen instead (Sec.~\ref{sec:design-amortization}).
+References are of three kinds, with construction and validation detailed in Appendix~\ref{app:refs}:
+closed form for the linear-Gaussian benchmark and geometric Brownian motion (conjugate on the
+log-returns); an exact-likelihood adaptive Metropolis sampler for Ornstein--Uhlenbeck, Merton,
+pharmacokinetics, and Fisher--KPP, whose likelihoods are exact per-gap transition densities (one
+likelihood evaluation is one PDE solve in the Fisher--KPP case); and, for every MCMC reference,
+validation by a second chain from a well-separated start. A reference is used only once its two
+chains agree, and the between-chain posterior-mean discrepancy --- in posterior-sd units --- is the
+floor below which nothing can be measured, quoted alongside the model's value throughout. That floor
+scales with chain length: the Merton jump-diffusion needs $2 \times 10^5$-draw chains to clear it
+(two chains then agreeing to $0.016$~sd in the median, $0.060$ at worst), and systems whose chains do
+not converge at any affordable length are reported under the calibration screen instead.
 
 \paragraph{Resolution of the estimator.} Both sample sets are finite, so
 \eqref{eq:fid} is positive even for a perfect posterior, and the size of that offset sets what the
@@ -579,103 +580,11 @@ at $n = 2{,}000$, $0.0100$ at $8{,}000$, and $0.0072$ at $32{,}000$ on the same 
 subtracting the estimator offset its excess over the reference is ${\approx}0.007$ at every sample
 size --- a real error of the model, not an artifact of the ruler.
 
-\paragraph{Does the choice of discrepancy matter?} Equation~\eqref{eq:fid} is the squared
-$2$-Wasserstein distance between Gaussian fits, and the division by the reference standard deviation
-is ours, not part of that distance: the summands carry different physical units --- a rate in
-h$^{-1}$, a volume in litres --- so some normalization is required, and the one we chose contracts
-with the posterior itself. Table~\ref{tab:metrics} therefore evaluates five discrepancies on the same
-sample sets: the Gaussian $W_2^2$ under two different normalizations, two distribution-free
-alternatives, and the classifier two-sample accuracy used as the primary metric of the \texttt{sbibm}
-benchmark \citep{lueckmann2021}. Three readings. The distribution-free measures agree with the
-Gaussian one on every system, so the Gaussian summary is not what limits the comparison --- the
-normalization is: the same model reads $0.009$ on GBM and $0.58$ on dense pharmacokinetics in
-posterior-sd units, but $0.0001$ against $0.0003$ in prior-range units. C2ST is the most readable of
-the five, being bounded and calibrated at $0.5$: five of the six systems sit at $0.52$--$0.55$, i.e.
-a trained classifier can barely separate our posterior samples from exact ones, with dense
-pharmacokinetics the single exception at $0.77$. And the null column earns its place --- it is what
-exposed the Merton reference above.
-
-\begin{table}[t]
-\centering
-\small
-\begin{tabular}{@{}lccccc@{}}
-\toprule
- & \multicolumn{2}{c}{$W_2^2$ Gaussian} & \multicolumn{2}{c}{distribution-free} & \\
-\cmidrule(lr){2-3}\cmidrule(lr){4-5}
-system & / post.\ sd & / prior range & energy & sliced $W_2^2$ & C2ST \\
-\midrule
-geometric Brownian motion & $0.009$ & $0.0001$ & $0.004$ & $0.005$ & $0.520$ \\
-linear-Gaussian & $0.043$ & $0.0001$ & $0.011$ & $0.011$ & $0.548$ \\
-Ornstein--Uhlenbeck & $0.050$ & $0.0008$ & $0.027$ & $0.028$ & $0.551$ \\
-Fisher--KPP & $0.071$ & $0.0000$ & $0.023$ & $0.031$ & $0.546$ \\
-Merton jump-diffusion & $0.035$ & $0.0008$ & $0.008$ & $0.007$ & $0.522$ \\
-pharmacokinetics & $0.580$ & $0.0003$ & $0.191$ & $0.182$ & $0.769$ \\
-\midrule
-\multicolumn{6}{@{}l}{\emph{null: the same statistic between two independent reference draws}} \\
-geometric Brownian motion & $0.002$ & $0.0001$ & $0.001$ & $0.002$ & $0.500$ \\
-linear-Gaussian & $0.004$ & $0.0000$ & $-0.001$ & $0.002$ & $0.498$ \\
-Ornstein--Uhlenbeck & $0.013$ & $0.0003$ & $0.003$ & $0.009$ & $0.507$ \\
-Fisher--KPP & $0.006$ & $0.0000$ & $0.004$ & $0.008$ & $0.510$ \\
-Merton jump-diffusion & $0.007$ & $0.0003$ & $0.000$ & $0.002$ & $0.497$ \\
-pharmacokinetics & $0.028$ & $0.0000$ & $0.008$ & $0.014$ & $0.527$ \\
-\bottomrule
-\end{tabular}
-\caption{Five discrepancies between the same trained model and the same references, on all six
-reference systems, medians over 16--32 test observation sets with $4{,}000$ samples each, and (lower block) the floor each statistic carries
-at that sample size. Energy and sliced $W_2^2$ are computed in posterior-sd units like the first
-column. The measures rank the systems identically; what separates them is the normalization, not the
-Gaussian assumption. Merton is scored against the converged reference of Sec.~\ref{sec:refs} (its
-$4{,}000$-draw chains fail the two-chain check, which is why the floor column matters).}
-\label{tab:metrics}
-\end{table}
-
-\paragraph{Why the image-style construction is not enough.} In image generation, FID needs no
-likelihood because reference samples come straight from the dataset. The analogue here is a
-\emph{joint-space} FID, which is likelihood-free too: draw $(m_i, \D_i)$ from the prior and the
-simulator, draw $m'_i \sim q(m \mid \D_i)$ from the trained model, and compare the two sets of
-pairs $\{(m_i, \D_i)\}$ and $\{(m'_i, \D_i)\}$. We measured this construction on the GBM
-comparison of Sec.~\ref{sec:headtohead}, where the exact per-design FID is known for every arm, and
-it fails as an instrument of record in both ways that matter: it compresses a $200\times$ range of
-per-design error into $25\times$ (this package $0.04 \to 0.002$; the worst external arm
-$8.5 \to 0.03$), and it misranks --- NPE on raw prices (per-design FID $4.8$) scores \emph{better}
-in joint FID than NPE on hand-derived log-returns (per-design $1.5$; joint $0.028$ vs $0.045$).
-The mechanism is averaging: Gaussian moments of the pooled joint blend per-observation-set errors,
-so width inflation dilutes and $\D$-correlated bias inflates, in different proportions per arm. A
-joint two-sample statistic is therefore a necessary-condition screen of the same tier as SBC, and
-comparisons on fixed observed points remain the record (per-arm joint values in
-\texttt{results/}).
-FID here is zero for a perfect match, dimensionless, and combines the three ways a posterior can be wrong: location error, width
-error, and correlation (orientation) error. For scale, a bias of $0.1$ reference-sd in each of $d$
-dimensions gives FID $0.01\,d$, and a posterior $30\%$ too wide in one dimension gives
-FID $\approx 0.09$. Where the \emph{direction} of a failure matters --- too wide is merely wasteful,
-overconfident is silently dangerous --- we additionally quote its decomposition per parameter: the
-signed posterior-mean error in reference-sd units (\emph{bias}) and the ratio of standard deviations
-(\emph{width}; $1$ exact, above one conservative, below one overconfident). References are of three kinds (full details in
-Appendix~\ref{app:refs}):
-\begin{itemize}
-  \item \emph{Closed form.} The linear-Gaussian benchmark (exact Gaussian posterior) and geometric Brownian
-  motion, whose log-returns give a conjugate normal--inverse-$\chi^2$ posterior importance-corrected to the
-  box prior.
-  \item \emph{Exact-likelihood MCMC.} An adaptive random-walk Metropolis sampler
-  \citep[after][]{haario2001}: proposal scale adapted to a $0.25$ acceptance target during burn-in,
-  proposal shape replaced by the empirical covariance Cholesky factor rescaled to $2.38/\sqrt{d}$,
-  adaptation frozen before the retained phase, out-of-box proposals rejected (which samples the
-  box-truncated target exactly). Likelihoods are exact per-gap transition densities: Gaussian
-  Euler--Maruyama chain transitions for OU (matching the simulator that generated the data, plus the
-  stationary density of the informative initial state), a Poisson-mixture transition density for the
-  Merton jump-diffusion, log-normal residuals around the Bateman curve for pharmacokinetics, and a
-  Gaussian observation model around the deterministic PDE solve for Fisher--KPP --- in the last case one
-  likelihood evaluation is one PDE solve.
-  \item \emph{Chain validation.} A reference is used only after validation. Every MCMC reference in this
-  report is run at least twice from well-separated starting points, and the between-chain discrepancy of
-  posterior means (in posterior-sd units) is reported with the result it certifies. Where a closed form
-  and a chain both exist, the chains reproduce it to a worst mean discrepancy of $0.099$~sd and width
-  ratios $0.91$--$1.03$ over 24 comparisons.
-\end{itemize}
-Twice during development the screen and the record contradicted each other; both times the contradiction
-exposed an implementation error (a padding mask leaking into set-level statistics; the positional contract
-of Sec.~\ref{sec:trope}). We consider the redundancy a feature of the methodology rather than an
-inefficiency.
+Equation~\eqref{eq:fid} is the squared $2$-Wasserstein distance between Gaussian fits; the division
+by the reference standard deviation is ours, since the parameters carry different physical units.
+Distribution-free discrepancies and the classifier two-sample test of \citet{lueckmann2021} rank the
+systems identically (Appendix~\ref{app:metrics}), so the Gaussian summary is not the operative
+choice --- the normalization is.
 
 \subsection{Encoder probing}
 \label{sec:probing}
@@ -1053,10 +962,8 @@ of Table~\ref{tab:fidk}, for the best trained model of the default architecture 
 mode: each test observation set (count in parentheses) draws a fresh random design of the stated size
 range, and the reference posterior is recomputed on exactly those points. Per-$K$ breakdown:
 Table~\ref{tab:fidk}. Every reference here passes the two-chain check of Sec.~\ref{sec:refs} at
-$2 \times 10^5$ draws; against the $2{,}000$-draw chains used in an earlier version of this table the
-Merton and pharmacokinetics rows read $0.19$ and $0.18$, at or below the sampler's own floor.
-Pharmacokinetics is elevated because its posterior at dense designs contracts to within a few
-multiples of the network's absolute error floor (Sec.~\ref{sec:design-amortization}).}
+$2 \times 10^5$ draws. Pharmacokinetics is elevated because its posterior at dense designs contracts
+to within a few multiples of the network's absolute error floor (Sec.~\ref{sec:design-amortization}).}
 \label{tab:master}
 \end{table}
 
@@ -1299,34 +1206,12 @@ optimizer step.}
 \label{tab:de}
 \end{table}
 
-\paragraph{The floor is statistical, not an optimizer artifact.} An error that moves with
-neither data nor capacity invites the hypothesis that it is the optimizer: a first-order method with
-a decaying step leaves the iterate jittering in a noise ball, and second-order information should
-shrink it. The conditional flow-matching objective is a nonlinear least-squares problem, so its
-generalized Gauss--Newton matrix is exactly $J^\top J$ for the residual $v_\theta - (m_1 - m_0)$, and
-that matrix can be applied without ever forming it. We ran inexact stochastic Gauss--Newton ---
-truncated conjugate gradients on $(J^\top J / N + \lambda I)\delta = -J^\top r / N$ with a warm start
-from the previous direction, a backtracking step, and Levenberg damping adapted from the accepted
-step --- continuing from the trained model, against an Adam control given the same wall-clock from
-the same starting point. It loses by an order of magnitude: from a starting FID of $0.010$,
-Gauss--Newton reaches $0.066$ after $1{,}500$ steps while the Adam control reaches $0.007$; solving
-the local system more accurately (20 CG iterations instead of 5) makes it worse still ($0.23$), and
-from a random initialization it reaches $0.43$ where Adam reaches $0.033$ in the same time.
-
-The failure is diagnostic rather than incidental. The damping collapses to its floor, full steps are
-accepted, and the minibatch loss does decrease --- while held-out accuracy degrades, the signature of
-fitting the batch. The arithmetic explains it: a batch of $4{,}096$ observation sets on a
-two-parameter problem contributes $8{,}192$ residual equations against $4.8 \times 10^5$ parameters,
-so the local system is underdetermined by two orders of magnitude and its minimum-norm solution
-interpolates that batch's noise --- which is why solving it more accurately hurts. Raising the
-effective batch to $65{,}536$ by accumulating the products over chunks confirms the mechanism (from a
-random start, FID $1.8$ after 150 steps against ${\approx}6$ for the unaccumulated version at the
-same step count) without changing the conclusion. Underneath sits the reason no batch size we can
-afford would rescue it: the regression target of \eqref{eq:cfm} has an irreducible conditional
-variance --- the residual sits at $0.77$ in normalized units while a step buys $0.005$ --- so
-curvature is estimated from data in which the signal is a fraction of a percent of the target noise.
-The small steps and weight averaging of the first-order recipe are not a limitation to be overcome
-here; they are what converts that noise into an estimate of the conditional mean.
+This residual is a statistical floor, not an optimization artifact: the flow-matching
+target~\eqref{eq:cfm} has a large irreducible conditional variance (the per-step residual sits near
+$0.77$ in normalized units against a per-step gain of order $0.005$), so a matched-budget
+second-order optimizer --- inexact Gauss--Newton on the least-squares objective --- does no better
+than Adam. The small steps and weight averaging of the first-order recipe are what turn that target
+noise into an estimate of the conditional mean.
 
 \paragraph{The capacity floor moves with the parameter dimension.} Table~\ref{tab:capacity} trains the
 same architecture at five sizes spanning $7$ thousand to $2.3$ million parameters, at a fixed budget of
@@ -1438,12 +1323,9 @@ pharmacokinetics & $0.069$ \;(5) & $0.125$ \;(20) & $0.339$ \;(50) & --- \\
 (the bucket's $K$ in parentheses): each test observation set draws a fresh random design and its
 reference posterior is recomputed on exactly those points. Last column: a separate network of the
 same architecture and simulation budget trained on a single fixed design, which exists only at its
-own $K$. GBM and OU are evaluated on the denser $K$-grid of Fig.~\ref{fig:fidk}. The Merton and
-pharmacokinetics rows use the converged references of Sec.~\ref{sec:refs}; with the $2{,}000$-draw
-chains of an earlier version they read $0.17$--$0.21$ and $0.12$--$0.42$, which the sampler's own
-floor ($0.24$--$0.30$ and $0.06$--$0.08$) makes uninformative for Merton and distorts for
-pharmacokinetics. Pharmacokinetics rises steeply with $K$ --- the precision floor, audited in the
-text.}
+own $K$. GBM and OU are evaluated on the denser $K$-grid of Fig.~\ref{fig:fidk}; the Merton and
+pharmacokinetics rows use the converged references of Sec.~\ref{sec:refs}. Pharmacokinetics rises
+steeply with $K$ --- the precision floor of the text.}
 \label{tab:fidk}
 \end{table}
 
@@ -1460,14 +1342,11 @@ the different vertical scales.}
 \end{figure}
 
 \paragraph{The amortized precision floor.} Pharmacokinetics is the one system whose FID \emph{rises}
-with the design size ($0.069 \to 0.339$ from $K = 5$ to $50$ against converged references), and we audited the number before
-interpreting it: an independent exact posterior (Laplace mode plus importance sampling with
-$2 \times 10^5$ exact likelihood evaluations per observation set) agrees with the MCMC reference to
-$0.0$--$0.23$~sd, and the model's FID against either reference coincides --- the value is real, not a
-reference artifact. It is also not a budget artifact: a model trained on $4\times$ the simulations
-and $3\times$ the optimizer steps is not better on the same test sets --- in fact worse, the budget
-reversal of Sec.~\ref{sec:scaling}. The mechanism is a race between two scales, both measured
-directly rather than inferred from FID. Table~\ref{tab:floor} reports, per parameter, the absolute
+with the design size ($0.069 \to 0.339$ from $K = 5$ to $50$ against converged references). The value
+is not a reference artifact --- an independent exact posterior (Laplace mode plus importance sampling)
+agrees with the MCMC reference to $0.0$--$0.23$~sd and gives the same FID --- nor a budget artifact,
+since more simulations make it worse, not better (Sec.~\ref{sec:scaling}). The mechanism is a race
+between two scales. Table~\ref{tab:floor} reports, per parameter, the absolute
 error of the model's posterior mean and the width of the reference posterior, both in units of the
 prior range. The absolute error stays at the few-$\times 10^{-3}$ level on both systems --- $3$--$6
 \times 10^{-3}$ on GBM, $1$--$8 \times 10^{-3}$ on pharmacokinetics --- although their posterior
@@ -1537,14 +1416,13 @@ Which encoder components make design amortization work is an architecture questi
 accuracy claims above; the controlled comparison of eight encoder variants that fixed the design of
 Sec.~\ref{sec:arch} is in Appendix~\ref{sec:ablations}.
 
-\section{Failure analysis: conditioning of the encoder input}
+\section{Conditioning of the encoder input}
 \label{sec:anatomy}
 
-Every accuracy failure encountered during the development of this package --- including, we argue, the
-external failures of Table~\ref{tab:gbmcomp} --- reduces to a single cause appearing in three forms: the
-conditioning of the numbers presented to the set encoder. We document the three forms with their
-measurements and repairs; all three repairs are learnable modules rather than problem-specific
-transformations.
+The learnable input representation of Sec.~\ref{sec:features} exists to solve one problem in three
+forms: the conditioning of the numbers presented to the set encoder. The same problem accounts for
+the external failures of Table~\ref{tab:gbmcomp}. We give each form with its measurement and its
+repair; all three repairs are learnable modules rather than problem-specific transformations.
 
 \paragraph{Form 1: floating multiplicative scale.} On GBM, raw price tokens force the network to divide
 squared increments by squared levels internally; with global standardization this manifests as a
@@ -1569,18 +1447,8 @@ follow-up against the Poisson-mixture reference then isolated a smaller ($+0.27$
 mechanism is a jump-classification threshold that floats with the unknown volatility; a per-observation-set
 set-conditioning module (pooled statistics modulating feature channels, initialized to the identity)
 removes it as effectively as a hand-crafted per-observation-set rescaling ($+0.127 \pm 0.055$ vs
-$+0.094 \pm 0.054$~sd, statistically indistinguishable). This was one of three such paired comparisons in
-the project (log coordinate, set size, robust scaling); in all three the learnable module matched the
-hand-crafted repair once initialized at the working configuration. We summarize the pattern as a design
-principle: the hand-crafted fix identifies the mechanism and the initialization; the learnable module
-placed there is what ships.
-
-Three implementation conditions proved necessary for the set-conditioning module and are recorded here
-because each was found through a failure: the modulation must be zero-initialized (training must start
-from the working baseline); it must act after feature normalization, not before (the reverse ordering
-re-creates the representation drift it is meant to cure); and pooled set statistics must exclude padding
-positions (a masking error here made padded and packed representations of the same observation set inequivalent,
-detected only because SBC and the exact-reference probe disagreed).
+$+0.094 \pm 0.054$~sd, statistically indistinguishable). The module is zero-initialized and acts
+after feature normalization; both are required, and pooled statistics exclude padding positions.
 
 \section{Discussion and limitations}
 \label{sec:discussion}
@@ -1734,6 +1602,59 @@ become dense; dashed: partial repairs; solid: increment tokens, and increment to
 training procedure of Sec.~\ref{sec:recipe}, which is flat in $K$.}
 \label{fig:widthk}
 \end{figure}
+
+\section{Choice of discrepancy measure}
+\label{app:metrics}
+
+Equation~\eqref{eq:fid} is the squared
+$2$-Wasserstein distance between Gaussian fits, and the division by the reference standard deviation
+is ours, not part of that distance: the summands carry different physical units --- a rate in
+h$^{-1}$, a volume in litres --- so some normalization is required, and the one we chose contracts
+with the posterior itself. Table~\ref{tab:metrics} therefore evaluates five discrepancies on the same
+sample sets: the Gaussian $W_2^2$ under two different normalizations, two distribution-free
+alternatives, and the classifier two-sample accuracy used as the primary metric of the \texttt{sbibm}
+benchmark \citep{lueckmann2021}. Three readings. The distribution-free measures agree with the
+Gaussian one on every system, so the Gaussian summary is not what limits the comparison --- the
+normalization is: the same model reads $0.009$ on GBM and $0.58$ on dense pharmacokinetics in
+posterior-sd units, but $0.0001$ against $0.0003$ in prior-range units. C2ST is the most readable of
+the five, being bounded and calibrated at $0.5$: five of the six systems sit at $0.52$--$0.55$, i.e.
+a trained classifier can barely separate our posterior samples from exact ones, with dense
+pharmacokinetics the single exception at $0.77$. And the null column earns its place --- it is what
+exposed the under-converged Merton reference of Sec.~\ref{sec:refs}.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+ & \multicolumn{2}{c}{$W_2^2$ Gaussian} & \multicolumn{2}{c}{distribution-free} & \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+system & / post.\ sd & / prior range & energy & sliced $W_2^2$ & C2ST \\
+\midrule
+geometric Brownian motion & $0.009$ & $0.0001$ & $0.004$ & $0.005$ & $0.520$ \\
+linear-Gaussian & $0.043$ & $0.0001$ & $0.011$ & $0.011$ & $0.548$ \\
+Ornstein--Uhlenbeck & $0.050$ & $0.0008$ & $0.027$ & $0.028$ & $0.551$ \\
+Fisher--KPP & $0.071$ & $0.0000$ & $0.023$ & $0.031$ & $0.546$ \\
+Merton jump-diffusion & $0.035$ & $0.0008$ & $0.008$ & $0.007$ & $0.522$ \\
+pharmacokinetics & $0.580$ & $0.0003$ & $0.191$ & $0.182$ & $0.769$ \\
+\midrule
+\multicolumn{6}{@{}l}{\emph{null: the same statistic between two independent reference draws}} \\
+geometric Brownian motion & $0.002$ & $0.0001$ & $0.001$ & $0.002$ & $0.500$ \\
+linear-Gaussian & $0.004$ & $0.0000$ & $-0.001$ & $0.002$ & $0.498$ \\
+Ornstein--Uhlenbeck & $0.013$ & $0.0003$ & $0.003$ & $0.009$ & $0.507$ \\
+Fisher--KPP & $0.006$ & $0.0000$ & $0.004$ & $0.008$ & $0.510$ \\
+Merton jump-diffusion & $0.007$ & $0.0003$ & $0.000$ & $0.002$ & $0.497$ \\
+pharmacokinetics & $0.028$ & $0.0000$ & $0.008$ & $0.014$ & $0.527$ \\
+\bottomrule
+\end{tabular}
+\caption{Five discrepancies between the same trained model and the same references, on all six
+reference systems, medians over 16--32 test observation sets with $4{,}000$ samples each, and (lower block) the floor each statistic carries
+at that sample size. Energy and sliced $W_2^2$ are computed in posterior-sd units like the first
+column. The measures rank the systems identically; what separates them is the normalization, not the
+Gaussian assumption. Merton is scored against the converged reference of Sec.~\ref{sec:refs} (its
+$4{,}000$-draw chains fail the two-chain check, which is why the floor column matters).}
+\label{tab:metrics}
+\end{table}
 
 \section{Reference posteriors}
 \label{app:refs}
