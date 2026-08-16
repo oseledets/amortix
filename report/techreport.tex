@@ -45,11 +45,11 @@ $0.01$--$0.07$ on five of six reference-equipped systems --- evaluated across de
 fresh random design per test observation set, where it is comparable to or better than networks
 trained for each single design --- while the single elevated entry, dense-design
 pharmacokinetics, is a measured effect: its posterior contracts to within a few multiples of the
-network's absolute error floor, measured at $2$--$6 \times 10^{-3}$ of the prior range and identical
+network's absolute error floor, which stays at the few-$\times 10^{-3}$ level of the prior range
 across systems whose posterior widths differ by $30\times$. Reaching those numbers required auditing
 the reference posteriors themselves --- on the jump-diffusion, chains of the length we had been using
 disagreed with each other more than the model disagreed with them, and lengthening them moved the
-reported error from $0.19$ to $0.05$; 34 of 36 parameters across the nine systems without a tractable
+reported error from $0.19$ to $0.05$; 34 of 36 parameters across the nine systems without a validated
 reference pass simulation-based calibration, and residual errors decay steadily with the simulation
 budget. We
 compare against neural posterior estimation and flow-matching posterior estimation from the \texttt{sbi}
@@ -608,6 +608,7 @@ geometric Brownian motion & $0.009$ & $0.0001$ & $0.004$ & $0.005$ & $0.520$ \\
 linear-Gaussian & $0.043$ & $0.0001$ & $0.011$ & $0.011$ & $0.548$ \\
 Ornstein--Uhlenbeck & $0.050$ & $0.0008$ & $0.027$ & $0.028$ & $0.551$ \\
 Fisher--KPP & $0.071$ & $0.0000$ & $0.023$ & $0.031$ & $0.546$ \\
+Merton jump-diffusion & $0.035$ & $0.0008$ & $0.008$ & $0.007$ & $0.522$ \\
 pharmacokinetics & $0.580$ & $0.0003$ & $0.191$ & $0.182$ & $0.769$ \\
 \midrule
 \multicolumn{6}{@{}l}{\emph{null: the same statistic between two independent reference draws}} \\
@@ -615,15 +616,16 @@ geometric Brownian motion & $0.002$ & $0.0001$ & $0.001$ & $0.002$ & $0.500$ \\
 linear-Gaussian & $0.004$ & $0.0000$ & $-0.001$ & $0.002$ & $0.498$ \\
 Ornstein--Uhlenbeck & $0.013$ & $0.0003$ & $0.003$ & $0.009$ & $0.507$ \\
 Fisher--KPP & $0.006$ & $0.0000$ & $0.004$ & $0.008$ & $0.510$ \\
+Merton jump-diffusion & $0.007$ & $0.0003$ & $0.000$ & $0.002$ & $0.497$ \\
 pharmacokinetics & $0.028$ & $0.0000$ & $0.008$ & $0.014$ & $0.527$ \\
 \bottomrule
 \end{tabular}
-\caption{Five discrepancies between the same trained model and the same references, medians over 16
-test observation sets with $4{,}000$ samples each, and (lower block) the floor each statistic carries
+\caption{Five discrepancies between the same trained model and the same references, on all six
+reference systems, medians over 16--32 test observation sets with $4{,}000$ samples each, and (lower block) the floor each statistic carries
 at that sample size. Energy and sliced $W_2^2$ are computed in posterior-sd units like the first
 column. The measures rank the systems identically; what separates them is the normalization, not the
-Gaussian assumption. Merton is absent because its reference failed the two-chain check at these
-settings (see Sec.~\ref{sec:refs}).}
+Gaussian assumption. Merton is scored against the converged reference of Sec.~\ref{sec:refs} (its
+$4{,}000$-draw chains fail the two-chain check, which is why the floor column matters).}
 \label{tab:metrics}
 \end{table}
 
@@ -1009,13 +1011,13 @@ contributes little to the loss; refining the sampling ODE solver from 20 midpoin
 steps changes nothing measurable. On the two-parameter systems
 (left, middle) the three sizes coincide within seed spread --- the budget axis, not the parameter
 axis, buys accuracy. Fisher--KPP (right): default size, with the big model at $120{,}000$ marked by
-the square. References as in Table~\ref{tab:baselines}.}
+the square. References: exact conjugate posterior (GBM), exact-likelihood MCMC (OU), PDE-likelihood
+MCMC (Fisher--KPP, fixed $K = 40$ design).}
 \label{fig:budgetgrid}
 \end{figure}
 
 Table~\ref{tab:master} reports the corresponding global metric on the full test batteries, and
-Table~\ref{tab:screen} the calibration screen for the nine systems where no tractable reference
-exists. Every reference row is evaluated in the package's default mode --- one network per system, a fresh
+Table~\ref{tab:screen} the calibration screen for the nine systems with no validated reference. Every reference row is evaluated in the package's default mode --- one network per system, a fresh
 random design per test observation set --- and reads median FID $0.01$--$0.07$ on five of the six
 systems, the five-parameter Merton jump-diffusion included once its reference is computed with
 converged chains. The single elevated entry is pharmacokinetics ($0.13$), whose posterior at dense
@@ -1024,12 +1026,11 @@ designs contracts to within a few multiples of the network's absolute error floo
 moving between retrainings as expected at the screen's resolution limit. Per-parameter $p$-values,
 rank distributions, and coverage curves are in Appendix~\ref{app:systems}.
 
-Pharmacokinetics shows the clearest budget effect in
-the suite --- at a third of the saturation budget its FID is an order of magnitude worse --- and its third test set illustrates a failure mode of the metric rather than of
-the model: the true volume of distribution lies within $3\%$ of the prior boundary and the reference
-posterior for $k_e$ has a standard deviation of $1\%$ of its value, so a $0.02$ absolute shift is
-magnified into FID $\approx 38$; behavior at prior boundaries is listed as a limitation in
-Sec.~\ref{sec:discussion}. Together with Table~\ref{tab:master}, this figure is the central evidence
+Pharmacokinetics is the exception, and its mechanism is dissected in
+Sec.~\ref{sec:design-amortization}: its posterior is the narrowest in the suite, so the network's
+absolute error --- comparable to every other system's --- reads as a large FID once divided by that
+width, and the same narrowness makes it the one system where more training simulations do not help
+(Sec.~\ref{sec:scaling}). Together with Table~\ref{tab:master}, this figure is the central evidence
 that one small default model recovers full posteriors across the suite.
 
 \begin{table}[t]
@@ -1077,7 +1078,8 @@ H\'enon--Heiles & 3 & 3/3 \\
 Hodgkin--Huxley & 4 & 3/4 \\
 \bottomrule
 \end{tabular}
-\caption{Systems without a tractable reference: parameters of the default model passing the SBC
+\caption{Systems without a validated reference (no tractable likelihood, or an MCMC reference that
+fails the two-chain check of Sec.~\ref{sec:refs}): parameters of the default model passing the SBC
 uniformity screen ($p > 0.05$, 500 observation sets $\times$ 200 draws; random-design systems over
 mixed designs). Individual marginal cases move between retrainings, as expected at the screen's
 resolution limit (Sec.~\ref{sec:protocol}).}
@@ -1464,20 +1466,22 @@ interpreting it: an independent exact posterior (Laplace mode plus importance sa
 $2 \times 10^5$ exact likelihood evaluations per observation set) agrees with the MCMC reference to
 $0.0$--$0.23$~sd, and the model's FID against either reference coincides --- the value is real, not a
 reference artifact. It is also not a budget artifact: a model trained on $4\times$ the simulations
-and $3\times$ the optimizer steps is no better on the same test sets. The mechanism is a race between two
-scales, and both were measured directly rather than inferred from FID. Table~\ref{tab:floor}
-reports, per parameter, the absolute error of the model's posterior mean and the width of the
-reference posterior, both in units of the prior range. The absolute error is the same on both
-systems, $2$--$6 \times 10^{-3}$ of the prior range, although their posterior widths differ by a
-factor of thirty: it is a property of the trained network, not of the task. What differs is the
-denominator FID divides by. The elimination rate $k_e$ of the pharmacokinetic model is the extreme
-case --- a posterior $0.6\%$ of the prior range wide against an error of $0.36\%$, so the model
-misses by more than half a posterior standard deviation, and that single parameter accounts for
-$0.31$ of the observed FID of $0.42$. The stochastic systems never enter this regime, because
-diffusion noise keeps their posteriors two orders of magnitude wider than the error floor even at
-$K = 100$; Fisher--KPP approaches it only at its densest bucket ($0.126$ at $K = 90$). This is also
-a caveat on FID itself: as a scale-relative metric it reports a model that is uniformly accurate in
-absolute terms as increasingly poor wherever the posterior it is compared against is narrow.
+and $3\times$ the optimizer steps is not better on the same test sets --- in fact worse, the budget
+reversal of Sec.~\ref{sec:scaling}. The mechanism is a race between two scales, both measured
+directly rather than inferred from FID. Table~\ref{tab:floor} reports, per parameter, the absolute
+error of the model's posterior mean and the width of the reference posterior, both in units of the
+prior range. The absolute error stays at the few-$\times 10^{-3}$ level on both systems --- $3$--$6
+\times 10^{-3}$ on GBM, $1$--$8 \times 10^{-3}$ on pharmacokinetics --- although their posterior
+widths differ by a factor of thirty: it is a property of the trained network, not of the task. What
+differs is the denominator FID divides by. On the pharmacokinetic model every parameter's error is
+$11$--$15\%$ of its posterior standard deviation, against $2$--$5\%$ on GBM, and the resulting FID
+($0.35$ at $K = 50$) splits roughly evenly between the posterior-mean shift and a covariance-shape
+term --- it is not a single bad parameter but the whole posterior being resolved to a scale finer
+than the network's floor. The stochastic systems never enter this regime, because diffusion noise
+keeps their posteriors an order of magnitude wider than the error floor even at $K = 100$;
+Fisher--KPP approaches it only at its densest bucket ($0.126$ at $K = 90$). This is also a caveat on
+FID itself: as a scale-relative metric it reports a model that is uniformly accurate in absolute
+terms as increasingly poor wherever the posterior it is compared against is narrow.
 
 \begin{table}[t]
 \centering
@@ -1489,17 +1493,19 @@ system & parameter & posterior sd & model error & error / sd \\
 GBM, $K = 20$ & drift $\mu$ & $0.177$ & $0.0034$ & $0.02$ \\
  & volatility $\sigma$ & $0.110$ & $0.0058$ & $0.05$ \\
 \midrule
-pharmacokinetics, $K = 50$ & absorption $k_a$ & $0.073$ & $0.0165$ & $0.23$ \\
- & elimination $k_e$ & $0.0064$ & $0.0036$ & $0.56$ \\
- & volume $V$ & $0.021$ & $0.0023$ & $0.11$ \\
+pharmacokinetics, $K = 50$ & absorption $k_a$ & $0.073$ & $0.0083$ & $0.11$ \\
+ & elimination $k_e$ & $0.0065$ & $0.0010$ & $0.15$ \\
+ & volume $V$ & $0.021$ & $0.0031$ & $0.15$ \\
 \bottomrule
 \end{tabular}
-\caption{The precision floor, measured directly. Both columns are in units of the prior range for
-that parameter: \emph{posterior sd} is the width of the reference posterior, \emph{model error} is
+\caption{The precision floor, measured directly against the converged references of
+Sec.~\ref{sec:refs} for the best model of each system. Both quantitative columns are in units of the
+prior range: \emph{posterior sd} is the width of the reference posterior, \emph{model error} is
 $\lvert \mathbb{E}_{\text{model}}[m] - \mathbb{E}_{\text{ref}}[m] \rvert$, medians over 32 test
-observation sets with $8{,}000$ samples per posterior. The model's absolute error is the same on
-both systems while the posterior widths differ by $30\times$, so the last column --- and with it
-FID --- is governed by how narrow the target posterior is.}
+observation sets with $4{,}000$ samples per posterior. The model's absolute error stays at the
+few-$\times 10^{-3}$ level on both systems while the posterior widths differ by $30\times$, so the
+last column --- the error a scale-relative metric sees --- is $3$--$8\times$ larger on the narrow
+pharmacokinetic posteriors than on the wide GBM ones.}
 \label{tab:floor}
 \end{table}
 
