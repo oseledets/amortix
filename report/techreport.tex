@@ -1011,7 +1011,7 @@ Table~\ref{tab:screen} the calibration screen for the nine systems where no trac
 exists. Every reference row is evaluated in the package's default mode --- one network per system, a fresh
 random design per test observation set --- and reads median FID $0.01$--$0.07$ on five of the six
 systems, the five-parameter Merton jump-diffusion included once its reference is computed with
-converged chains. The single elevated entry is pharmacokinetics ($0.25$), whose posterior at dense
+converged chains. The single elevated entry is pharmacokinetics ($0.13$), whose posterior at dense
 designs contracts to within a few multiples of the network's absolute error floor
 (Sec.~\ref{sec:design-amortization}). On the screen systems, 34 of 36 parameters pass, with the marginal cases
 moving between retrainings as expected at the screen's resolution limit. Per-parameter $p$-values,
@@ -1037,7 +1037,7 @@ linear-Gaussian & 4 & exact subset posterior & $K = 2$--$6$ (300) & $0.03$ \\
 Ornstein--Uhlenbeck & 2 & exact-likelihood MCMC & $K = 2$--$100$ (600) & $0.05$ \\
 Fisher--KPP (PDE) & 2 & PDE-likelihood MCMC & $K = 10$--$90$ (96) & $0.07$ \\
 Merton jump-diffusion & 5 & Poisson-mixture MCMC & $K = 5$--$100$ (96) & $0.05$ \\
-pharmacokinetics & 3 & log-normal MCMC & $K = 5$--$50$ (96) & $0.25$ \\
+pharmacokinetics & 3 & log-normal MCMC & $K = 5$--$50$ (96) & $0.13$ \\
 \bottomrule
 \end{tabular}
 \caption{Systems with reference posteriors: pooled median FID \eqref{eq:fid} of the trained
@@ -1423,7 +1423,7 @@ Ornstein--Uhlenbeck & $0.072$ \;(5) & $0.045$ \;(20) & $0.023$ \;(100) & $0.029$
 linear-Gaussian & $0.012$ \;(2) & $0.035$ \;(4) & $0.046$ \;(6) & $0.039$ \;(6) \\
 Fisher--KPP & $0.073$ \;(10) & $0.050$ \;(40) & $0.126$ \;(90) & $0.036$ \;(40) \\
 Merton jump-diffusion & $0.027$ \;(5) & $0.046$ \;(20) & $0.057$ \;(100) & --- \\
-pharmacokinetics & $0.048$ \;(5) & $0.250$ \;(20) & $0.323$ \;(50) & --- \\
+pharmacokinetics & $0.069$ \;(5) & $0.125$ \;(20) & $0.339$ \;(50) & --- \\
 \bottomrule
 \end{tabular}
 \caption{One design-amortized network per system, evaluated at design sizes never fixed in advance
@@ -1452,7 +1452,7 @@ the different vertical scales.}
 \end{figure}
 
 \paragraph{The amortized precision floor.} Pharmacokinetics is the one system whose FID \emph{rises}
-with the design size ($0.048 \to 0.323$ from $K = 5$ to $50$ against converged references), and we audited the number before
+with the design size ($0.069 \to 0.339$ from $K = 5$ to $50$ against converged references), and we audited the number before
 interpreting it: an independent exact posterior (Laplace mode plus importance sampling with
 $2 \times 10^5$ exact likelihood evaluations per observation set) agrees with the MCMC reference to
 $0.0$--$0.23$~sd, and the model's FID against either reference coincides --- the value is real, not a
