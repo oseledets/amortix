@@ -41,7 +41,7 @@ evaluation harness in which simulation-based calibration is used only as a scree
 record is comparison against exact or validated Markov chain Monte Carlo reference posteriors on the same
 observed points. Trained once per system in this design-amortized mode, the default network matches exact or validated
 reference posteriors to median Fr\'echet distances (in reference-normalized coordinates) of
-$0.01$--$0.07$ on four of six reference-equipped systems --- evaluated across design sizes with a
+$0.01$--$0.07$ on five of six reference-equipped systems --- evaluated across design sizes with a
 fresh random design per test observation set, where it is comparable to or better than networks
 trained for each single design --- while the single elevated entry, dense-design
 pharmacokinetics, is a measured effect: its posterior contracts to within a few multiples of the
@@ -913,12 +913,12 @@ Fisher--KPP, $K = 40$ & $20{,}000$ & $0.277$ & $0.118$ & $0.084$ \\
 (PDE-lik.\ MCMC; & $120{,}000$ & $0.053$ & $0.036$ & $0.045$ \\
 32 sets) & external tools & \multicolumn{3}{c}{$0.5$ (NPE); $76$ (FMPE)} \\
 \midrule
-Merton, $d = 5$ & $120{,}000$ & $0.24$ & $0.21$ & $0.21$ \\
-(mixture-lik.\ MCMC; & $480{,}000$ & $0.21$ & $0.19$ & $0.20$ \\
+Merton, $d = 5$ & $120{,}000$ & $0.074$ & $0.052$ & $0.051$ \\
+(mixture-lik.\ MCMC; & $480{,}000$ & MT480T & $0.035$ & MT480B \\
 32 sets) & external tools & \multicolumn{3}{c}{--- \; (random designs; fixed-length interfaces do not apply)} \\
 \midrule
-pharmacokinetics, $d = 3$ & $120{,}000$ & $0.10$ & $0.055$ & $0.085$ \\
-(log-normal MCMC; & $480{,}000$ & $0.105$ & $0.098$ & $0.108$ \\
+pharmacokinetics, $d = 3$ & $120{,}000$ & $0.063$ & $0.044$ & $0.038$ \\
+(log-normal MCMC; & $480{,}000$ & PT480T & $0.070$--$0.147$ & PT480B \\
 32 sets) & external tools & \multicolumn{3}{c}{---} \\
 \bottomrule
 \end{tabular}
@@ -929,27 +929,34 @@ width-scaled learning rate. GBM, OU, and Fisher--KPP use the fixed-design protoc
 external tools, which enter the same table at the $20{,}000$-simulation budget with their package
 defaults (ranges over \texttt{sbi} NPE/FMPE, BayesFlow~2, and the Simformer port;
 Sec.~\ref{sec:headtohead} attributes the failures). Merton and pharmacokinetics are trained and
-evaluated in the random-design mode on their fixed evaluation batteries; external tools consume
-fixed-length vectors and have no entry there.}
+evaluated in the random-design mode on their fixed evaluation batteries, scored against the
+converged references of Sec.~\ref{sec:refs} (two-chain floors $0.0065$ and $0.0023$); their
+$480{,}000$ pharmacokinetic entry is a range over two independently trained models --- the budget
+reversal of Sec.~\ref{sec:scaling}. External tools consume fixed-length vectors and have no entry
+on the two random-design systems.}
 \label{tab:grid}
 \end{table}
 
 Four questions, four answers.
 \begin{enumerate}
-  \item \emph{Is the quality acceptable?} At the largest budget the grid reads FID $0.01$--$0.04$
-  on the two-parameter tasks --- for scale, a $0.1$~sd bias in each of $d$ dimensions gives FID
-  $0.01\,d$, so this is sub-tenth-of-a-sd accuracy --- and $0.19$--$0.20$ on the five-parameter
-  Merton. The posteriors of Fig.~\ref{fig:pairs} carry the same message visually: location, scale,
+  \item \emph{Is the quality acceptable?} At its best budget every task in the grid reads FID
+  $0.01$--$0.05$ --- for scale, a $0.1$~sd bias in each of $d$ dimensions gives FID $0.01\,d$, so
+  this is sub-tenth-of-a-sd accuracy --- including $0.035$ on the five-parameter Merton and $0.044$
+  on pharmacokinetics. The posteriors of Fig.~\ref{fig:pairs} carry the same message visually: location, scale,
   correlation, and ridge curvature are reproduced.
-  \item \emph{Does model size buy accuracy?} Within each row of the grid the three columns differ
-  by less than a factor of two almost everywhere, non-monotonically, and on GBM and OU the smallest
-  model is the best column at the largest budget; the one place width helps at $d = 2$ is
-  Fisher--KPP at the shortest budget ($0.277 \to 0.084$ across the row), where 40 spatio-temporal
-  observations are the richest conditioning in the grid. Size binds only on Merton at the fixed $120{,}000$ budget --- and even
-  there, quadrupling the data does more than quadrupling the parameters (the $480{,}000$ row). The
-  five-size ladder of Table~\ref{tab:capacity} extends this: the capacity floor sits below $10^4$
-  parameters at $d = 2$ (only seed instability marks it), near $10^5$ at $d = 3$, and keeps rising
-  through $2.3$M at $d = 5$.
+  \item \emph{Does model size buy accuracy?} It depends on the parameter dimension, and the grid
+  separates the cases. At $d = 2$ the three columns differ by less than a factor of two,
+  non-monotonically, and the smallest model is the best column at the largest budget --- the
+  exception is Fisher--KPP at the shortest budget ($0.277 \to 0.084$ across the row), where 40
+  spatio-temporal observations are the richest conditioning in the grid. At $d = 3$ and $d = 5$
+  width does buy accuracy, monotonically and by $1.4$--$1.7\times$ over the same $24\times$
+  parameter range, but it saturates: on Merton the two largest models differ by less than the
+  reference's own floor. And where width does help, data helps more: on Merton the
+  $4\times$ data step at fixed width ($0.052 \to 0.035$) beats the $24\times$ parameter step at
+  fixed data ($0.074 \to 0.051$). The five-size ladder of
+  Table~\ref{tab:capacity} places the saturation point: below $10^4$ parameters at $d = 2$, and
+  between $10^5$ and $5 \times 10^5$ at $d = 3$ and $d = 5$, where the last doubling of width buys
+  $1.16\times$ (pharmacokinetics) and nothing measurable (Merton).
   \item \emph{Does data buy accuracy?} Every column of every task improves monotonically down the
   rows, with no saturation anywhere in the measured range (Fig.~\ref{fig:budgetgrid}), and the
   $4\times$ data step moves every task more than the $24\times$ parameter step does --- with one
@@ -1040,8 +1047,8 @@ Merton jump-diffusion & 5 & Poisson-mixture MCMC & $K = 5$--$100$ (96) & $0.05$ 
 pharmacokinetics & 3 & log-normal MCMC & $K = 5$--$50$ (96) & $0.13$ \\
 \bottomrule
 \end{tabular}
-\caption{Systems with reference posteriors: pooled median FID \eqref{eq:fid} of the trained
-design-amortized model of the default architecture. Every row is evaluated in the package's default
+\caption{Systems with reference posteriors: median FID \eqref{eq:fid} over the design-size buckets
+of Table~\ref{tab:fidk}, for the best trained model of the default architecture on each system. Every row is evaluated in the package's default
 mode: each test observation set (count in parentheses) draws a fresh random design of the stated size
 range, and the reference posterior is recomputed on exactly those points. Per-$K$ breakdown:
 Table~\ref{tab:fidk}. Every reference here passes the two-chain check of Sec.~\ref{sec:refs} at
