@@ -121,6 +121,35 @@ class Battery:
                 f"max inter-chain {self.discrepancy.max():.3f} sd)")
 
 
+def provenance() -> dict:
+    """What produced a number: package version, source fingerprint, git state.
+
+    Recorded in every result. The campaign this module replaces ran for days
+    with a remote copy of the package whose retokenizer default differed from
+    the repository's, and nothing in the outputs said so.
+    """
+    import hashlib
+    import subprocess
+    import amortix
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    h = hashlib.sha256()
+    for fn in sorted(os.listdir(here)):
+        if fn.endswith(".py"):
+            with open(os.path.join(here, fn), "rb") as f:
+                h.update(f.read())
+    try:
+        rev = subprocess.run(["git", "-C", here, "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=5)
+        dirty = subprocess.run(["git", "-C", here, "status", "--porcelain"],
+                               capture_output=True, text=True, timeout=5)
+        git = (rev.stdout.strip() or "?") + ("+dirty" if dirty.stdout.strip() else "")
+    except Exception:
+        git = "?"
+    return dict(version=getattr(amortix, "__version__", "?"),
+                source_sha256=h.hexdigest()[:12], git=git)
+
+
 def evaluate(post, battery: Battery, n_draw: int = 4000, seed: int = 0,
              prior_range: np.ndarray = None) -> dict:
     """Score a trained posterior against a battery.
@@ -142,7 +171,7 @@ def evaluate(post, battery: Battery, n_draw: int = 4000, seed: int = 0,
                null_median=float(np.median(nulls)),
                ratio=float(np.median(vals) / max(np.median(nulls), 1e-12)),
                n_sets=len(a), n_draw=n_draw, vals=[float(v) for v in vals],
-               battery=battery.meta)
+               battery=battery.meta, provenance=provenance())
     if prior_range is not None:
         pr = np.asarray(prior_range, dtype=np.float64)
         err = np.array([np.abs(smp[i].mean(0) - a[i].mean(0)) / pr
