@@ -401,7 +401,7 @@ class FlowPosterior(nn.Module):
             k_pairs: int = 4, t_strat: bool = True,
             monitor=None, monitor_every: int = 500, verbose: bool = True,
             device: str = "auto", retokenize=None,
-            optimizer: str = "adam", muon_lr: float = 0.02,
+            optimizer: str = "muon", muon_lr: float = 0.02,
             cpu_threads: int = 8):
         """Train the amortized posterior.
 
@@ -497,11 +497,30 @@ class FlowPosterior(nn.Module):
         mechanism, not on the metric.
         `betas`, `eps`, `weight_decay` are the usual Adam knobs.
 
-        `optimizer="muon"` switches the 2-D weights to Muon (see `amortix.optim`)
-        at `muon_lr`, leaving biases/norms/embeddings on Adam at `lr`. Worth
-        trying when a wider model scores worse than a narrower one at the same
-        budget, which is usually the optimizer's parametrization rather than
-        capacity.
+        `optimizer` selects the update rule for the 2-D weights: `"muon"`
+        (default) runs Muon at `muon_lr` with biases, norms and embeddings on
+        Adam at `lr`; `"adam"` puts everything on Adam and reproduces runs made
+        before Muon existed.
+
+        Muon is the default because it is better at every width measured and
+        much more reproducible at large ones. On geometric Brownian motion,
+        120k simulations, two seeds each, scored against a validated battery
+        whose resolution floor is 0.0018:
+
+            size    Adam             Muon
+            tiny    0.0126 / 0.0118  0.0088 / 0.0118
+            small   0.0102 / 0.0114  0.0092 / 0.0084
+            big     0.0136 / 0.0114  0.0082 / 0.0081
+
+        Two things to read there. The gain grows with width (1.2x at tiny,
+        1.5x at big), as expected when the update direction is set by the
+        geometry of a weight matrix rather than by per-entry gradient scales.
+        And the seed spread collapses: the widest model under Adam varies by
+        more than the difference between model sizes, which is how a tuning
+        artifact comes to look like a statement about capacity. Muon costs
+        ~12 ms per optimizer step against Adam's ~1 ms (kernel launches, not
+        arithmetic; see `amortix.optim`), i.e. roughly a third more wall clock
+        per run.
         `t_strat` puts one t in each 1/k-wide bin instead of k independent
         uniforms -- measured neutral here, kept because it cannot cost anything.
         """
@@ -669,21 +688,26 @@ class FlowPosterior(nn.Module):
             # the LAST epoch is always measured: with a decaying schedule the final
             # stretch is where the model settles, and a run whose last check sits
             # 1500 steps short of the end understates exactly what the decay buys
-            if monitor is not None and (ep == epochs - 1 or
-                                        step_now // monitor_every >
-                                        (step_now - n_batches) // monitor_every):
+            # The training loss is recorded every epoch whether or not a monitor
+            # is attached: without it there is no telling an undertrained run
+            # from an overfitted one after the fact, and the run cannot be
+            # re-questioned without repeating it.
+            rec = dict(step=step_now, cfm=running / n_batches)
+            due = (ep == epochs - 1 or step_now // monitor_every >
+                   (step_now - n_batches) // monitor_every)
+            if monitor is not None and due:
                 with torch.no_grad():
                     # the EMA weights are what will be shipped, so they are what
                     # gets measured
                     with (ema.averaged() if ema is not None else contextlib.nullcontext()):
-                        val = float(monitor(self))
-                self.history.append(dict(step=step_now, cfm=running / n_batches, metric=val))
-                if verbose:
-                    print(f"  step {step_now:6d}  cfm {running / n_batches:.4f}"
-                          f"  dist-to-reference {val:.4f}  ({time.time() - t0:.0f}s)")
-            elif verbose and (ep % max(1, epochs // 10) == 0 or ep == epochs - 1):
+                        rec["metric"] = float(monitor(self))
+            self.history.append(rec)
+            if verbose and ("metric" in rec or ep % max(1, epochs // 10) == 0
+                            or ep == epochs - 1):
+                extra = (f"  dist-to-reference {rec['metric']:.4f}"
+                         if "metric" in rec else "")
                 print(f"  epoch {ep:3d}  step {step_now:6d}  "
-                      f"cfm {running / n_batches:.4f}  ({time.time() - t0:.1f}s)")
+                      f"cfm {rec['cfm']:.4f}{extra}  ({time.time() - t0:.1f}s)")
         if ema is not None:
             ema.store_in_module()
         torch.set_num_threads(_threads0)
