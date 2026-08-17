@@ -583,6 +583,8 @@ class FlowPosterior(nn.Module):
                                    eps=eps, weight_decay=weight_decay)
         else:
             raise ValueError(f"unknown optimizer {optimizer!r}")
+        for group in opt.param_groups:
+            group["base_lr"] = group["lr"]
         n_batches = max(1, n_train // batch)
         if steps is not None:                       # budget stated in optimizer steps
             epochs = max(1, int(round(steps / n_batches)))
@@ -599,9 +601,16 @@ class FlowPosterior(nn.Module):
             perm = torch.randperm(n_train, generator=gen)
             running = 0.0
             for b in range(n_batches):
+                # Scale each group's OWN base rate by the schedule. Writing
+                # the same absolute value into every group silently discards
+                # the Muon rate -- the optimizer keeps two groups on different
+                # scales (orthogonalized updates vs Adam's), and overwriting
+                # them made `muon_lr` dead: two runs differing only in it came
+                # out bit-identical.
+                mult = lr_at(step_now, total_steps, 1.0, warmup, schedule,
+                             min_lr_frac)
                 for group in opt.param_groups:
-                    group["lr"] = lr_at(step_now, total_steps, lr, warmup,
-                                        schedule, min_lr_frac)
+                    group["lr"] = group["base_lr"] * mult
                 idx = perm[b * batch:(b + 1) * batch]
                 zb = z1[idx]
                 bs = zb.shape[0]
