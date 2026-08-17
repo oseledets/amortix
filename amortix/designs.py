@@ -104,19 +104,26 @@ class DesignProblem:
         kf = torch.full_like(y, math.log(tidx.numel()) / math.log(obs.k_max))
         return torch.stack([t, y, z, z, kf, cidx.float()], dim=-1)
 
-    def make_retokenizer(self, seed: int = 7001, vectorized: bool = False):
+    def make_retokenizer(self, seed: int = 7001, vectorized: bool = True):
         """Fresh designs for a whole batch at every optimizer step.
 
         Two paths, drawing from the same design law. ``vectorized=True``
-        builds the batch with whole-tensor operations and is 6--12x faster
-        than the per-set loop *in isolation* (0.25 ms vs 1.5 ms at batch 64 on
-        one machine) -- but an end-to-end A/B at the training batch of 64
-        measured no wall-clock difference at all (3334 s vs 3322 s for
-        40k simulations / 24k steps), so the loop is not the bottleneck a
-        microbenchmark suggests and the fast path is worth using only at the
-        large batches of second-order experiments. It is therefore opt-in: the
-        loop remains the default, and it is also the stream every published
-        number in this repository was produced with.
+        builds the batch with whole-tensor operations instead of looping over
+        the sets. Measured on one H200 host at the training batch of 64, with
+        ``fit``'s thread cap in place: $0.45$ ms per step against $2.8$ ms for
+        the loop, beside $30$ ms of forward and backward -- so the loop is a
+        tenth of a step and the vectorized path is a percent of it.
+
+        An earlier A/B found no end-to-end difference, but it was run on a host
+        shared with other jobs and without the thread cap, where both paths
+        were dominated by scheduler contention; that measurement should not be
+        trusted. Keeping the randomness on a CPU generator is deliberate --
+        results stay identical across devices -- and moving the gather to the
+        GPU is measurably *worse* at this batch size ($2.2$ ms), since the
+        launch overhead exceeds the work.
+
+        ``vectorized=False`` reproduces the exact random stream of runs made
+        before the fast path existed.
         """
         gen = torch.Generator().manual_seed(seed)
         obs = self.observer

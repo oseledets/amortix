@@ -400,7 +400,9 @@ class FlowPosterior(nn.Module):
             betas=(0.9, 0.999), eps: float = 1e-8, weight_decay: float = 0.0,
             k_pairs: int = 4, t_strat: bool = True,
             monitor=None, monitor_every: int = 500, verbose: bool = True,
-            device: str = "auto", retokenize=None):
+            device: str = "auto", retokenize=None,
+            optimizer: str = "adam", muon_lr: float = 0.02,
+            cpu_threads: int = 8):
         """Train the amortized posterior.
 
         device: "auto" uses CUDA when available (simulation stays on CPU; the
@@ -494,11 +496,27 @@ class FlowPosterior(nn.Module):
         so the default 10.0 -- above every observed norm (max 8.1) -- is chosen on
         mechanism, not on the metric.
         `betas`, `eps`, `weight_decay` are the usual Adam knobs.
+
+        `optimizer="muon"` switches the 2-D weights to Muon (see `amortix.optim`)
+        at `muon_lr`, leaving biases/norms/embeddings on Adam at `lr`. Worth
+        trying when a wider model scores worse than a narrower one at the same
+        budget, which is usually the optimizer's parametrization rather than
+        capacity.
         `t_strat` puts one t in each 1/k-wide bin instead of k independent
         uniforms -- measured neutral here, kept because it cannot cost anything.
         """
         gen = torch.Generator().manual_seed(seed)
         torch.manual_seed(seed)
+        # Training does small CPU tensor work every step (drawing designs and
+        # building tokens). torch defaults to one thread per core, which on a
+        # many-core host costs more in contention than the work itself: on a
+        # 512-core machine the per-step retokenization measured 9.2 ms at the
+        # default and 2.8 ms capped at 8 threads, and eight concurrent runs
+        # drove the load average past 1000. The cap is applied for the duration
+        # of fit() and restored afterwards.
+        _threads0 = torch.get_num_threads()
+        if cpu_threads:
+            torch.set_num_threads(min(cpu_threads, _threads0))
         if verbose:
             print(f"[fit] simulating {n_train} training trajectories "
                   f"({max(1, n_train // batch)} batches/epoch)...")
@@ -534,8 +552,18 @@ class FlowPosterior(nn.Module):
             tokens = tokens.to(dev)
         if data_mask is not None:
             data_mask = data_mask.to(dev)
-        opt = torch.optim.Adam(self.parameters(), lr=lr, betas=tuple(betas), eps=eps,
-                               weight_decay=weight_decay)
+        if optimizer == "muon":
+            from .optim import Muon
+            # Muon's own learning rate lives on a different scale from Adam's;
+            # `lr` keeps its Adam meaning for the fallback group so that a run
+            # can switch optimizer without also changing the schedule.
+            opt = Muon(self.parameters(), lr=muon_lr, adam_lr=lr,
+                       betas=tuple(betas), eps=eps, weight_decay=weight_decay)
+        elif optimizer == "adam":
+            opt = torch.optim.Adam(self.parameters(), lr=lr, betas=tuple(betas),
+                                   eps=eps, weight_decay=weight_decay)
+        else:
+            raise ValueError(f"unknown optimizer {optimizer!r}")
         n_batches = max(1, n_train // batch)
         if steps is not None:                       # budget stated in optimizer steps
             epochs = max(1, int(round(steps / n_batches)))
@@ -658,6 +686,7 @@ class FlowPosterior(nn.Module):
                       f"cfm {running / n_batches:.4f}  ({time.time() - t0:.1f}s)")
         if ema is not None:
             ema.store_in_module()
+        torch.set_num_threads(_threads0)
         return self
 
     # --- inference -------------------------------------------------------

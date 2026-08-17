@@ -67,6 +67,38 @@ def fid(a: np.ndarray, r: np.ndarray, scale: np.ndarray = None) -> float:
                  + np.trace(ca + cr - 2 * cm))
 
 
+# ------------------------------------------------------------- model loading
+#: The size ladder used throughout the report. Width x transformer blocks.
+SIZES = {"pico": (8, 2), "nano": (16, 2), "tiny": (32, 2),
+         "small": (64, 3), "big": (128, 4)}
+
+
+def model_of_size(problem, size: str = "small"):
+    """A posterior of one of the named sizes (``SIZES``)."""
+    from . import FlowPosterior
+    dim, depth = SIZES[size]
+    return FlowPosterior(problem, dim_model=dim, depth=depth)
+
+
+def load_posterior(problem, path: str):
+    """Load a checkpoint without being told its size.
+
+    The width and depth are read off the state dict, so a checkpoint can never
+    be loaded into a differently shaped model -- a mistake that is otherwise
+    silent right up to a wall of shape errors, and that costs a training run
+    when the checkpoint is the only copy.
+    """
+    from . import FlowPosterior
+    sd = torch.load(path, map_location="cpu")
+    dim = sd["encoder.embed.proj.weight"].shape[0]
+    depth = 1 + max(int(k.split(".")[2]) for k in sd
+                    if k.startswith("velocity.blocks."))
+    post = FlowPosterior(problem, dim_model=dim, depth=depth)
+    post.load_state_dict(sd)
+    post.eval()
+    return post
+
+
 # ------------------------------------------------------------------ battery
 @dataclass
 class Battery:
@@ -154,6 +186,11 @@ def evaluate(post, battery: Battery, n_draw: int = 4000, seed: int = 0,
              prior_range: np.ndarray = None) -> dict:
     """Score a trained posterior against a battery.
 
+    ``n_draw`` is the number of samples drawn from the model; the reference
+    side is whatever the battery stores (4,000 draws by default). Both sample
+    sizes enter the estimator's noise, so the floor is computed with the same
+    left-hand sample size as the measurement.
+
     Returns the median and mean FID over the battery's observation sets, the
     battery's own floor, their ratio (below ~2 the comparison is not resolved),
     the per-set values, and -- when ``prior_range`` is given -- the absolute
@@ -166,7 +203,15 @@ def evaluate(post, battery: Battery, n_draw: int = 4000, seed: int = 0,
     smp = post.sample_batch(tokens, n=n_draw, seed=seed, **kw).numpy()
     a = battery.chain_a
     vals = np.array([fid(smp[i], a[i]) for i in range(len(a))])
-    nulls = np.array([fid(battery.chain_b[i], a[i]) for i in range(len(a))])
+    # The floor must be measured in the SAME estimator configuration as the
+    # value: n draws on the left, the full reference on the right. Comparing an
+    # n-vs-n floor against an n-vs-N measurement understates the offset,
+    # because the estimator's noise has two terms (one per sample set) and only
+    # the model's shrinks with n.
+    nb = battery.chain_b.shape[1]
+    idx = (np.linspace(0, nb - 1, min(n_draw, nb)).astype(int)
+           if n_draw < nb else slice(None))
+    nulls = np.array([fid(battery.chain_b[i][idx], a[i]) for i in range(len(a))])
     out = dict(fid_median=float(np.median(vals)), fid_mean=float(vals.mean()),
                null_median=float(np.median(nulls)),
                ratio=float(np.median(vals) / max(np.median(nulls), 1e-12)),
@@ -233,6 +278,26 @@ def reference_draw(problem, name, raw_i, tidx, cidx, tokens_i, n_chain, seed,
     return c[np.linspace(0, len(c) - 1, keep).astype(int)]
 
 
+def problem_for(name: str):
+    """Reconstruct a benchmark problem from its registry name. Needed so that
+    reference draws can run in worker processes, which cannot inherit a live
+    problem object."""
+    from .problems.design_zoo import DESIGN_ZOO
+    from .problems.design_basic import GBMDesign, OUDesign
+    cls = {"gbm_rd": GBMDesign, "ou_rd": OUDesign}.get(name) or DESIGN_ZOO[name]
+    return cls()
+
+
+def _draw_worker(args):
+    """Top-level so it pickles: one reference draw in its own process."""
+    import torch as _t
+    name, raw_i, tidx, cidx, tok, n_chain, seed = args
+    _t.set_num_threads(1)
+    return reference_draw(problem_for(name), name, _t.as_tensor(raw_i),
+                          _t.as_tensor(tidx), _t.as_tensor(cidx),
+                          _t.as_tensor(tok), n_chain, seed)
+
+
 def build_battery(problem, name, K, n_sets=32, n_chain=200000, seed=4243,
                   path=None, max_discrepancy=0.25, workers=None):
     """Build, validate, and (optionally) save a battery.
@@ -261,20 +326,20 @@ def build_battery(problem, name, K, n_sets=32, n_chain=200000, seed=4243,
         mask[i, :tk.shape[0]] = True
         designs.append((tidx, cidx, tk))
 
-    def draw(args):
-        i, s = args
+    def job(i, s):
         tidx, cidx, tk = designs[i]
-        return reference_draw(problem, name, raw[i], tidx, cidx, tk, n_chain, s)
+        return (name, raw[i].numpy(), tidx.numpy(), cidx.numpy(), tk.numpy(),
+                n_chain, s)
 
-    jobs_a = [(i, 100 + i) for i in range(n_sets)]
-    jobs_b = [(i, 77000 + i) for i in range(n_sets)]
+    jobs_a = [job(i, 100 + i) for i in range(n_sets)]
+    jobs_b = [job(i, 77000 + i) for i in range(n_sets)]
     if workers and workers > 1:
         with ProcessPoolExecutor(max_workers=workers) as ex:
-            A = np.stack(list(ex.map(draw, jobs_a)))
-            B = np.stack(list(ex.map(draw, jobs_b)))
+            A = np.stack(list(ex.map(_draw_worker, jobs_a)))
+            B = np.stack(list(ex.map(_draw_worker, jobs_b)))
     else:
-        A = np.stack([draw(j) for j in jobs_a])
-        B = np.stack([draw(j) for j in jobs_b])
+        A = np.stack([_draw_worker(j) for j in jobs_a])
+        B = np.stack([_draw_worker(j) for j in jobs_b])
 
     bat = Battery(tokens.numpy(), mask.numpy(), A, B, m_true.numpy(),
                   dict(system=name, K=K, n_sets=n_sets, n_chain=n_chain,

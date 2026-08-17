@@ -90,18 +90,42 @@ def gbm_exact_from_points(prob, traj_i, tidx, n_samples=2000, seed=0,
     T = float(tau.sum())
     R1 = float(r.sum())
     SSw = float((r ** 2 / tau).sum()) - R1 ** 2 / T
-    npool = n_samples * pool_factor
-    chi = rng.chisquare(max(n - 1, 1), size=npool)
-    v = SSw / np.maximum(chi, 1e-300)
-    b = R1 / T + np.sqrt(v / T) * rng.standard_normal(npool)
-    sigma = np.sqrt(v)
-    draws = np.stack([b + 0.5 * v, sigma], axis=1)
     low = prob.prior.low.numpy().astype(np.float64)
     high = prob.prior.high.numpy().astype(np.float64)
-    w = sigma * np.all((draws >= low) & (draws <= high), axis=1)
+
+    # The conjugate draw is exact only up to the importance correction onto the
+    # box prior, and that correction is not free: at dense designs the
+    # posterior is narrow, and when the truth sits near a corner of the box
+    # most candidates land outside it. One battery set had 45 usable draws out
+    # of 32,000, so its "exact" sample was fifty distinct values with repeats
+    # and two independent draws disagreed by 0.4 posterior sd. The pool is
+    # therefore grown until the effective sample size is adequate, and the
+    # caller is told when it cannot be.
+    draws_all, w_all = [], []
+    npool = n_samples * pool_factor
+    for _ in range(6):
+        chi = rng.chisquare(max(n - 1, 1), size=npool)
+        v = SSw / np.maximum(chi, 1e-300)
+        b = R1 / T + np.sqrt(v / T) * rng.standard_normal(npool)
+        sigma = np.sqrt(v)
+        d = np.stack([b + 0.5 * v, sigma], axis=1)
+        draws_all.append(d)
+        w_all.append(sigma * np.all((d >= low) & (d <= high), axis=1))
+        w = np.concatenate(w_all)
+        if w.sum() > 0 and w.sum() ** 2 / (w ** 2).sum() >= 10 * n_samples:
+            break
+        npool *= 4
+    draws = np.concatenate(draws_all)
     if w.sum() <= 0:
         raise RuntimeError("no conjugate draws inside the prior box")
-    pick = rng.choice(npool, size=n_samples, replace=True, p=w / w.sum())
+    ess = float(w.sum() ** 2 / (w ** 2).sum())
+    if ess < n_samples:
+        raise RuntimeError(
+            f"GBM conjugate reference is degenerate here: effective sample "
+            f"size {ess:.0f} for {n_samples} requested draws (the posterior "
+            f"lies mostly outside the prior box). Exclude this observation "
+            f"set rather than trusting the reference.")
+    pick = rng.choice(len(draws), size=n_samples, replace=True, p=w / w.sum())
     return draws[pick]
 
 
