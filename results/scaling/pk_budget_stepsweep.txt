@@ -1,0 +1,7 @@
+[pk_small_480000_36000steps] 36000 steps (~5 epochs over 480000) 2235s  FID 0.1278
+[pk_small_120000_72000steps] 72000 steps (~38 epochs over 120000) 3519s  FID 0.0435
+[pk_small_480000_72000steps] 72000 steps (~10 epochs over 480000) 3662s  FID 0.2346
+[pk_small_480000_144000steps] 144000 steps (~19 epochs over 480000) 4979s  FID 0.0396
+C19_COMPLETE
+
+[exited with code 0]
