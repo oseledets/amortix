@@ -22,22 +22,30 @@ import torch
 def _orthogonalize(G: torch.Tensor, steps: int = 5, eps: float = 1e-7):
     """Newton--Schulz quintic iteration: the closest orthogonal matrix to G.
 
-    Runs in bfloat16 -- the iteration only needs the singular values pushed
-    toward one, and the coefficients below are the standard quintic tuned for
-    fast convergence from a spectrally normalized start.
+    Accepts a single matrix ``[m, n]`` or a stack ``[g, m, n]``, and the stacked
+    form is the one that matters for speed. The iteration is fifteen small
+    matrix products, and on the matrices in this package each costs the same
+    0.5 ms whether it is 288x32 or 1152x128 -- the time is kernel launches, not
+    arithmetic. Orthogonalizing 36 parameters one at a time therefore costs
+    18 ms per optimizer step against Adam's 0.8 ms; doing it in shape-grouped
+    batches removes most of that.
+
+    Runs in bfloat16: the iteration only pushes the singular values toward one,
+    and the quintic coefficients are the standard fast-converging choice from a
+    spectrally normalized start.
     """
     a, b, c = 3.4445, -4.7750, 2.0315
     X = G.bfloat16()
-    X = X / (X.norm() + eps)
-    transposed = G.size(0) > G.size(1)
+    X = X / (X.norm(dim=(-2, -1), keepdim=True) + eps)
+    transposed = X.size(-2) > X.size(-1)
     if transposed:
-        X = X.T
+        X = X.mT
     for _ in range(steps):
-        A = X @ X.T
+        A = X @ X.mT
         B = b * A + c * (A @ A)
         X = a * X + B @ X
     if transposed:
-        X = X.T
+        X = X.mT
     return X.to(G.dtype)
 
 
@@ -69,6 +77,10 @@ class Muon(torch.optim.Optimizer):
         loss = closure() if closure is not None else None
         for g in self.param_groups:
             if g["use_muon"]:
+                # Group by shape so the Newton--Schulz runs once per group on a
+                # stacked tensor: a transformer repeats the same few shapes, so
+                # this turns ~36 launches-bound calls into ~8 batched ones.
+                buckets = {}
                 for p in g["params"]:
                     if p.grad is None:
                         continue
@@ -78,12 +90,16 @@ class Muon(torch.optim.Optimizer):
                     m = st["m"]
                     m.mul_(g["momentum"]).add_(p.grad)
                     d = p.grad.add(m, alpha=g["momentum"]) if g["nesterov"] else m
-                    o = _orthogonalize(d, g["ns_steps"])
+                    buckets.setdefault(tuple(p.shape), []).append((p, d))
+                for shape, items in buckets.items():
+                    D = torch.stack([d for _, d in items])
+                    O = _orthogonalize(D, g["ns_steps"])
                     # keep the update's scale comparable across shapes
-                    scale = max(1.0, p.size(0) / p.size(1)) ** 0.5
-                    if g["weight_decay"]:
-                        p.mul_(1 - g["lr"] * g["weight_decay"])
-                    p.add_(o, alpha=-g["lr"] * scale)
+                    scale = max(1.0, shape[0] / shape[1]) ** 0.5
+                    for (p, _), o in zip(items, O):
+                        if g["weight_decay"]:
+                            p.mul_(1 - g["lr"] * g["weight_decay"])
+                        p.add_(o, alpha=-g["lr"] * scale)
             else:
                 for p in g["params"]:
                     if p.grad is None:
