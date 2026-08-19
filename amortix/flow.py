@@ -399,9 +399,10 @@ class FlowPosterior(nn.Module):
             ema_decay: float = 0.999, grad_clip: float = 10.0,
             betas=(0.9, 0.999), eps: float = 1e-8, weight_decay: float = 0.0,
             k_pairs: int = 4, t_strat: bool = True,
-            monitor=None, monitor_every: int = 500, verbose: bool = True,
+            monitor=None, monitor_every: int = 500, keep_best: bool = True,
+            monitor_floor: float = 0.0, verbose: bool = True,
             device: str = "auto", retokenize=None,
-            optimizer: str = "muon", muon_lr: float = 0.02,
+            optimizer: str = "muon", muon_lr: float = None,
             cpu_threads: int = 8):
         """Train the amortized posterior.
 
@@ -572,11 +573,20 @@ class FlowPosterior(nn.Module):
         if data_mask is not None:
             data_mask = data_mask.to(dev)
         if optimizer == "muon":
-            from .optim import Muon
+            from .optim import Muon, muon_lr_for_batch
             # Muon's own learning rate lives on a different scale from Adam's;
             # `lr` keeps its Adam meaning for the fallback group so that a run
             # can switch optimizer without also changing the schedule.
-            opt = Muon(self.parameters(), lr=muon_lr, adam_lr=lr,
+            #
+            # muon_lr=None means "use the measured batch law" rather than a
+            # constant. A constant here is a trap: the step that is optimal at
+            # one batch is measurably wrong at another (at batch 64 the step
+            # tuned for batch 512 costs 0.0083 against 0.0066), and nothing
+            # about a run announces the mismatch -- it simply trains worse. See
+            # muon_lr_for_batch for the measurement behind the exponent.
+            muon_lr_eff = (muon_lr_for_batch(batch) if muon_lr is None
+                           else float(muon_lr))
+            opt = Muon(self.parameters(), lr=muon_lr_eff, adam_lr=lr,
                        betas=tuple(betas), eps=eps, weight_decay=weight_decay)
         elif optimizer == "adam":
             opt = torch.optim.Adam(self.parameters(), lr=lr, betas=tuple(betas),
@@ -596,6 +606,7 @@ class FlowPosterior(nn.Module):
         k = max(1, int(k_pairs))
         self.history = []
         step_now = 0
+        best_metric, best_state, best_step = float('inf'), None, None
         t0 = time.time()
         for ep in range(epochs):
             perm = torch.randperm(n_train, generator=gen)
@@ -710,6 +721,12 @@ class FlowPosterior(nn.Module):
                     # gets measured
                     with (ema.averaged() if ema is not None else contextlib.nullcontext()):
                         rec["metric"] = float(monitor(self))
+                        if keep_best and rec["metric"] < best_metric:
+                            best_metric = rec["metric"]
+                            best_state = {k: v.detach().to("cpu", copy=True)
+                                          for k, v in self.state_dict().items()}
+                            best_step = step_now
+                            rec["best"] = True
             self.history.append(rec)
             if verbose and ("metric" in rec or ep % max(1, epochs // 10) == 0
                             or ep == epochs - 1):
@@ -719,6 +736,50 @@ class FlowPosterior(nn.Module):
                       f"cfm {rec['cfm']:.4f}{extra}  ({time.time() - t0:.1f}s)")
         if ema is not None:
             ema.store_in_module()
+        if keep_best and best_state is not None:
+            # Ship the best-by-validation weights INSTEAD OF the last ones only
+            # when the improvement is real. "Real" is a margin test against the
+            # last monitored point, not an absolute-level test: the best point
+            # must beat the last one by more than `monitor_floor`, the
+            # resolution of the monitor at its own sample size (see
+            # evaluation.floor_at).
+            #
+            # Both failure modes behind this rule were walked into, measured:
+            #   * a monitor too coarse for the model (floor 0.0044) shipped its
+            #     deepest noise dip -- 0.0053 on test against 0.0040 for the
+            #     last weights;
+            #   * a resolving monitor (floor 0.0013) still shipped 0.0052
+            #     against 0.0040, because with a cosine schedule mid-run
+            #     checkpoints are systematically inflated and an argmin over
+            #     the whole curve mistakes that for a reversal.
+            # A genuine late reversal clears the margin easily (pk: the curve
+            # turns 0.1066 -> 0.1321, twenty floors); schedule noise does not.
+            metrics = [h["metric"] for h in self.history if "metric" in h]
+            gain = metrics[-1] - best_metric
+            # Two conditions, both stated in the monitor's own units. The gain
+            # must clear the monitor's floor, AND the monitored value itself
+            # must sit at least three floors up -- a monitor asked to rank
+            # values of its own resolution returns noise in both directions
+            # (measured on Fisher-KPP: with val_best at 1.7-2.4 floors, firing
+            # hurt the test score both times it happened and refusing hurt it
+            # twice more; every system whose selections transferred had
+            # val_best at 3.4 floors or higher).
+            self.selection_used = bool(gain > monitor_floor
+                                       and best_metric >= 3.0 * monitor_floor)
+            self.selection_gain = float(gain)
+            self.best_metric, self.best_step = best_metric, best_step
+            # Whichever weights are NOT shipped stay available as alt_state.
+            # The guard is a rule with a threshold, and thresholds get revised;
+            # keeping the rejected variant makes any future revision a
+            # re-scoring, never a retraining.
+            if self.selection_used:
+                self.alt_state = {k: v.detach().to("cpu", copy=True)
+                                  for k, v in self.state_dict().items()}
+                self.alt_kind = 'last'
+                self.last_state = self.alt_state
+                self.load_state_dict(best_state)
+            else:
+                self.alt_state, self.alt_kind = best_state, 'best'
         torch.set_num_threads(_threads0)
         return self
 

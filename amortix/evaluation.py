@@ -80,15 +80,24 @@ def model_of_size(problem, size: str = "small"):
     return FlowPosterior(problem, dim_model=dim, depth=depth)
 
 
-def load_posterior(problem, path: str):
-    """Load a checkpoint without being told its size.
+def load_posterior(problem, path: str, device=None):
+    """Load a checkpoint without being told its size, onto the fast device.
 
     The width and depth are read off the state dict, so a checkpoint can never
     be loaded into a differently shaped model -- a mistake that is otherwise
     silent right up to a wall of shape errors, and that costs a training run
     when the checkpoint is the only copy.
+
+    ``device`` defaults to CUDA when it is available. That default is not
+    cosmetic: ``sample_batch`` takes its device from the model's parameters, so
+    a checkpoint left on the CPU is scored on the CPU, and the scoring is the
+    expensive half of a sweep -- the measured gap on the big model over the
+    six-K ladder is minutes against hours. A CPU-resident model is silent about
+    this; it simply runs.
     """
     from . import FlowPosterior
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     sd = torch.load(path, map_location="cpu")
     dim = sd["encoder.embed.proj.weight"].shape[0]
     depth = 1 + max(int(k.split(".")[2]) for k in sd
@@ -96,13 +105,13 @@ def load_posterior(problem, path: str):
     post = FlowPosterior(problem, dim_model=dim, depth=depth)
     post.load_state_dict(sd)
     post.eval()
-    return post
+    return post.to(device)
 
 
 # ------------------------------------------------------------------ battery
 @dataclass
-class Battery:
-    """A frozen test set with its validated reference posteriors.
+class EvalSet:
+    """A frozen evaluation set: observation instances with validated references.
 
     Fields are plain arrays so the whole thing round-trips through one
     ``.npz``: ``tokens``/``mask`` are what the model is conditioned on,
@@ -118,14 +127,14 @@ class Battery:
     meta: dict = field(default_factory=dict)
 
     # --- persistence ---
-    def save(self, path: str) -> "Battery":
+    def save(self, path: str) -> "EvalSet":
         np.savez(path, tokens=self.tokens, mask=self.mask, chain_a=self.chain_a,
                  chain_b=self.chain_b, m_true=self.m_true,
                  meta=json.dumps(self.meta))
         return self
 
     @classmethod
-    def load(cls, path: str) -> "Battery":
+    def load(cls, path: str) -> "EvalSet":
         d = np.load(path, allow_pickle=False)
         meta = json.loads(str(d["meta"])) if "meta" in d else {}
         return cls(d["tokens"], d["mask"], d["chain_a"], d["chain_b"],
@@ -147,10 +156,15 @@ class Battery:
 
     def __repr__(self) -> str:
         m = self.meta
-        return (f"Battery({m.get('system','?')}, K={m.get('K','?')}, "
+        return (f"EvalSet({m.get('system','?')}, K={m.get('K','?')}, "
                 f"{len(self.chain_a)} sets, chain={m.get('n_chain','?')}, "
                 f"floor={self.floor:.4f}, "
                 f"max inter-chain {self.discrepancy.max():.3f} sd)")
+
+
+# Legacy alias (class). The paper's term is "evaluation set"; scripts written
+# against the old name keep running until updated, then this goes.
+Battery = EvalSet
 
 
 def provenance() -> dict:
@@ -182,7 +196,28 @@ def provenance() -> dict:
                 source_sha256=h.hexdigest()[:12], git=git)
 
 
-def evaluate(post, battery: Battery, n_draw: int = 4000, seed: int = 0,
+def floor_at(battery: EvalSet, n_draw: int) -> float:
+    """The battery's resolution at a given number of model draws.
+
+    ``Battery.floor`` quotes the resolution at the reference chain length. A
+    monitor that draws fewer samples is coarser, and by a lot: on the GBM
+    validation battery the floor is 0.0013 at 4,000 draws and 0.0044 at 1,000.
+
+    That difference decides whether a selection rule works. Choosing the best
+    checkpoint on a monitor whose floor sits above the model's own error means
+    choosing the deepest noise dip -- measured, not hypothetical: at 1,000
+    draws the rule shipped 0.0053 where the final weights scored 0.0040. Check
+    the floor at the sample size you actually monitor with, not at the
+    battery's nominal one.
+    """
+    nb = battery.chain_b.shape[1]
+    idx = (np.linspace(0, nb - 1, min(n_draw, nb)).astype(int)
+           if n_draw < nb else slice(None))
+    return float(np.median([fid(battery.chain_b[i][idx], battery.chain_a[i])
+                            for i in range(len(battery.chain_a))]))
+
+
+def evaluate(post, battery: EvalSet, n_draw: int = 4000, seed: int = 0,
              prior_range: np.ndarray = None) -> dict:
     """Score a trained posterior against a battery.
 
@@ -240,7 +275,7 @@ def _logpost(problem, name, raw_i, tidx, cidx, tokens_i):
     a branch here, not a new script."""
     from .problems.design_zoo import (merton_logpost_factory,
                                       pk_logpost_factory, kpp_logpost_factory)
-    from .problems.design_basic import ou_logpost_factory
+    from .problems.design_basic import ou_logpost_factory, cir_logpost_factory
 
     y = tokens_i[:, 1].numpy().astype(np.float64)
     t_obs = tidx.numpy() * problem.observer.dt_sim
@@ -258,6 +293,9 @@ def _logpost(problem, name, raw_i, tidx, cidx, tokens_i):
                                   logsd=problem.LOGSD), lo, hi
     if name == "kpp":
         return kpp_logpost_factory(problem, tidx, cidx, y), lo, hi
+    if name == "cir":
+        return cir_logpost_factory(problem, raw_i[:, 0].numpy(),
+                                   tidx.numpy()), lo, hi
     raise KeyError(f"no reference likelihood registered for {name!r}")
 
 
@@ -283,8 +321,9 @@ def problem_for(name: str):
     reference draws can run in worker processes, which cannot inherit a live
     problem object."""
     from .problems.design_zoo import DESIGN_ZOO
-    from .problems.design_basic import GBMDesign, OUDesign
-    cls = {"gbm_rd": GBMDesign, "ou_rd": OUDesign}.get(name) or DESIGN_ZOO[name]
+    from .problems.design_basic import GBMDesign, OUDesign, CIRDesign
+    cls = ({"gbm_rd": GBMDesign, "ou_rd": OUDesign, "cir": CIRDesign}.get(name)
+           or DESIGN_ZOO[name])
     return cls()
 
 
@@ -298,7 +337,7 @@ def _draw_worker(args):
                           _t.as_tensor(tok), n_chain, seed)
 
 
-def build_battery(problem, name, K, n_sets=32, n_chain=200000, seed=4243,
+def build_eval_set(problem, name, K, n_sets=32, n_chain=200000, seed=4243,
                   path=None, max_discrepancy=0.25, workers=None):
     """Build, validate, and (optionally) save a battery.
 
@@ -355,3 +394,7 @@ def build_battery(problem, name, K, n_sets=32, n_chain=200000, seed=4243,
     if path:
         bat.save(path)
     return bat
+
+
+# Legacy alias (builder) -- must follow the definition it points at.
+build_battery = build_eval_set

@@ -83,6 +83,18 @@ New numbers will be published only alongside the controls described below.
 
 ---
 
+## Runnable gallery
+
+Small, self-contained scripts in [`examples/gallery/`](examples/gallery/) --- each
+prints what it demonstrates and runs in minutes:
+
+| script | shows |
+|---|---|
+| [`01_quickstart_gbm.py`](examples/gallery/01_quickstart_gbm.py) | train + sample + check against an exact posterior |
+| [`02_any_design_pk.py`](examples/gallery/02_any_design_pk.py) | one network, any number of observation points |
+| [`03_exact_reference_cir.py`](examples/gallery/03_exact_reference_cir.py) | frozen evaluation sets, validated references, resolution floors |
+| [`04_custom_problem.py`](examples/gallery/04_custom_problem.py) | add your own system in ~25 lines |
+
 ## Variable observation designs (design amortization)
 
 Beyond fixed observation grids, `amortix` trains a single network for

@@ -9,3 +9,5 @@ dist/
 report/*.aux
 results/*.log
 sbi-logs/
+.DS_Store
+results/

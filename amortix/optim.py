@@ -49,16 +49,75 @@ def _orthogonalize(G: torch.Tensor, steps: int = 5, eps: float = 1e-7):
     return X.to(G.dtype)
 
 
+#: Batch at which the Muon step was tuned, and the step measured there.
+MUON_REF_BATCH = 512
+MUON_REF_LR = 1e-2
+#: Square-root batch scaling below the critical batch, measured.
+MUON_BATCH_EXPONENT = 0.5
+#: Step ceiling: past the critical batch (~2048) the optimum stops moving.
+MUON_LR_CAP = 2e-2
+
+
+def muon_lr_for_batch(batch: int) -> float:
+    """The Muon step that belongs to this batch size.
+
+    ``lr(B) = min(1e-2 * (B / 512) ** 0.5, 2e-2)``.
+
+    Both the exponent and the cap are measured on this package, not assumed.
+    On the big model (GBM, fixed example budgets, scored on the six-K battery)
+    the step was swept at four batch sizes:
+
+      B =   64, 72,000 steps: 1.8e-3 -> 0.0064, 3.54e-3 -> 0.0066,
+                              5.95e-3 -> 0.0079, 1.0e-2 -> 0.0083
+      B =  512,  9,000 steps: 3e-3 -> 0.0065, 1e-2 -> 0.0061, 2e-2 -> 0.0085
+      B = 2048,  2,250 steps: 1e-2 -> 0.0065, 1.41e-2 -> 0.0072,
+                              2e-2 -> 0.0066, 3e-2 -> 0.0070
+      B = 8192,  2,020 steps: 1e-2 -> 0.0061, 2e-2 -> 0.0052,
+                              4e-2 -> 0.0060, 8e-2 -> diverges (nan)
+
+    The square root holds where the curve is sharp: the optimum moves from
+    3.5e-3 at B=64 to 1e-2 at B=512 -- a factor 2.82 for an eightfold batch,
+    against 2.83 predicted by the square root and 1.68 by the fourth root
+    (and the fourth root is not a near miss there: 5.95e-3 scores 0.0079
+    against 0.0066).
+
+    Past B~2048 the law changes character and extrapolating the root is a
+    trap that was walked into once: the root predicts 4e-2 at B=8192, where
+    the measured optimum is 2e-2 -- the same 2e-2 as at 2048 -- and twice the
+    root's prediction already diverges. So: square root up to the critical
+    batch, constant after it. The flat response at B=2048 (a threefold sweep
+    lands within 0.0007) is this ceiling announcing itself.
+    """
+    lr = MUON_REF_LR * (float(batch) / MUON_REF_BATCH) ** MUON_BATCH_EXPONENT
+    return min(lr, MUON_LR_CAP)
+
+
 class Muon(torch.optim.Optimizer):
     """Muon on 2-D parameters, Adam on everything else.
 
     ``lr`` is the Muon learning rate; ``adam_lr`` governs the fallback group
     (biases, normalizations, embeddings and any parameter that is not a plain
-    matrix). Both default to values that work unchanged across the width ladder
-    of this package.
+    matrix).
+
+    The default ``lr`` is measured, not inherited. Swept over 3e-4..6e-2 on the
+    largest model of the width ladder (GBM, batch 512, 9,000 steps, scored on
+    the six-K design battery), the response is a broad shallow basin between
+    3e-3 and 1e-2 with a hard edge just past it: 6e-2 diverges outright. The
+    step transfers across width in the direction that matters -- 1e-2 is better
+    than 2e-2 at every width tried, and the margin *grows* with width (tiny: a
+    tie, small: 0.0010 FID, big: 0.0024) -- so a step tuned on a narrow model
+    stays safe when the model is widened, which is the property Muon is being
+    used for.
+
+    Running too hot reintroduces exactly the pathology Muon was adopted to
+    remove. At 2e-2 the capacity ladder is non-monotone (big 0.0085 scores
+    *worse* than small 0.0076); at 1e-2 it is ordered as capacity says it
+    should be (big 0.0061, small 0.0066, tiny 0.0089). "Wider is worse" is
+    therefore not always a statement about the optimizer family -- it can be a
+    statement about one number inside it.
     """
 
-    def __init__(self, params, lr: float = 0.02, momentum: float = 0.95,
+    def __init__(self, params, lr: float = 0.01, momentum: float = 0.95,
                  nesterov: bool = True, ns_steps: int = 5,
                  adam_lr: float = 3e-4, betas=(0.9, 0.999), eps: float = 1e-8,
                  weight_decay: float = 0.0):

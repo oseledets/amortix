@@ -149,3 +149,139 @@ def ou_logpost_factory(prob, traj_i, tidx):
         return base - 0.5 * (s[0] ** 2 / var0 + math.log(2 * math.pi * var0))
 
     return log_post
+
+class CIRDesign(DesignProblem):
+    """dX = a(b - X)dt + sigma sqrt(X) dW, stationary start, arbitrary times.
+
+    Simulation is EXACT, not Euler: each fine step draws the noncentral
+    chi-square transition through its Poisson--Gamma representation, and the
+    start is the stationary Gamma(2ab/sigma^2, sigma^2/2a). That choice is what
+    makes an exact-likelihood reference possible at all -- the reference
+    describes the same chain the simulator generates, gap by gap, with no
+    discretization slack between them (the OU reference achieves this by
+    composing its Euler chain in closed form; CIR's Euler chain has no such
+    form, so the simulator is lifted to the exact transition instead).
+
+    Randomness runs through a numpy generator seeded from the torch one:
+    torch has no generator-threaded Poisson/Gamma sampling, and the CPU numpy
+    path keeps runs bit-reproducible across devices, like every other
+    simulator in the package.
+    """
+
+    markov_observed = True
+
+    def __init__(self):
+        self.prior = BoxUniform(low=[0.3, 0.3, 0.10], high=[3.0, 1.5, 0.50],
+                                names=["a", "b", "sigma"])
+        self.observer = DesignObserver(dt_sim=0.02, n_steps=500, k_max=128)
+        self.k_min = 2
+
+    def trajectories(self, m, generator=None):
+        seed = int(torch.randint(2 ** 31 - 1, (1,), generator=generator))
+        rng = np.random.default_rng(seed)
+        a = m[:, 0].double().numpy(); b = m[:, 1].double().numpy()
+        sg = m[:, 2].double().numpy()
+        dt = self.observer.dt_sim; n = self.observer.n_steps
+        B = len(a)
+        edt = np.exp(-a * dt)
+        c = sg * sg * (1.0 - edt) / (4.0 * a)
+        df = 4.0 * a * b / (sg * sg)
+        x = rng.gamma(shape=df / 2.0, scale=sg * sg / (2.0 * a))   # stationary
+        out = np.empty((B, n + 1), dtype=np.float64)
+        out[:, 0] = x
+        for i in range(n):
+            lam = x * edt / c
+            k = rng.poisson(lam / 2.0)
+            x = c * rng.gamma(shape=df / 2.0 + k, scale=2.0)       # ncx2 exact
+            out[:, i + 1] = x
+        return torch.from_numpy(out).float()[:, :, None]
+
+
+def cir_logpost_factory(prob, traj_i, tidx):
+    """Exact log-posterior of the CIR chain on an arbitrary design: noncentral
+    chi-square gap transitions plus the stationary Gamma density of the start."""
+    from scipy.stats import ncx2, gamma as sp_gamma
+
+    x = np.asarray(traj_i, dtype=np.float64).reshape(-1)
+    idx = np.unique(np.concatenate([[0], np.asarray(tidx, dtype=np.int64)]))
+    s = x[idx]
+    dt = float(prob.observer.dt_sim)
+    gaps = np.diff(idx).astype(np.float64) * dt
+
+    def log_post(p):
+        a, b, sg = float(p[0]), float(p[1]), float(p[2])
+        if a <= 0 or b <= 0 or sg <= 0:
+            return -np.inf
+        df = 4.0 * a * b / (sg * sg)
+        edt = np.exp(-a * gaps)
+        c = sg * sg * (1.0 - edt) / (4.0 * a)
+        lam = s[:-1] * edt / c
+        ll = float(np.sum(ncx2.logpdf(s[1:] / c, df, lam) - np.log(c)))
+        ll += float(sp_gamma.logpdf(s[0], a=df / 2.0,
+                                    scale=sg * sg / (2.0 * a)))
+        return ll if np.isfinite(ll) else -np.inf
+
+    return log_post
+
+class LinGaussDesign(DesignProblem):
+    """The linear-Gaussian check as a design problem: y = A m + eps, and a
+    design is a SUBSET of the six observation components. The posterior for
+    any subset is the conjugate Gaussian of the selected rows of A restricted
+    to the prior box, so references are exact draws -- the only system whose
+    evaluation set involves no MCMC at all.
+    """
+
+    obs_noise = 0.5          # NOISE of the fixed-design instrument, unchanged
+
+    def __init__(self):
+        from .linear_gaussian import A, D_PARAM, N_OBS
+        self.A = A
+        self.prior = BoxUniform(low=[-3.0] * D_PARAM, high=[3.0] * D_PARAM,
+                                names=[f"m{i+1}" for i in range(D_PARAM)])
+        # n_steps = number of observation components; "time" is component id
+        self.observer = DesignObserver(dt_sim=1.0, n_steps=N_OBS, k_max=N_OBS)
+        self.k_min = 2
+
+    def trajectories(self, m, generator=None):
+        # noiseless A m as a 6-point "path"; observation noise enters at
+        # tokenization, like every other design problem
+        clean = m @ self.A.T                          # [B, 6]
+        B = m.shape[0]
+        out = torch.zeros(B, self.observer.n_steps + 1, 1)
+        out[:, 1:, 0] = clean
+        return out
+
+    def exact_from_points(self, tidx, y, n_samples=4000, seed=0,
+                          n_sweeps=400):
+        """Exact posterior draws for the observed subset.
+
+        The subset posterior is a box-truncated Gaussian, and for sparse
+        subsets it is underdetermined (rank of the selected rows < d), so
+        rejection from the unconstrained Gaussian starves. Sampling instead
+        runs ``n_samples`` INDEPENDENT Gibbs chains in parallel on the
+        canonical form (precision P = A_S^T A_S / s^2, shift b = A_S^T y /
+        s^2): each coordinate conditional is a one-dimensional truncated
+        normal, exact and vectorized across all chains, and no matrix is ever
+        inverted -- the degenerate directions are simply flat conditionals
+        clipped by the box. Log-concave target, so the sweeps mix fast;
+        chains start uniform in the box and only the final state is kept,
+        giving independent draws.
+        """
+        from scipy.stats import truncnorm
+
+        rng = np.random.default_rng(seed)
+        As = self.A[tidx - 1].double().numpy()
+        s2 = float(self.obs_noise) ** 2
+        P = As.T @ As / s2
+        b = As.T @ np.asarray(y, dtype=np.float64) / s2
+        lo = self.prior.low.double().numpy(); hi = self.prior.high.double().numpy()
+        d = len(b)
+        m = rng.uniform(lo, hi, size=(n_samples, d))
+        sd = 1.0 / np.sqrt(np.diag(P))
+        for _ in range(n_sweeps):
+            for i in range(d):
+                mean = (b[i] - m @ P[:, i] + m[:, i] * P[i, i]) / P[i, i]
+                a_, b_ = (lo[i] - mean) / sd[i], (hi[i] - mean) / sd[i]
+                m[:, i] = truncnorm.rvs(a_, b_, loc=mean, scale=sd[i],
+                                        random_state=rng)
+        return torch.from_numpy(m).float()
