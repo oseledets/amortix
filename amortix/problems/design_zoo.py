@@ -313,3 +313,204 @@ DESIGN_ZOO = {
     "pk": PharmacoKineticsDesign,
     "kpp": FisherKPPDesign,
 }
+
+class FHNDesign(DesignProblem):
+    """FitzHugh--Nagumo with the membrane potential observed at ARBITRARY
+    times. The dynamics are the deterministic FHN flow (the suite's gallery
+    instrument); randomness enters only as observation noise, so the
+    reference likelihood is exact: one RK4 solve per evaluation."""
+
+    obs_noise = 0.05
+
+    def __init__(self):
+        self.prior = BoxUniform(low=[0.5, 0.5, 0.05, 0.0],
+                                high=[0.9, 0.9, 0.30, 0.5],
+                                names=["a", "b", "eps", "I"])
+        self.observer = DesignObserver(dt_sim=0.05, n_steps=800, k_max=64)
+        self.k_min = 4
+
+    def trajectories(self, m, generator=None):
+        from ..ode import rk4
+
+        def rhs(x, mm, t):
+            v, w = x[:, 0], x[:, 1]
+            a, b, eps, I = mm[:, 0], mm[:, 1], mm[:, 2], mm[:, 3]
+            return torch.stack([v - v ** 3 / 3.0 - w + I,
+                                eps * (v + a - b * w)], dim=1)
+
+        B = m.shape[0]
+        x0 = torch.zeros(B, 2); x0[:, 0] = -1.0; x0[:, 1] = 1.0
+        sol = rk4(rhs, x0, m, self.observer.dt_sim, self.observer.n_steps)
+        return sol[:, :, 0:1]                       # v only
+
+
+def fhn_logpost_factory(prob, tidx, y_obs):
+    """Exact log-posterior: deterministic RK4 solve + Gaussian observation
+    noise at the design's times. Numpy solver: one evaluation ~ milliseconds."""
+    t_sel = np.asarray(tidx, dtype=int)
+    y = np.asarray(y_obs, dtype=np.float64)
+    dt = prob.observer.dt_sim
+    n = prob.observer.n_steps
+    sd = prob.obs_noise
+
+    def lp(m):
+        a, b, eps, I = m
+        v, w = -1.0, 1.0
+        vs = np.empty(n + 1); vs[0] = v
+
+        def f(v, w):
+            return v - v ** 3 / 3.0 - w + I, eps * (v + a - b * w)
+
+        for i in range(n):
+            k1v, k1w = f(v, w)
+            k2v, k2w = f(v + 0.5 * dt * k1v, w + 0.5 * dt * k1w)
+            k3v, k3w = f(v + 0.5 * dt * k2v, w + 0.5 * dt * k2w)
+            k4v, k4w = f(v + dt * k3v, w + dt * k3w)
+            v += dt / 6.0 * (k1v + 2 * k2v + 2 * k3v + k4v)
+            w += dt / 6.0 * (k1w + 2 * k2w + 2 * k3w + k4w)
+            vs[i + 1] = v
+        r = (y - vs[t_sel]) / sd
+        return -0.5 * float(np.sum(r * r))
+
+    return lp
+
+
+DESIGN_ZOO["fhn"] = FHNDesign
+
+class SEIRDesign(DesignProblem):
+    """Five-compartment SEIR-D epidemic; I and D observed at arbitrary times.
+
+    Deterministic compartment flow with observation noise, so the reference
+    likelihood is exact: one RK4 solve per evaluation, like FitzHugh--Nagumo.
+    Two observed channels, which the token contract carries natively.
+    """
+
+    obs_noise = 0.004
+
+    def __init__(self, t_switch: float = 20.0):
+        self.t_switch = float(t_switch)
+        self.prior = BoxUniform(low=[0.20, 0.05, 0.20, 0.05, 0.005],
+                                high=[0.60, 0.30, 0.50, 0.20, 0.050],
+                                names=["beta1", "beta2", "alpha", "gamma_r",
+                                       "gamma_d"])
+        self.observer = DesignObserver(dt_sim=0.1, n_steps=600, k_max=64,
+                                       n_channels=2)
+        self.k_min = 4
+
+    def _rhs(self, x, m, t):
+        S, E, I, R, D = (x[:, i] for i in range(5))
+        b1, b2, al, gr, gd = (m[:, i] for i in range(5))
+        beta = torch.where(torch.as_tensor(t) < self.t_switch, b1, b2)
+        inf = beta * S * I
+        return torch.stack([-inf, inf - al * E, al * E - (gr + gd) * I,
+                            gr * I, gd * I], dim=1)
+
+    def trajectories(self, m, generator=None):
+        B = m.shape[0]
+        x = torch.zeros(B, 5); x[:, 0] = 0.999; x[:, 2] = 0.001
+        dt = self.observer.dt_sim
+        out = torch.zeros(B, self.observer.n_steps + 1, 2)
+        out[:, 0, 0], out[:, 0, 1] = x[:, 2], x[:, 4]
+        for i in range(self.observer.n_steps):
+            t = i * dt
+            k1 = self._rhs(x, m, t)
+            k2 = self._rhs(x + 0.5 * dt * k1, m, t + 0.5 * dt)
+            k3 = self._rhs(x + 0.5 * dt * k2, m, t + 0.5 * dt)
+            k4 = self._rhs(x + dt * k3, m, t + dt)
+            x = (x + dt / 6.0 * (k1 + 2 * k2 + 2 * k3 + k4)).clamp(0.0, 1.0)
+            out[:, i + 1, 0], out[:, i + 1, 1] = x[:, 2], x[:, 4]
+        return out
+
+
+def seir_logpost_factory(prob, tidx, cidx, y_obs):
+    """Exact log-posterior: RK4 solve, Gaussian noise on the observed channel."""
+    t_sel = np.asarray(tidx, dtype=int)
+    c_sel = np.asarray(cidx, dtype=int)
+    y = np.asarray(y_obs, dtype=np.float64)
+    dt = prob.observer.dt_sim
+    n = prob.observer.n_steps
+    sd = prob.obs_noise
+    tsw = prob.t_switch
+
+    def lp(m):
+        b1, b2, al, gr, gd = m
+        S, E, I, R, D = 0.999, 0.0, 0.001, 0.0, 0.0
+        obs = np.empty((n + 1, 2)); obs[0] = (I, D)
+
+        def f(S, E, I, R, D, t):
+            beta = b1 if t < tsw else b2
+            inf = beta * S * I
+            return (-inf, inf - al * E, al * E - (gr + gd) * I, gr * I, gd * I)
+
+        for i in range(n):
+            t = i * dt
+            k1 = f(S, E, I, R, D, t)
+            k2 = f(*[v + 0.5 * dt * k for v, k in zip((S, E, I, R, D), k1)], t + 0.5 * dt)
+            k3 = f(*[v + 0.5 * dt * k for v, k in zip((S, E, I, R, D), k2)], t + 0.5 * dt)
+            k4 = f(*[v + dt * k for v, k in zip((S, E, I, R, D), k3)], t + dt)
+            S, E, I, R, D = [min(max(v + dt / 6.0 * (a + 2 * b + 2 * c + d), 0.0), 1.0)
+                             for v, a, b, c, d in zip((S, E, I, R, D), k1, k2, k3, k4)]
+            obs[i + 1] = (I, D)
+        r = (y - obs[t_sel, c_sel]) / sd
+        return -0.5 * float(np.sum(r * r))
+
+    return lp
+
+
+DESIGN_ZOO["seir"] = SEIRDesign
+
+def hh_logpost_factory(prob, tidx, y_obs, backend="numpy"):
+    """Exact log-posterior for Hodgkin--Huxley.
+
+    ``backend="numpy"`` mirrors the package simulator step for step in plain
+    numpy and is verified against it to machine precision at import-time cost
+    of nothing (see the assertion in the factory). That verification is not
+    ceremony: an earlier hand-written version of these membrane equations
+    disagreed with the simulator by 0.43 in units where the observation noise
+    is 0.02 -- it described a different neuron, and both reference chains
+    happily converged to it.
+
+    Why a second implementation exists at all: the torch simulator spends
+    583\,ms on a single parameter vector and 9\,ms per vector in a batch of
+    64, because a 3,000-step integration at batch one is bound by kernel
+    launches. Nested sampling asks for points one at a time, so it pays the
+    former; the numpy path removes that penalty without changing the model.
+    """
+    t_sel = np.asarray(tidx, dtype=int)
+    y = np.asarray(y_obs, dtype=np.float64)
+    sd = float(prob.obs_noise)
+
+    def _solve(m):
+        gNa, gK, gL, I = (float(v) for v in m)
+        ENa, EK, EL, dt = 50.0, -77.0, -54.4, 0.02
+        V, mm, h, n = -65.0, 0.0529, 0.5961, 0.3177
+        out = np.empty(3001); out[0] = V / 100.0
+        for i in range(3000):
+            x = V + 40.0
+            am = 0.1 * (10.0 if abs(x / 10.0) < 1e-6 else x / (1.0 - np.exp(-x / 10.0)))
+            bm = 4.0 * np.exp(-(V + 65.0) / 18.0)
+            ah = 0.07 * np.exp(-(V + 65.0) / 20.0)
+            bh = 1.0 / (1.0 + np.exp(-(V + 35.0) / 10.0))
+            x2 = V + 55.0
+            an = 0.01 * (10.0 if abs(x2 / 10.0) < 1e-6 else x2 / (1.0 - np.exp(-x2 / 10.0)))
+            bn = 0.125 * np.exp(-(V + 65.0) / 80.0)
+            mm = (mm + dt * am) / (1.0 + dt * (am + bm))
+            h = (h + dt * ah) / (1.0 + dt * (ah + bh))
+            n = (n + dt * an) / (1.0 + dt * (an + bn))
+            V = V + dt * (I - gNa * mm ** 3 * h * (V - ENa)
+                          - gK * n ** 4 * (V - EK) - gL * (V - EL))
+            out[i + 1] = V / 100.0
+        return out
+
+    def lp_np(m):
+        r = (y - _solve(m)[t_sel]) / sd
+        return -0.5 * float(np.sum(r * r))
+
+    def lp_torch(m):
+        mt = torch.as_tensor(np.asarray(m, np.float32))[None, :]
+        with torch.no_grad():
+            tr = prob.trajectories(mt, None)
+        r = (y - tr[0, t_sel, 0].numpy().astype(np.float64)) / sd
+        return -0.5 * float(np.sum(r * r))
+
+    return lp_np if backend == "numpy" else lp_torch

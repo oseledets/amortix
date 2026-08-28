@@ -98,6 +98,11 @@ def main():
     ap.add_argument("--n_draw", type=int, default=2000)
     ap.add_argument("--n_mcmc", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--token_dropout", type=float, default=0.0)
+    ap.add_argument("--size", type=str, default="small",
+                    help="amortix model size: pico/nano/tiny/small/big")
+    ap.add_argument("--tag", type=str, default="",
+                    help="suffix for dump/report names")
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--arms", type=str, default="amortix,npe,mcmc",
                     help="comma list from {amortix,npe,npe_log,npe_ret,fmpe,fmpe_ret,mcmc}; npe_log "
@@ -146,10 +151,11 @@ def main():
     # ---- amortix CFM --------------------------------------------------------
     if "amortix" in arms:
         torch.manual_seed(args.seed)
-        post = FlowPosterior(prob)
+        from amortix.evaluation import model_of_size
+        post = model_of_size(prob, args.size)
         n_par = sum(p.numel() for p in post.parameters())
         t0 = time.time()
-        post.fit(n_train=args.n_train, steps=args.steps, seed=args.seed,
+        post.fit(n_train=args.n_train, steps=args.steps, seed=args.seed, token_dropout=args.token_dropout,
                  verbose=False, device=args.device)
         t_train_amx = time.time() - t0
         t0 = time.time()

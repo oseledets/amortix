@@ -17,6 +17,15 @@ amortized simulation-based inference shines most.
 
 ---
 
+## Technical report
+
+The full technical report --- architecture, evaluation methodology, the
+14-system benchmark suite with validated reference posteriors, and measured
+costs --- is in the repository:
+**[report/techreport.pdf](report/techreport.pdf)** (source: `report/techreport.tex`).
+
+---
+
 ## Setup
 
 Reproducible environment via [uv](https://docs.astral.sh/uv/) (Python pinned to

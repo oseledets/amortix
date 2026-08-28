@@ -44,6 +44,9 @@ def main():
     ap.add_argument("--n_test", type=int, default=100)
     ap.add_argument("--n_draw", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--arms", type=str, default="amortix,npe,fmpe")
+    ap.add_argument("--size", type=str, default="small")
+    ap.add_argument("--token_dropout", type=float, default=0.0)
     ap.add_argument("--device", type=str, default="cpu",
                     choices=["cpu", "cuda", "auto"])
     ap.add_argument("--quick", action="store_true")
@@ -114,10 +117,11 @@ def main():
 
     # ---- amortix ---------------------------------------------------------------
     torch.manual_seed(args.seed)
-    post = FlowPosterior(prob)
+    from amortix.evaluation import model_of_size
+    post = model_of_size(prob, args.size)
     n_par = sum(p.numel() for p in post.parameters())
     t0 = time.time()
-    post.fit(n_train=args.n_train, steps=args.steps, seed=args.seed,
+    post.fit(n_train=args.n_train, steps=args.steps, seed=args.seed, token_dropout=args.token_dropout,
              verbose=False, device=args.device)
     t_train = time.time() - t0
     t0 = time.time()
@@ -132,41 +136,42 @@ def main():
     report["amortix"] = dict(params=n_par, train_s=t_train,
                              inf_ms_per_ds=1e3 * t_inf / args.n_test, **res)
 
-    # ---- sbi arms on raw values ------------------------------------------------
-    import sbi
-    import sbi.inference as sbi_inf
-    from sbi.utils import BoxUniform as SbiBox
+    if {"npe", "fmpe"} & set(getattr(args, "arms", "npe").split(",")):
+        # ---- sbi arms on raw values ------------------------------------------------
+        import sbi
+        import sbi.inference as sbi_inf
+        from sbi.utils import BoxUniform as SbiBox
 
-    x_idx = idx[idx > 0]
-    xt_test = traj[:, x_idx, 0].float().to(args.device)
-    for method in ["NPE", "FMPE"]:
-        sbi_prior = SbiBox(low=prob.prior.low.float(),
-                           high=prob.prior.high.float(), device=args.device)
-        gen2 = torch.Generator().manual_seed(args.seed + 1)
-        theta = prob.prior.sample(args.n_train, gen2)
-        x_tr = prob.simulate_paths(theta, gen2)[:, x_idx, 0].contiguous()
-        t0 = time.time()
-        inf = getattr(sbi_inf, method)(prior=sbi_prior, device=args.device)
-        de = inf.append_simulations(theta.float(), x_tr.float()) \
-                .train(show_train_summary=False)
-        arm_post = inf.build_posterior(de)
-        t_train = time.time() - t0
-        t0 = time.time()
-        smp = np.stack([
-            arm_post.sample((args.n_draw,), x=xt_test[i],
-                            show_progress_bars=False).cpu().numpy()
-            for i in range(args.n_test)])
-        t_inf = time.time() - t0
-        tag = method.lower()
-        if dump:
-            np.savez(f"{dump}/ou_{tag}.npz", samples=smp)
-        res = score(smp, exact, names)
-        print(f"[sbi {sbi.__version__} {tag}] train {t_train:.0f}s, "
-              f"inference {1e3 * t_inf / args.n_test:.0f} ms/dataset",
-              flush=True)
-        fmt(tag, res, names)
-        report[tag] = dict(sbi_version=sbi.__version__, train_s=t_train,
-                           inf_ms_per_ds=1e3 * t_inf / args.n_test, **res)
+        x_idx = idx[idx > 0]
+        xt_test = traj[:, x_idx, 0].float().to(args.device)
+        for method in ["NPE", "FMPE"]:
+            sbi_prior = SbiBox(low=prob.prior.low.float(),
+                               high=prob.prior.high.float(), device=args.device)
+            gen2 = torch.Generator().manual_seed(args.seed + 1)
+            theta = prob.prior.sample(args.n_train, gen2)
+            x_tr = prob.simulate_paths(theta, gen2)[:, x_idx, 0].contiguous()
+            t0 = time.time()
+            inf = getattr(sbi_inf, method)(prior=sbi_prior, device=args.device)
+            de = inf.append_simulations(theta.float(), x_tr.float()) \
+                    .train(show_train_summary=False)
+            arm_post = inf.build_posterior(de)
+            t_train = time.time() - t0
+            t0 = time.time()
+            smp = np.stack([
+                arm_post.sample((args.n_draw,), x=xt_test[i],
+                                show_progress_bars=False).cpu().numpy()
+                for i in range(args.n_test)])
+            t_inf = time.time() - t0
+            tag = method.lower()
+            if dump:
+                np.savez(f"{dump}/ou_{tag}.npz", samples=smp)
+            res = score(smp, exact, names)
+            print(f"[sbi {sbi.__version__} {tag}] train {t_train:.0f}s, "
+                  f"inference {1e3 * t_inf / args.n_test:.0f} ms/dataset",
+                  flush=True)
+            fmt(tag, res, names)
+            report[tag] = dict(sbi_version=sbi.__version__, train_s=t_train,
+                               inf_ms_per_ds=1e3 * t_inf / args.n_test, **res)
 
     if args.save:
         with open(args.save, "w") as f:

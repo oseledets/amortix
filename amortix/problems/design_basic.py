@@ -285,3 +285,224 @@ class LinGaussDesign(DesignProblem):
                 m[:, i] = truncnorm.rvs(a_, b_, loc=mean, scale=sd[i],
                                         random_state=rng)
         return torch.from_numpy(m).float()
+
+class DoubleWellDesign(DesignProblem):
+    """dX = (theta1 X - theta2 X^3) dt + sigma dW, arbitrary observation times.
+
+    Reference likelihood: exact density transport of the generative Euler
+    chain (amortix.transfer) -- a banded transition matrix per step, exact
+    conditioning at observed points. No latent variables, no bridges.
+    """
+
+    markov_observed = True
+
+    def __init__(self):
+        self.prior = BoxUniform(low=[0.5, 0.5, 0.4], high=[3.0, 3.0, 1.2],
+                                names=["theta1", "theta2", "sigma"])
+        self.observer = DesignObserver(dt_sim=0.01, n_steps=1000, k_max=128)
+        self.k_min = 4
+
+    def trajectories(self, m, generator=None):
+        B = m.shape[0]
+        t1, t2, sg = m[:, 0], m[:, 1], m[:, 2]
+        dt = self.observer.dt_sim
+        x = torch.ones(B)
+        out = torch.zeros(B, self.observer.n_steps + 1, 1)
+        out[:, 0, 0] = x
+        sq = dt ** 0.5
+        for i in range(self.observer.n_steps):
+            x = x + (t1 * x - t2 * x ** 3) * dt                 + sg * sq * torch.randn(B, generator=generator)
+            out[:, i + 1, 0] = x
+        return out
+
+
+def dw_logpost_factory(prob, traj_i, tidx, n_part=256):
+    """Unbiased bridge likelihood for the double well (amortix.bridgelik).
+
+    Grid-free, for the reason given in poly_logpost_factory: a state-space
+    grid makes the reference's accuracy a tuning parameter, and a reference
+    the model can out-resolve is worse than useless -- it turns improvement
+    into apparent degradation.
+    """
+    from ..bridgelik import gap_loglik
+    x = np.asarray(traj_i, dtype=np.float64).reshape(-1, 1)
+    idx = np.unique(np.concatenate([[0], np.asarray(tidx, dtype=np.int64)]))
+    gaps = np.diff(idx)
+    lo = prob.prior.low.numpy().astype(np.float64)
+    hi = prob.prior.high.numpy().astype(np.float64)
+
+    def lp(m):
+        if np.any(m <= lo) or np.any(m >= hi):
+            return -np.inf
+        t1, t2, sg = (float(v) for v in m)
+        rng = np.random.default_rng(0)
+        drift = lambda X: (t1 * X[:, 0] - t2 * X[:, 0] ** 3)[:, None]
+        diff = lambda X: np.full_like(X, sg)
+        ll = 0.0
+        for k, g in enumerate(gaps):
+            v = gap_loglik(x[idx[k]], x[idx[k + 1]], int(g), drift, diff,
+                           prob.observer.dt_sim, n_part, rng)
+            if not np.isfinite(v):
+                return -np.inf
+            ll += v
+        return ll
+
+    return lp
+
+
+class PolyDriftDesign(DesignProblem):
+    """dX = (c0 + c1 X + c2 X^2 + c3 X^3) dt + sigma dW, observed anywhere.
+
+    Same transport reference as the double well (amortix.transfer) -- the
+    drift is a different lambda, nothing else changes.
+    """
+
+    markov_observed = True
+
+    def __init__(self):
+        self.prior = BoxUniform(low=[-0.5, -2.0, -0.5, -1.0, 0.3],
+                                high=[0.5, 0.0, 0.5, -0.1, 0.8],
+                                names=["c0", "c1", "c2", "c3", "sigma"])
+        self.observer = DesignObserver(dt_sim=0.01, n_steps=1000, k_max=128)
+        self.k_min = 4
+
+    def trajectories(self, m, generator=None):
+        B = m.shape[0]
+        c0, c1, c2, c3, sg = (m[:, i] for i in range(5))
+        dt = self.observer.dt_sim
+        x = torch.zeros(B)
+        out = torch.zeros(B, self.observer.n_steps + 1, 1)
+        sq = dt ** 0.5
+        for i in range(self.observer.n_steps):
+            f = c0 + c1 * x + c2 * x ** 2 + c3 * x ** 3
+            x = (x + f * dt + sg * sq * torch.randn(B, generator=generator)).clamp(-8, 8)
+            out[:, i + 1, 0] = x
+        return out
+
+
+def poly_logpost_factory(prob, traj_i, tidx, n_part=256):
+    """Unbiased bridge likelihood for the polynomial-drift SDE.
+
+    Uses the same grid-free estimator as every other diffusion in the suite
+    (amortix.bridgelik). The earlier density-transport version is retired: its
+    accuracy is set by a state-space grid, and on this system the affordable
+    grid put only ~150 cells across the region the state actually visits,
+    which biases the reference the model is scored against -- the failure mode
+    where a more accurate model reads as worse because it has moved away from
+    a mis-stated target.
+    """
+    from ..bridgelik import path_loglik_factory
+    x = np.asarray(traj_i, dtype=np.float64).reshape(-1, 1)
+    idx = np.unique(np.concatenate([[0], np.asarray(tidx, dtype=np.int64)]))
+
+    def drift_of(m):
+        c0, c1, c2, c3, sg = (float(v) for v in m)
+        def f(X):
+            g = X[:, 0]
+            return (c0 + c1 * g + c2 * g ** 2 + c3 * g ** 3)[:, None]
+        return f
+
+    def make(m):
+        sg = float(m[-1])
+        return lambda X: np.full_like(X, sg)
+
+    lo = prob.prior.low.numpy().astype(np.float64)
+    hi = prob.prior.high.numpy().astype(np.float64)
+    from ..bridgelik import gap_loglik
+    gaps = np.diff(idx)
+
+    def lp(m):
+        if np.any(m <= lo) or np.any(m >= hi):
+            return -np.inf
+        rng = np.random.default_rng(0)
+        drift = drift_of(m); diff = make(m)
+        ll = 0.0
+        for k, g in enumerate(gaps):
+            v = gap_loglik(x[idx[k]], x[idx[k + 1]], int(g), drift, diff,
+                           prob.observer.dt_sim, n_part, rng)
+            if not np.isfinite(v):
+                return -np.inf
+            ll += v
+        return ll
+
+    return lp
+
+
+class LotkaVolterraDesign(DesignProblem):
+    """Stochastic Lotka--Volterra, both species observed at arbitrary times.
+
+    Multiplicative noise on each species. The reference likelihood is the
+    unbiased bridge estimate of amortix.bridgelik inside adaptive tempered
+    SMC (amortix.smc); the density-transport reference this replaced made
+    grid resolution a tuning parameter of the reference itself.
+    """
+
+    markov_observed = True
+    S1 = S2 = 0.05
+
+    def __init__(self):
+        self.prior = BoxUniform(low=[0.8, 0.4, 0.4, 0.8],
+                                high=[1.5, 1.2, 1.2, 1.5],
+                                names=["alpha", "beta", "delta", "gamma"])
+        self.observer = DesignObserver(dt_sim=0.01, n_steps=600, k_max=128,
+                                       n_channels=2)
+        self.k_min = 4
+
+    def trajectories(self, m, generator=None):
+        B = m.shape[0]
+        a, b, d_, g = (m[:, i] for i in range(4))
+        dt = self.observer.dt_sim
+        x = torch.ones(B); y = torch.ones(B)
+        out = torch.zeros(B, self.observer.n_steps + 1, 2)
+        out[:, 0, 0] = x; out[:, 0, 1] = y
+        sq = dt ** 0.5
+        for i in range(self.observer.n_steps):
+            xc = x.clamp_min(1e-6); yc = y.clamp_min(1e-6)
+            x = (x + (a * xc - b * xc * yc) * dt
+                 + self.S1 * xc * sq * torch.randn(B, generator=generator)).clamp_min(1e-6)
+            y = (y + (d_ * xc * yc - g * yc) * dt
+                 + self.S2 * yc * sq * torch.randn(B, generator=generator)).clamp_min(1e-6)
+            out[:, i + 1, 0] = x; out[:, i + 1, 1] = y
+        return out
+
+
+def lv_logpost_factory(prob, traj_i, tidx, cidx=None, n_part=512):
+    """Unbiased bridge likelihood for Lotka--Volterra, conditioning on exactly
+    what the network is shown.
+
+    Each design point observes ONE species, so the reference must pin one
+    coordinate and leave the other latent -- the partially observed case of
+    amortix.bridgelik. A first version conditioned on both species at every
+    point; its posterior was four times narrower than the network could
+    possibly match, and the resulting score (FID 57--152 against a floor of
+    0.004) measured the mismatch, not the model.
+    """
+    from ..bridgelik import gap_loglik_partial
+    xy = np.asarray(traj_i, dtype=np.float64)
+    t = np.asarray(tidx, dtype=np.int64)
+    c = (np.zeros_like(t) if cidx is None else np.asarray(cidx, dtype=np.int64))
+    order = np.argsort(t)
+    t, c = t[order], c[order]
+    lo = prob.prior.low.numpy().astype(np.float64)
+    hi = prob.prior.high.numpy().astype(np.float64)
+    S1, S2 = prob.S1, prob.S2
+    y_obs = xy[t, c]
+    dt = prob.observer.dt_sim
+
+    def lp(m):
+        if np.any(m <= lo) or np.any(m >= hi):
+            return -np.inf
+        a, b, d_, g = (float(v) for v in m)
+
+        def drift(X):
+            x = np.maximum(X[:, 0], 1e-6); y = np.maximum(X[:, 1], 1e-6)
+            return np.stack([a * x - b * x * y, d_ * x * y - g * y], 1)
+
+        def diff(X):
+            return np.stack([S1 * np.maximum(X[:, 0], 1e-6),
+                             S2 * np.maximum(X[:, 1], 1e-6)], 1)
+
+        return gap_loglik_partial(xy[0], t, c, y_obs, drift, diff, dt,
+                                  n_part, np.random.default_rng(0))
+
+    return lp

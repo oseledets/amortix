@@ -11,3 +11,9 @@ results/*.log
 sbi-logs/
 .DS_Store
 results/
+report/*.log
+report/*.out
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/main.pdf

@@ -274,7 +274,8 @@ def _logpost(problem, name, raw_i, tidx, cidx, tokens_i):
     """The per-system likelihood, assembled once. Adding a system means adding
     a branch here, not a new script."""
     from .problems.design_zoo import (merton_logpost_factory,
-                                      pk_logpost_factory, kpp_logpost_factory)
+                                      pk_logpost_factory, kpp_logpost_factory,
+                                      fhn_logpost_factory)
     from .problems.design_basic import ou_logpost_factory, cir_logpost_factory
 
     y = tokens_i[:, 1].numpy().astype(np.float64)
@@ -293,6 +294,32 @@ def _logpost(problem, name, raw_i, tidx, cidx, tokens_i):
                                   logsd=problem.LOGSD), lo, hi
     if name == "kpp":
         return kpp_logpost_factory(problem, tidx, cidx, y), lo, hi
+    if name == "fhn":
+        return fhn_logpost_factory(problem, tidx.numpy(), y), lo, hi
+    if name == "lv":
+        from .problems.design_basic import lv_logpost_factory
+        return lv_logpost_factory(problem, raw_i.numpy(), tidx.numpy(),
+                                  cidx.numpy()), lo, hi
+    if name == "heston":
+        # amortix.hestonlik, not a continuous-time transition: the simulator
+        # integrates the variance by clamped Euler, and past the Feller line
+        # the two processes are not the same model (see that module).
+        from .hestonlik import heston_logpost_factory
+        return heston_logpost_factory(problem, tidx.numpy(), y), lo, hi
+    if name == "hodgkin_huxley":
+        from .problems.design_zoo import hh_logpost_factory
+        return hh_logpost_factory(problem, tidx.numpy(), y), lo, hi
+    if name == "seir":
+        from .problems.design_zoo import seir_logpost_factory
+        return seir_logpost_factory(problem, tidx.numpy(), cidx.numpy(), y), lo, hi
+    if name == "poly":
+        from .problems.design_basic import poly_logpost_factory
+        return poly_logpost_factory(problem, raw_i[:, 0].numpy(),
+                                    tidx.numpy()), lo, hi
+    if name == "dw":
+        from .problems.design_basic import dw_logpost_factory
+        return dw_logpost_factory(problem, raw_i[:, 0].numpy(),
+                                  tidx.numpy()), lo, hi
     if name == "cir":
         return cir_logpost_factory(problem, raw_i[:, 0].numpy(),
                                    tidx.numpy()), lo, hi
@@ -322,7 +349,12 @@ def problem_for(name: str):
     problem object."""
     from .problems.design_zoo import DESIGN_ZOO
     from .problems.design_basic import GBMDesign, OUDesign, CIRDesign
-    cls = ({"gbm_rd": GBMDesign, "ou_rd": OUDesign, "cir": CIRDesign}.get(name)
+    from .problems.design_basic import (DoubleWellDesign, PolyDriftDesign,
+                                        LotkaVolterraDesign, LinGaussDesign)
+    cls = ({"gbm_rd": GBMDesign, "ou_rd": OUDesign, "cir": CIRDesign,
+            "dw": DoubleWellDesign, "poly": PolyDriftDesign,
+            "lv": LotkaVolterraDesign,
+            "lingauss": LinGaussDesign}.get(name)
            or DESIGN_ZOO[name])
     return cls()
 
@@ -357,9 +389,13 @@ def build_eval_set(problem, name, K, n_sets=32, n_chain=200000, seed=4243,
     designs = []
     for i in range(n_sets):
         tidx, cidx = problem.sample_design(gen, K)
-        if name != "kpp":
+        if problem.observer.n_channels == 1:
             tidx = torch.unique(tidx)
             cidx = torch.zeros_like(tidx)
+        # Multi-channel systems keep the (time, channel) pairs their design law
+        # produced. Forcing channel 0 here once built a Lotka--Volterra set
+        # that never observed the predator while the network had trained on
+        # both, so the evaluation measured a design the model never sees.
         tk = problem.tokens_for(raw[i], tidx, cidx, gen)
         tokens[i, :tk.shape[0]] = tk
         mask[i, :tk.shape[0]] = True

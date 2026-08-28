@@ -82,6 +82,9 @@ def main():
     ap.add_argument("--n_draw", type=int, default=2000)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--arms", type=str, default="amortix,npe,fmpe")
+    ap.add_argument("--size", type=str, default="small")
+    ap.add_argument("--token_dropout", type=float, default=0.0)
     ap.add_argument("--device", type=str, default="cpu",
                     choices=["cpu", "cuda", "auto"])
     ap.add_argument("--quick", action="store_true")
@@ -149,10 +152,11 @@ def main():
         return tokens, torch.ones(B, K_OBS, dtype=torch.bool)
 
     torch.manual_seed(args.seed)
-    post = FlowPosterior(prob)
+    from amortix.evaluation import model_of_size
+    post = model_of_size(prob, args.size)
     n_par = sum(p.numel() for p in post.parameters())
     t0 = time.time()
-    post.fit(n_train=args.n_train, steps=args.steps, seed=args.seed,
+    post.fit(n_train=args.n_train, steps=args.steps, seed=args.seed, token_dropout=args.token_dropout,
              verbose=False, device=args.device, retokenize=retok_fixed)
     t_train = time.time() - t0
     t0 = time.time()
@@ -167,44 +171,45 @@ def main():
     report["amortix"] = dict(params=n_par, train_s=t_train,
                              inf_ms_per_ds=1e3 * t_inf / args.n_test, **res)
 
-    # ---- sbi arms on the 40 observed values -------------------------------------
-    import sbi
-    import sbi.inference as sbi_inf
-    from sbi.utils import BoxUniform as SbiBox
+    if {"npe", "fmpe"} & set(getattr(args, "arms", "npe").split(",")):
+        # ---- sbi arms on the 40 observed values -------------------------------------
+        import sbi
+        import sbi.inference as sbi_inf
+        from sbi.utils import BoxUniform as SbiBox
 
-    xt_test = y_test.float().to(args.device)
-    for method in ["NPE", "FMPE"]:
-        sbi_prior = SbiBox(low=prob.prior.low.float(),
-                           high=prob.prior.high.float(), device=args.device)
-        gen2 = torch.Generator().manual_seed(args.seed + 1)
-        theta = prob.prior.sample(args.n_train, gen2)
-        raw_tr = prob.trajectories(theta)
-        x_tr = raw_tr[:, tidx, :].gather(
-            2, cidx.view(1, -1, 1).expand(args.n_train, -1, 1)).squeeze(-1)
-        x_tr = x_tr + prob.obs_noise * torch.randn(x_tr.shape,
-                                                   generator=gen2)
-        t0 = time.time()
-        inf = getattr(sbi_inf, method)(prior=sbi_prior, device=args.device)
-        de = inf.append_simulations(theta.float(), x_tr.float()) \
-                .train(show_train_summary=False)
-        arm_post = inf.build_posterior(de)
-        t_train = time.time() - t0
-        t0 = time.time()
-        smp = np.stack([
-            arm_post.sample((args.n_draw,), x=xt_test[i],
-                            show_progress_bars=False).cpu().numpy()
-            for i in range(args.n_test)])
-        t_inf = time.time() - t0
-        tag = method.lower()
-        if dump:
-            np.savez(f"{dump}/kpp_{tag}.npz", samples=smp)
-        res = score(smp, exact, names)
-        print(f"[sbi {sbi.__version__} {tag}] train {t_train:.0f}s, "
-              f"inference {1e3 * t_inf / args.n_test:.0f} ms/dataset",
-              flush=True)
-        fmt(tag, res, names)
-        report[tag] = dict(sbi_version=sbi.__version__, train_s=t_train,
-                           inf_ms_per_ds=1e3 * t_inf / args.n_test, **res)
+        xt_test = y_test.float().to(args.device)
+        for method in ["NPE", "FMPE"]:
+            sbi_prior = SbiBox(low=prob.prior.low.float(),
+                               high=prob.prior.high.float(), device=args.device)
+            gen2 = torch.Generator().manual_seed(args.seed + 1)
+            theta = prob.prior.sample(args.n_train, gen2)
+            raw_tr = prob.trajectories(theta)
+            x_tr = raw_tr[:, tidx, :].gather(
+                2, cidx.view(1, -1, 1).expand(args.n_train, -1, 1)).squeeze(-1)
+            x_tr = x_tr + prob.obs_noise * torch.randn(x_tr.shape,
+                                                       generator=gen2)
+            t0 = time.time()
+            inf = getattr(sbi_inf, method)(prior=sbi_prior, device=args.device)
+            de = inf.append_simulations(theta.float(), x_tr.float()) \
+                    .train(show_train_summary=False)
+            arm_post = inf.build_posterior(de)
+            t_train = time.time() - t0
+            t0 = time.time()
+            smp = np.stack([
+                arm_post.sample((args.n_draw,), x=xt_test[i],
+                                show_progress_bars=False).cpu().numpy()
+                for i in range(args.n_test)])
+            t_inf = time.time() - t0
+            tag = method.lower()
+            if dump:
+                np.savez(f"{dump}/kpp_{tag}.npz", samples=smp)
+            res = score(smp, exact, names)
+            print(f"[sbi {sbi.__version__} {tag}] train {t_train:.0f}s, "
+                  f"inference {1e3 * t_inf / args.n_test:.0f} ms/dataset",
+                  flush=True)
+            fmt(tag, res, names)
+            report[tag] = dict(sbi_version=sbi.__version__, train_s=t_train,
+                               inf_ms_per_ds=1e3 * t_inf / args.n_test, **res)
 
     if args.save:
         with open(args.save, "w") as f:
