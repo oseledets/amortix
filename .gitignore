@@ -14,3 +14,4 @@ report/*.out
 report/blocks*
 results/
 sbi-logs/
+docs/_*.pt

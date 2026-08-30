@@ -177,6 +177,36 @@ class DesignProblem:
         return y
 
 
+def tokens_from_data(prob: DesignProblem, times, values, channels=None):
+    """Token tensor [K, 6] for measured data at arbitrary timestamps.
+
+    times: array-like, in the same time units as the simulator grid
+    (the observer horizon is dt_sim * n_steps); values: raw signal
+    units; channels: integer channel per reading (default all 0).
+    No noise is added -- the data are already measured. Rows are
+    returned time-sorted, ready for FlowPosterior.sample.
+    """
+    obs = prob.observer
+    t = torch.as_tensor(np.asarray(times), dtype=torch.float32).reshape(-1)
+    y = torch.as_tensor(np.asarray(values), dtype=torch.float32).reshape(-1)
+    if t.numel() != y.numel():
+        raise ValueError(f"times ({t.numel()}) and values ({y.numel()}) "
+                         f"must have the same length")
+    if channels is None:
+        c = torch.zeros(t.numel())
+    else:
+        c = torch.as_tensor(np.asarray(channels)).reshape(-1).float()
+        if c.numel() != t.numel():
+            raise ValueError("channels must have one entry per reading")
+    order = torch.argsort(t, stable=True)
+    t, y, c = t[order], y[order], c[order]
+    # same feature layout as DesignProblem.tokens_for:
+    # [t/horizon, y, 0, 0, log(K)/log(k_max), channel]
+    z = torch.zeros_like(y)
+    kf = torch.full_like(y, math.log(t.numel()) / math.log(obs.k_max))
+    return torch.stack([t / obs.horizon, y, z, z, kf, c], dim=-1)
+
+
 def sbc_design(post, prob: DesignProblem, n_sims: int = 400,
                n_post: int = 200, seed: int = 0, k_fixed: int = None):
     """SBC over random designs (mixed by default, or a fixed-K bucket).

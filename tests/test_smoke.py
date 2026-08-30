@@ -388,6 +388,31 @@ def test_design_zoo_end_to_end():
         assert torch.isfinite(out).all(), name
 
 
+def test_tokens_from_data_matches_tokens_for():
+    """tokens_from_data on grid-aligned readings must reproduce tokens_for.
+
+    GBMDesign has no observation noise, so the two tokenizers see identical
+    values; the resulting [K, 6] tensors must agree feature by feature.
+    """
+    from amortix import tokens_from_data
+    from amortix.problems.design_basic import GBMDesign
+
+    prob = GBMDesign()
+    gen = torch.Generator().manual_seed(4)
+    m = prob.prior.sample(1, gen)
+    raw = prob.trajectories(m, gen)
+    tidx, cidx = prob.sample_design(gen, 17)
+    ref = prob.tokens_for(raw[0], tidx, cidx, gen)
+
+    times = tidx.float() * prob.observer.dt_sim
+    values = raw[0, tidx, 0]
+    tok = tokens_from_data(prob, times, values, channels=cidx)
+    assert tok.shape == ref.shape and tok.dtype == torch.float32
+    assert torch.allclose(tok, ref)
+    # channel default: all zeros, matching the single-channel design draw
+    assert torch.allclose(tokens_from_data(prob, times, values), ref)
+
+
 def test_design_sbc_runs():
     """sbc_design produces finite p-values on a tiny run."""
     import numpy as np
