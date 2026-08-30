@@ -172,8 +172,9 @@ The named sizes are (width, depth) presets of the encoder and velocity field:
 
 At the budget above, `tiny` fits in a few minutes on a laptop CPU; the technical report's numbers
 use `big` at forty times this budget, about an hour on one GPU. `verbose=True` prints the running
-flow-matching loss; it converges to a positive plateau, not to zero — the loss estimates a squared
-distance whose minimum is the intrinsic variance of the velocity target.
+flow-matching loss; it converges to a positive plateau, because the loss estimates a squared
+distance whose minimum is the intrinsic variance of the velocity target, and that minimum is
+not zero.
 
 **Step 4 — inference, at any design.** The trained network answers for any number of
 observation points at arbitrary times; each query is one batched ODE solve:

@@ -3,8 +3,8 @@
 The whole interface is in this file: the problem is a prior box, a simulator,
 and an observation grid, written out below. A tiny design-amortized posterior
 trains in minutes on a laptop CPU; its samples for one observation set are
-then compared with the exact conjugate posterior on the same points, which is
-the referee (imported from the package, not learned).
+then compared with the exact conjugate posterior on the same points, which
+serves as the referee and is imported from the package.
 
 Run:  python examples/gallery/01_quickstart_gbm.py
       --png          also render docs/media/quickstart_gbm.png

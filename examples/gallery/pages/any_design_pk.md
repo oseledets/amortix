@@ -1,6 +1,6 @@
 # One trained network answers every blood-draw design from 3 to 64 points
 
-Pharmacokinetic blood draws are the archetype of irregular observation designs: a concentration curve sampled at whatever times the protocol produced, in whatever number. The problem — an oral one-compartment Bateman curve with log-normal assay noise — is defined inline in the example script as a class of about 20 lines, and a `small` design-amortized posterior (width 64, three transformer blocks) is trained on it once, with 20,000 simulated records and 6,000 optimizer steps. The same trained network is then queried on one fixed record at $K = 6$, 20 and 50 draws: the posterior standard deviation of the volume $V$ falls 11.7 → 4.7 → 2.2 and that of the elimination rate $k_e$ falls 0.0094 → 0.0038 → 0.0026, each design size a fresh query with its own token set.
+Pharmacokinetic blood draws are the archetype of irregular observation designs: a concentration curve sampled at whatever times the protocol produced, in whatever number. The example script defines the problem inline — an oral one-compartment Bateman curve with log-normal assay noise, a class of about 20 lines — and trains a `small` design-amortized posterior (width 64, three transformer blocks) once, on 20,000 simulated records and 6,000 optimizer steps. The same network then answers one fixed record at $K = 6$, 20 and 50 draws: the posterior standard deviation of the volume $V$ falls 11.7 → 4.7 → 2.2 and that of the elimination rate $k_e$ falls 0.0094 → 0.0038 → 0.0026; each design size is one fresh query with its own token set.
 
 <img src="../../../docs/media/pk_design.gif" width="100%">
 
@@ -14,9 +14,9 @@ an oral one-compartment model: the drug is absorbed from the gut at rate $k_a$, 
 
 An observation set (a *design*) is $K$ grid times drawn uniformly at random and time-sorted — the blood draws — with the class declaring the admissible range $3 \le K \le 64$ (`k_min`, `k_max`); this run queries $K = 6$, 20 and 50. Each assay carries multiplicative log-normal noise: the observed value is $C(t)\,e^{0.10\,z}$ with $z$ standard normal, an error of about 10%, applied by the base class whenever an observation is tokenized. The class attribute `LOGSD = 0.10` is the entire declaration of this convention.
 
-## The code, walked through
+## The code
 
-The central exhibit is the problem definition itself, complete in the script:
+The script contains the full problem definition:
 
 ```python
 class PK(DesignProblem):
@@ -77,7 +77,7 @@ gen = torch.Generator().manual_seed(11)
 perm = torch.randperm(obs.n_steps, generator=gen) + 1
 times = perm.float() * obs.dt_sim
 noise = torch.randn(obs.n_steps, generator=gen)
-y = raw[0, perm, 0] * torch.exp(prob.LOGSD * noise)   # noisy assays, once
+y = raw[0, perm, 0] * torch.exp(prob.LOGSD * noise)   # draw the assay noise once
 
 ks = [3, 4, 6, 8, 11, 15, 20, 27, 36, 48, 64]
 # per frame:
@@ -85,9 +85,9 @@ tokens = tokens_from_data(prob, times[:k], y[:k])
 d = post.sample(tokens, n=1200, seed=0)
 ```
 
-The permutation of all 500 grid times and the assay noise are drawn once, before any frame; a design of size $K$ is the first $K$ entries of that fixed noisy record, so consecutive frames differ only in how much of the same data the network is shown — a growing study, not a re-randomized one. `tokens_from_data` (in [`amortix/designs.py`](../../../amortix/designs.py)) builds the `[K, 6]` token tensor directly from raw `(times, values)` pairs at arbitrary timestamps, with no simulator in the path and no noise added — per its docstring, the data are already measured. It is the entry point a user would call on assays from an actual study, which is why the noise above is applied by hand when the record is constructed rather than at tokenization.
+The permutation of all 500 grid times and the assay noise are drawn once, before any frame; a design of size $K$ is the first $K$ entries of that fixed noisy record, so consecutive frames differ only in how much of the same data the network sees. `tokens_from_data` (in [`amortix/designs.py`](../../../amortix/designs.py)) builds the `[K, 6]` token tensor directly from raw `(times, values)` pairs at arbitrary timestamps, with no simulator in the path and no noise added — per its docstring, the data are already measured. It is the entry point a user would call on assays from an actual study, which is why the noise above is applied by hand when the record is constructed rather than at tokenization.
 
-## What comes out
+## Output
 
 The final printout of the recorded run:
 
@@ -104,16 +104,16 @@ Read the columns. The elimination rate is identified almost immediately: $\mathr
 
 *2,000 draws in the $(k_a, k_e)$ plane at $K = 6$, 20 and 50 — the same network, the same record, three designs; the black cross marks the generating parameters and each panel is annotated with $\mathrm{sd}(k_a)$. The clouds are horizontal bands: tight in $k_e$ at every size, spread across most of the prior in $k_a$ until the largest design.*
 
-The asymmetry is the physics of the model, not a defect of the network. With $k_a > k_e$ enforced by the prior boxes, the absorption term $e^{-k_a t}$ dies within the first hours and the rest of the 24-hour record is a single exponential, $\frac{D k_a}{V (k_a - k_e)}\,e^{-k_e t}$: any handful of tail points pins its decay rate ($k_e$) and its level (hence $V$). The absorption rate is written only into the rise to the peak, at $t_{\max} = \ln(k_a/k_e)/(k_a - k_e) \approx 1.33$ h for the recorded truth — the first 5.5% of the window — so a design of 6 uniformly random times places on average 0.33 points before the peak. This is what the animation shows: the posterior collapses vertically ($k_e$) within the first frames while spanning nearly the full prior in $k_a$, and contracts horizontally only once the design is dense enough to land draws on the rise.
+The asymmetry follows from the model. With $k_a > k_e$ enforced by the prior boxes, the absorption term $e^{-k_a t}$ dies within the first hours and the rest of the 24-hour record is a single exponential, $\frac{D k_a}{V (k_a - k_e)}\,e^{-k_e t}$: any handful of tail points pins its decay rate ($k_e$) and its level (hence $V$). The absorption rate is written only into the rise to the peak, at $t_{\max} = \ln(k_a/k_e)/(k_a - k_e) \approx 1.33$ h for the recorded truth — the first 5.5% of the window — so a design of 6 uniformly random times places on average 0.33 points before the peak. This is what the animation shows: the posterior collapses vertically ($k_e$) within the first frames while spanning nearly the full prior in $k_a$, and contracts horizontally only once the design is dense enough to land draws on the rise.
 
 The $K = 20$ line reads `truth in 90% intervals: False`, as recorded. The flag requires all three parameters to fall inside their 90% intervals simultaneously, and a 90% interval excludes the truth in a fraction of instances by construction — for independent intervals with exact 90% coverage the joint event would hold in about 73% of instances ($0.9^3$). One excluded design among the three queried on this record is consistent with that arithmetic; the printout does not record which parameter fell outside. The instance is fixed by `manual_seed(7)`, but the trained network — and with it the printed standard deviations and the flags — varies slightly between platforms because training is stochastic, which is why the test below asserts an inequality rather than these exact values.
 
-## Why believe it
+## Verification
 
 * [`tests/test_examples.py`](../../../tests/test_examples.py)`::test_pk_design_size_monotonicity` pins a shrunk version of this script — the `pico` model (width 8, two blocks), `n_train=1500`, 400 optimizer steps, the same seed-7 record — samples at $K = 6$ and $K = 50$, and asserts `(sd[50] < sd[6]).any()`: densifying the design must strictly tighten the posterior in at least one parameter. The test imports `PK` from this example file itself (`_example_module("02_any_design_pk")`), so the problem it pins is the class shown above.
 * No external posterior reference exists for this example; the checks available here are recovery of the generating parameters on a seed-fixed record and monotone shrinkage with design size. A direct reference is possible in principle — the likelihood of an assay set is a product of log-normal densities around the deterministic Bateman curve — and it would enter through `amortix.evaluation.build_eval_set`, which draws two independent reference posteriors per instance and cross-checks them before the set is saved; [`exact_reference_cir.md`](exact_reference_cir.md) runs that instrument end to end.
 
-## Run it
+## Running the example
 
 ```bash
 python examples/gallery/02_any_design_pk.py                 # train + query at K = 6, 20, 50

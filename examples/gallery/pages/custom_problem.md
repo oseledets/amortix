@@ -1,10 +1,10 @@
 # A prior and a simulator suffice for amortized inference in a user-defined system
 
-A damped harmonic oscillator is added as a new inference problem by subclassing `DesignProblem` with a prior box and a `trajectories()` simulator — about 25 lines in total, all shown below. Random-design training, tokenization with observation noise, and inference at any number of observation points are inherited from the base class unchanged. Trained at the same budget as the GBM quickstart, the posterior concentrates at the generating $(\omega, \gamma)$ from 12 noisy observations of one trajectory.
+Subclassing `DesignProblem` with a prior box and a `trajectories()` simulator adds a damped harmonic oscillator as a new inference problem — about 25 lines in total, all shown below. Random-design training, tokenization with observation noise, and inference at any number of observation points are inherited from the base class unchanged. At the same training budget as the GBM quickstart, the posterior concentrates at the generating $(\omega, \gamma)$ from 12 noisy observations of one trajectory.
 
 <img src="../../../docs/media/custom_oscillator.png" width="100%">
 
-*Left: one simulated trajectory (grey) and its $K = 12$ observed points (blue), each carrying additive Gaussian noise of standard deviation 0.05. Right: 2,000 draws from the amortized posterior in the $(\omega, \gamma)$ plane; the black cross marks the generating parameters. The thin band of draws stretching toward large $\omega$ consists of high-frequency aliases, discussed below.*
+*Left: one simulated trajectory (grey) and its $K = 12$ observed points (blue), each carrying additive Gaussian noise of standard deviation 0.05. Right: 2,000 draws from the amortized posterior in the $(\omega, \gamma)$ plane; the black cross marks the generating parameters. The thin band of draws stretching toward large $\omega$ consists of high-frequency aliases; see below.*
 
 ## The problem
 
@@ -14,7 +14,7 @@ with a uniform box prior $\omega \in [0.5,\ 3.0]$ (frequency), $\gamma \in [0.05
 
 An observation set (a *design*) is $K$ grid times drawn uniformly at random and time-sorted — $K = 12$ in this run, with the class declaring the admissible range $4 \le K \le 64$ (`k_min`, `k_max`). Each observed value is $x(t)$ plus additive Gaussian noise of standard deviation `obs_noise = 0.05`, applied by the base class at tokenization time.
 
-## The code, walked through
+## The code
 
 The entire problem definition:
 
@@ -67,7 +67,7 @@ d = post.sample(tokens, n=2000)
 
 `tokens_for` applies the observation noise and packs the 12 points into the same six-feature token layout used during training; `post.sample` returns 2,000 posterior draws conditioned on them. The design size is chosen at query time — the same trained network answers any $K$ in $[4, 64]$.
 
-## What comes out
+## Output
 
 The final printout of the recorded run:
 
@@ -78,17 +78,17 @@ posterior mean     : [0.5780892372131348, 0.08795817196369171]  sd [0.3261196613
 
 The damping is recovered tightly: the posterior standard deviation of $\gamma$ is 0.023, about 5% of the prior range 0.45. For $\omega$, the bulk of the draws sits at the truth (0.51, near the lower prior edge; see the right panel), while the standard deviation of 0.33 is inflated by the thin tail of draws reaching toward $\omega = 3$, and the posterior mean of 0.58 is pulled above the bulk by the same tail.
 
-That tail is a property of the inference problem at this design size. Twelve noisy samples of a slow, damped oscillation are also consistent with much faster oscillations that pass near the same points — the aliasing familiar from sparse sampling — so a posterior that excluded them would claim more than the data contain. Adding observation points removes the tail: with a denser design the aliases no longer fit through the observed values, and the same network, queried at larger $K$, drops them.
+That tail is a property of the inference problem at this design size. Twelve noisy samples of a slow, damped oscillation are also consistent with much faster oscillations that pass near the same points — the aliasing familiar from sparse sampling — so a posterior that excluded them would claim more than the data contain. Adding observation points removes the tail: with a denser design the aliases no longer fit through the observed values, and at larger $K$ the same network drops them.
 
 The run log for this example records only the printout above; the script's own estimate of the training time is a few minutes (one laptop CPU, indicative only), with the fit budget identical to the quickstart (`n_train=3000, steps=1200, batch=256`). The instance is fixed by `manual_seed(3)` and the initialization by `torch.manual_seed(0)`; the printed mean and standard deviation still vary slightly between platforms because training is stochastic, which is why the test below asserts margins rather than exact values.
 
-## Why believe it
+## Verification
 
 * [`tests/test_examples.py`](../../../tests/test_examples.py)`::test_oscillator_recovers_truth` pins a shrunk version of this script — the `pico` model, `n_train=1500`, 400 optimizer steps, the same seed-3 instance with $K = 12$ — and asserts recovery of the generating parameters: the posterior mean must lie within 0.35 of the prior range of the truth in each parameter, and the posterior standard deviation must stay below half the prior range in each parameter.
 * The test imports `DampedOscillator` from this example file itself (`_example_module("04_custom_problem")`), so the class checked in CI is the class shown above.
 * A user-defined system has no external reference — nothing outside the simulator knows its posterior, so the check available here is recovery of the generating parameters on a seed-fixed instance. When a tractable likelihood for the system can be written down, `amortix.evaluation.build_eval_set` constructs per-design reference posteriors (two independent reference draws per instance, cross-checked against each other before the set is saved), and the comparison becomes direct, as in the GBM quickstart with its closed-form reference.
 
-## Run it
+## Running the example
 
 ```bash
 python examples/gallery/04_custom_problem.py                 # train + infer; a few minutes on CPU

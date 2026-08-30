@@ -3,8 +3,8 @@
 Pharmacokinetics, written out below: an oral one-compartment Bateman curve
 with log-normal assay noise, the real-world archetype of irregular designs
 (blood draws). Train once, then query the SAME network at 6, 20, and 50
-irregular sampling times: the posterior tightens as the design densifies --
-no retraining, no fixed grid. A few minutes on GPU, longer on CPU.
+irregular sampling times: the posterior tightens as the design densifies,
+without retraining or a fixed grid. A few minutes on GPU, longer on CPU.
 
 Run:  python examples/gallery/02_any_design_pk.py
       --png          also render docs/media/pk_design.png
@@ -83,8 +83,8 @@ def render_gif(prob, post, m_true, raw, path):
 
     The permutation of sampling times and the assay noise are drawn once, so
     a design of size K is the first K entries of the same noisy record and
-    the frames differ only in how much of it the network is shown. Tokens are
-    built with tokens_from_data, the same entry point used for measured data.
+    the frames differ only in how much of it the network sees. tokens_from_data
+    builds the tokens, through the same entry point that serves measured data.
     """
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation, PillowWriter
@@ -97,7 +97,7 @@ def render_gif(prob, post, m_true, raw, path):
     perm = torch.randperm(obs.n_steps, generator=gen) + 1
     times = perm.float() * obs.dt_sim
     noise = torch.randn(obs.n_steps, generator=gen)
-    y = raw[0, perm, 0] * torch.exp(prob.LOGSD * noise)   # noisy assays, once
+    y = raw[0, perm, 0] * torch.exp(prob.LOGSD * noise)   # draw the assay noise once
 
     ks = [3, 4, 6, 8, 11, 15, 20, 27, 36, 48, 64]
     fig, (al, ar) = plt.subplots(1, 2, figsize=FIGSIZE, dpi=DPI)

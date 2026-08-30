@@ -1,6 +1,6 @@
 # The amortized posterior matches the exact GBM posterior at arbitrary observation points
 
-The whole problem definition sits in the example script — a prior box, a simulator loop, an observation grid — and a small design-amortized posterior is trained on it for 1,200 optimizer steps on a laptop CPU, then queried on one fresh observation set: 20 points of a single path, placed at uniformly random times. For geometric Brownian motion the posterior on any such point set exists in closed form, and that referee is the only piece imported from the package. The comparison is quantitative: the run below reaches a squared Fréchet distance (FID) of 0.0281 between 2,000 amortized draws and 2,000 exact draws, where two independent 2,000-draw sets from the *same* distribution already score about 0.004.
+The example script contains the whole problem definition — a prior box, a simulator loop, an observation grid. A small design-amortized posterior trains on it for 1,200 optimizer steps on a laptop CPU and then answers one fresh observation set: 20 points of a single path at uniformly random times. For geometric Brownian motion the posterior on any such point set exists in closed form, and that referee is the only piece imported from the package. The comparison is quantitative: the run below reaches a squared Fréchet distance (FID) of 0.0281 between 2,000 amortized draws and 2,000 exact draws, where two independent 2,000-draw sets from the *same* distribution already score about 0.004.
 
 <img src="../../../docs/media/quickstart_gbm.png" width="100%">
 
@@ -24,9 +24,9 @@ $$\sigma^2 = \frac{\mathrm{SS}}{\chi^2_{n-1}}, \qquad b \mid \sigma^2 \;\sim\; \
 
 then maps back $\mu = b + \sigma^2/2$ and importance-resamples the draws onto the uniform box prior in $(\mu, \sigma)$, with weights proportional to $\sigma$ inside the box and zero outside.
 
-## The code, walked through
+## The code
 
-The central exhibit is the problem definition itself, complete in the script. A `DesignProblem` subclass states the prior, the grid metadata, and a batched simulator; nothing else is declared:
+The script contains the full problem definition. A `DesignProblem` subclass states the prior, the grid metadata, and a batched simulator; nothing else is declared:
 
 ```python
 class GBM(DesignProblem):
@@ -84,7 +84,7 @@ f = fid(draws.numpy(), exact)
 
 `tokens_for` reads the raw path at the design's (time, channel) pairs, applies the problem's observation noise (none here), and normalizes times by the horizon — the same tokenization the retokenizer used in training, for a single set.
 
-The referee, `gbm_exact_from_points` (in [`amortix/problems/design_basic.py`](../../../amortix/problems/design_basic.py)), conditions on exactly the observed points (duplicate indices are merged, the $S(0)=1$ anchor is prepended). Its sufficient statistics and conjugate draw, verbatim:
+The referee, `gbm_exact_from_points` (in [`amortix/problems/design_basic.py`](../../../amortix/problems/design_basic.py)), conditions on exactly the observed points (it merges duplicate indices and prepends the $S(0)=1$ anchor). The listing below quotes its sufficient statistics and the conjugate draw:
 
 ```python
 idx = np.unique(np.concatenate([[0], np.asarray(tidx, dtype=np.int64)]))
@@ -109,7 +109,7 @@ w_all.append(sigma * np.all((d >= low) & (d <= high), axis=1))
 
 The importance correction onto the box prior is monitored: the candidate pool is grown until the effective sample size is a safe multiple of the request, and if it remains below the requested draw count the function raises instead of returning a degenerate reference.
 
-## What comes out
+## Output
 
 The training trace of the recorded run (`cfm` is the flow-matching training loss; times in parentheses are cumulative seconds on one laptop CPU, indicative only):
 
@@ -139,13 +139,13 @@ FID vs exact    : 0.0281 (estimator floor at n=2000 is ~0.004)
 
 Training takes about 25 minutes here (1499.3 s at the last logged step); sampling the 2,000 posterior draws afterwards takes milliseconds. The observation set and the reference are fixed by explicit seeds, so the true parameters and the exact posterior reproduce exactly; the trained network — and with it the posterior mean and the FID — varies slightly between platforms, which is why the test below asserts a ratio rather than this exact number.
 
-## Why believe it
+## Verification
 
 * [`tests/test_examples.py`](../../../tests/test_examples.py)`::test_gbm_beats_prior_fid` pins a shrunk version of this script — the `pico` model (width 8, two blocks), `n_train=1500`, 400 optimizer steps, the same seed-1 observation set — and requires the trained posterior's FID against the exact posterior to be at most half the FID of 2,000 prior samples against the same reference (`assert f_model <= 0.5 * f_prior`). The test imports the `GBM` class from this example file itself, so the problem it pins is the one shown above.
 * The FID estimator is positive even for two draw sets from the same distribution, at order $d/n$; at $n = 2000$ this floor is about 0.004, so the run's 0.0281 is to be read against 0.004 as the value indistinguishable from a perfect match at this draw count, and against the much larger FID of prior samples pinned by the test.
 * The reference guards its own validity: `gbm_exact_from_points` raises when the effective sample size of the importance correction stays below the requested draw count, so a degraded reference cannot silently enter the comparison.
 
-## Run it
+## Running the example
 
 ```bash
 python examples/gallery/01_quickstart_gbm.py                 # train + compare, ~25 min
