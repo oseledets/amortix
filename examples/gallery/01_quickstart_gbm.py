@@ -1,7 +1,7 @@
 """Quickstart: recover GBM parameters and check against the exact posterior.
 
 Trains a tiny design-amortized posterior for geometric Brownian motion
-(~2 minutes on a laptop CPU), then compares its samples for one observation
+(a few minutes on a laptop CPU), then compares its samples for one observation
 set against the exact conjugate posterior on the same points.
 
 Run:  python examples/gallery/01_quickstart_gbm.py

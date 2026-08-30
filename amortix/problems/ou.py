@@ -18,12 +18,12 @@ from ..sde import SDEProblem, PathObserver, Channel
 
 class OrnsteinUhlenbeck(SDEProblem):
     def __init__(self, n_paths: int = 1):
-        # Canonical (centred) OU: two parameters. mu is a pure location parameter
-        # that separates from the dynamics -- it added a third dimension without
-        # adding a question, it was where the X0 = mu leak lived, and it polluted
-        # the correlation measurement with a spurious mu-sigma pair. The
-        # substantive dependence in OU is theta-sigma: both enter the transition
-        # law through rho = exp(-theta dt) and sigma^2 (1 - rho^2) / (2 theta).
+        # Canonical (centred) OU: two parameters. mu is a pure location
+        # parameter that separates from the dynamics, and with a stationary
+        # start the initial point would carry direct information about it, so
+        # mu is fixed at zero rather than inferred. The substantive
+        # dependence in OU is theta-sigma: both enter the transition law
+        # through rho = exp(-theta dt) and sigma^2 (1 - rho^2) / (2 theta).
         self.prior = BoxUniform(
             low=[0.3, 0.2],
             high=[3.0, 1.5],

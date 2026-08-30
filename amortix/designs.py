@@ -1,16 +1,16 @@
 """Variable observation designs: p(m | any K points) machinery.
 
 A *design* is which points of the underlying process are observed. The
-canonical training mode for design amortization (measured across three zoos,
-see CALIBRATION.md) is:
+canonical training mode for design amortization (measured across the problem
+zoo; see the technical report, report/techreport.pdf) is:
 
   * every training example keeps its FULL raw trajectory;
   * every optimizer step draws a FRESH design for each example in the batch
     (``fit(retokenize=...)``) -- one simulation serves unboundedly many
     designs and design memorization is impossible;
   * design sizes K follow the "mix" law: 50% log-uniform[k_min, k_max] +
-    50% uniform over the dense half -- the measured cure for the
-    dense-design width tail;
+    50% uniform over the dense half, which keeps dense designs well
+    represented so that posterior widths stay calibrated at large K;
   * tokens are bare points [t/horizon, y, 0, 0, logK/logKmax, channel] --
     the logK slot is design metadata (normalized softmax attention is
     cardinality-blind without it), the last slot carries a channel/sensor
@@ -108,22 +108,15 @@ class DesignProblem:
         """Fresh designs for a whole batch at every optimizer step.
 
         Two paths, drawing from the same design law. ``vectorized=True``
-        builds the batch with whole-tensor operations instead of looping over
-        the sets. Measured on one H200 host at the training batch of 64, with
-        ``fit``'s thread cap in place: $0.45$ ms per step against $2.8$ ms for
-        the loop, beside $30$ ms of forward and backward -- so the loop is a
-        tenth of a step and the vectorized path is a percent of it.
-
-        An earlier A/B found no end-to-end difference, but it was run on a host
-        shared with other jobs and without the thread cap, where both paths
-        were dominated by scheduler contention; that measurement should not be
-        trusted. Keeping the randomness on a CPU generator is deliberate --
-        results stay identical across devices -- and moving the gather to the
-        GPU is measurably *worse* at this batch size ($2.2$ ms), since the
-        launch overhead exceeds the work.
+        (the default) builds the batch with whole-tensor operations instead
+        of looping over the sets, which removes the per-set Python overhead
+        from every optimizer step. Randomness stays on a CPU generator so
+        results are identical across devices, and the gather is kept on the
+        CPU: at training batch sizes the GPU launch overhead exceeds the
+        work.
 
         ``vectorized=False`` reproduces the exact random stream of runs made
-        before the fast path existed.
+        before the vectorized path existed.
         """
         gen = torch.Generator().manual_seed(seed)
         obs = self.observer

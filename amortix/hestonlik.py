@@ -1,15 +1,13 @@
 """Reference likelihood for the Heston design problem.
 
 A bootstrap particle filter that runs the simulator's own update rule.
-Two properties make it the right instrument here, and both were missing
-from the continuous-time bridge it replaces:
+Two properties make it the right instrument here:
 
   * it is the likelihood of the process that produced the data.  The
     simulator integrates the variance by clamped Euler, so whenever the
     Feller condition 2*kap*th >= xi^2 is violated the variance spends real
     time pinned at zero.  An idealised (noncentral chi-square) transition
-    never sees that floor, and the gap between the two grows with xi --
-    which is exactly where the old reference went wrong;
+    never sees that floor, and the gap between the two grows with xi;
   * prices are observed exactly, so the last sub-step of every gap pins the
     price innovation z1.  Feeding that pinned z1 into the variance update is
     the only channel through which rho enters the likelihood at all.

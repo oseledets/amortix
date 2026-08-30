@@ -1,7 +1,0 @@
-[pk_tiny_480000_s0] 97,490p 12759s  FID 0.1552  (reference floor 0.0023, ratio 66.8)
-[merton_tiny_480000_s0] 98,447p 13552s  FID 0.0327  (reference floor 0.0065, ratio 5.0)
-[pk_big_480000_s0] 2,321,426p 13581s  FID 0.1517  (reference floor 0.0023, ratio 65.3)
-[merton_big_480000_s0] 2,322,767p 14800s  FID 0.0421  (reference floor 0.0065, ratio 6.5)
-FILL480_COMPLETE
-
-[exited with code 0]

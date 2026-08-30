@@ -62,9 +62,8 @@ class CIR(SDEProblem):
         # supplied generator, so runs stay reproducible.
         #
         # Do NOT start at X0 = b exactly: that hands the long-run mean to any
-        # estimator that looks at the first observation, so b stops being inferred
-        # and starts being read off (it was the best-recovered parameter for
-        # exactly that reason).
+        # estimator that looks at the first observation, so b stops being
+        # inferred and starts being read off.
         from scipy.stats import gamma as _gamma
         a, b, sigma = m[:, 0], m[:, 1], m[:, 2]
         conc = (2.0 * a * b / sigma ** 2).clamp(min=1e-3)

@@ -1,4 +1,4 @@
-"""Controls that any honest comparison must report.
+"""Controls that every comparison must report.
 
 An estimator's error only means something next to two reference points:
 

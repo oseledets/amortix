@@ -64,8 +64,9 @@ def muon_lr_for_batch(batch: int) -> float:
     ``lr(B) = min(1e-2 * (B / 512) ** 0.5, 2e-2)``.
 
     Both the exponent and the cap are measured on this package, not assumed.
-    On the big model (GBM, fixed example budgets, scored on the six-K battery)
-    the step was swept at four batch sizes:
+    On the big model (GBM, fixed example budgets, scored on the GBM
+    evaluation set over six design sizes) the step was swept at four batch
+    sizes:
 
       B =   64, 72,000 steps: 1.8e-3 -> 0.0064, 3.54e-3 -> 0.0066,
                               5.95e-3 -> 0.0079, 1.0e-2 -> 0.0083
@@ -81,12 +82,12 @@ def muon_lr_for_batch(batch: int) -> float:
     (and the fourth root is not a near miss there: 5.95e-3 scores 0.0079
     against 0.0066).
 
-    Past B~2048 the law changes character and extrapolating the root is a
-    trap that was walked into once: the root predicts 4e-2 at B=8192, where
-    the measured optimum is 2e-2 -- the same 2e-2 as at 2048 -- and twice the
-    root's prediction already diverges. So: square root up to the critical
-    batch, constant after it. The flat response at B=2048 (a threefold sweep
-    lands within 0.0007) is this ceiling announcing itself.
+    Past B~2048 the law changes character and the root must not be
+    extrapolated: it predicts 4e-2 at B=8192, where the measured optimum is
+    2e-2 -- the same 2e-2 as at 2048 -- and twice the root's prediction
+    already diverges. So: square root up to the critical batch, constant
+    after it. The flat response at B=2048 (a threefold sweep lands within
+    0.0007) is this ceiling announcing itself.
     """
     lr = MUON_REF_LR * (float(batch) / MUON_REF_BATCH) ** MUON_BATCH_EXPONENT
     return min(lr, MUON_LR_CAP)
@@ -99,22 +100,22 @@ class Muon(torch.optim.Optimizer):
     (biases, normalizations, embeddings and any parameter that is not a plain
     matrix).
 
-    The default ``lr`` is measured, not inherited. Swept over 3e-4..6e-2 on the
-    largest model of the width ladder (GBM, batch 512, 9,000 steps, scored on
-    the six-K design battery), the response is a broad shallow basin between
-    3e-3 and 1e-2 with a hard edge just past it: 6e-2 diverges outright. The
-    step transfers across width in the direction that matters -- 1e-2 is better
-    than 2e-2 at every width tried, and the margin *grows* with width (tiny: a
-    tie, small: 0.0010 FID, big: 0.0024) -- so a step tuned on a narrow model
-    stays safe when the model is widened, which is the property Muon is being
-    used for.
+    The default ``lr`` is measured, not inherited. Swept over 3e-4..6e-2 on
+    the widest model (GBM, batch 512, 9,000 steps, scored on the GBM
+    evaluation set over six design sizes), the response is a broad shallow
+    basin between 3e-3 and 1e-2 with a hard edge just past it: 6e-2 diverges
+    outright. The step transfers across width in the direction that matters
+    -- 1e-2 is better than 2e-2 at every width measured, and the margin
+    *grows* with width (tiny: a tie, small: 0.0010 FID, big: 0.0024) -- so a
+    step tuned on a narrow model stays safe when the model is widened, which
+    is the property Muon is being used for.
 
     Running too hot reintroduces exactly the pathology Muon was adopted to
-    remove. At 2e-2 the capacity ladder is non-monotone (big 0.0085 scores
-    *worse* than small 0.0076); at 1e-2 it is ordered as capacity says it
-    should be (big 0.0061, small 0.0066, tiny 0.0089). "Wider is worse" is
-    therefore not always a statement about the optimizer family -- it can be a
-    statement about one number inside it.
+    remove. At 2e-2 the ordering across model sizes is non-monotone (big
+    0.0085 scores *worse* than small 0.0076); at 1e-2 it is ordered as
+    capacity says it should be (big 0.0061, small 0.0066, tiny 0.0089).
+    "Wider is worse" is therefore not always a statement about the optimizer
+    family -- it can be a statement about one number inside it.
     """
 
     def __init__(self, params, lr: float = 0.01, momentum: float = 0.95,

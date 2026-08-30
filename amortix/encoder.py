@@ -9,7 +9,7 @@ of observation tokens via the padding mask.
 
 The constructor flags (`rope`, `embed`, `input_norm`, `pool`, ...) exist because
 the encoder was measured, not assumed, on the `linear_gaussian` testbed, where the
-statistic it must extract is known exactly (see results/DEBUG_encoder.md).
+statistic it must extract is known exactly.
 """
 from __future__ import annotations
 
@@ -41,9 +41,9 @@ class FeatureNorm(nn.Module):
     Statistics are collected over valid tokens during training and frozen at
     evaluation, so the encoding of one dataset never depends on its batch-mates.
 
-    On by default: measured on `linear_gaussian` it is the only encoder change that
-    improved the distance to the exact posterior (-17%), and it makes the sufficient
-    statistic 2.5x more readable out of the token memory (results/DEBUG_encoder.md).
+    On by default: measured on `linear_gaussian` it is the only encoder change
+    that improved the distance to the exact posterior, and it makes the
+    sufficient statistic markedly easier to read out of the token memory.
     """
 
     def __init__(self, n_features: int, momentum: float = 0.01):
@@ -87,9 +87,9 @@ class MonotoneWarp(nn.Module):
     2^-3..2^4). The family contains the identity, log-like compression at any
     scale, and their mixtures — and log shapes sit in the initialization basin
     at every octave simultaneously, so no hand-picked scale remains. That
-    basin property is load-bearing: a learnable Yeo-Johnson warp, which also
-    contains log but initializes at the identity, never moves off it (sigma
-    bias +0.451 vs +0.483 raw)."""
+    basin property is essential: a learnable warp that also contains log but
+    initializes at the identity (e.g. Yeo-Johnson) never moves off the
+    identity in training."""
 
     def __init__(self, n_scales: int = 8, lo: float = -3.0, hi: float = 4.0):
         super().__init__()
@@ -126,12 +126,11 @@ class WarpDiffEmbed(nn.Module):
 
     Measured on raw-price GBM (the worst floating-scale case in the gallery),
     sigma SBC at production budget (n_train=40000, steps=12000, 500x200):
-    raw tokens p=0.002; per-feature slog p=0.014 (fails — its screen-level
-    +0.024 sd residual grows with budget); wdiff p=0.876; wbasis p=0.283;
-    fully-convolutional wconv (learnable taps, no hand square) p=0.130. The
-    hand-crafted log-price observer reference is p=0.812. Structure buys
-    calibration margin monotonically; every warp-then-difference variant
-    passes. ou/cir verified unaffected.
+    raw tokens p=0.002; per-feature slog p=0.014 (fails — its residual bias
+    grows with the training budget); wdiff p=0.876; wbasis p=0.283. The
+    hand-crafted log-price observer reference is p=0.812: every
+    warp-then-difference variant passes, the per-feature transform does not.
+    ou/cir verified unaffected.
 
     Assumes the 6-feature PathObserver token layout [t, x, dx, dx^2, res, cid].
     """
@@ -172,8 +171,8 @@ class PointEmbed(nn.Module):
     likelihood factorizes over single points given the parameters, so the
     sufficient token is [t, w(y), design-metadata, channel] with a learnable
     monotone warp on the value; all temporal/spatial structure is learned by
-    the t-RoPE attention. Measured winners on FHN / Hodgkin-Huxley / PK /
-    Fisher-KPP (see CALIBRATION.md). Select with embed="wpoint"."""
+    the t-RoPE attention. Measured best on FHN / Hodgkin-Huxley / PK /
+    Fisher-KPP. Select with embed="wpoint"."""
 
     takes_mask = True
 
@@ -200,13 +199,13 @@ class SetCondPairEmbed(nn.Module):
     small x) and (b) LEARNED set conditioning: a masked pool over the
     features computes a per-dataset context, an MLP maps it to per-channel
     scale/shift applied AFTER FeatureNorm (zero-init => exactly the robust
-    base at start). Duel result on Merton (heavy tails, floating jump
-    threshold): matches hand median-scaling (+0.13 vs +0.09 posterior-sd,
-    sr 1.25 vs 1.33) with zero hand statistics. Three correctness rules,
-    each paid for with a found bug: zero-init (right basin), norm BEFORE
-    modulation (else the learned gain re-creates representation drift), and
-    the mask must reach set-level statistics (padding otherwise dilutes the
-    context differently in padded vs packed inference paths).
+    base at start). On Merton (heavy tails, floating jump threshold) it
+    matches hand-crafted median scaling with no hand statistics. Three
+    correctness requirements: zero-init (starts in the correct basin), norm
+    BEFORE modulation (else the learned gain re-creates representation
+    drift), and the mask must reach the set-level statistics (padding
+    otherwise dilutes the context differently in the padded and packed
+    inference paths).
     Select with embed="wfilm"."""
 
     takes_mask = True
@@ -265,12 +264,11 @@ class WarpPairEmbed(nn.Module):
 
     Measured on design-amortized raw GBM (K ~ log-uniform[2,128] in training,
     eval at K=5/9/20/100 vs exact per-design posteriors, B=96): bias ~0 at
-    every K with width ratios 1.02/1.02/1.02/1.27 (best of all arms; bare
-    points without pair features are also unbiased but 1.05-1.95x wide).
-    Combine with rope="time" -- ordinal RoPE encodes a lie (equal spacing) on
-    irregular designs and its positional layout becomes a train/eval contract
-    that is easy to violate (this exact bug produced spurious +1..+3 sd
-    "biases" before being found).
+    every K with width ratios 1.02/1.02/1.02/1.27 (best of the variants
+    compared; bare points without pair features are also unbiased but
+    1.05-1.95x wide). Combine with rope="time" -- ordinal RoPE encodes a lie
+    (equal spacing) on irregular designs, and its positional layout becomes a
+    train/eval contract that is easy to violate.
     """
 
     def __init__(self, n_features: int, dim: int):
@@ -394,8 +392,8 @@ class AttentionPool(nn.Module):
     `n_query > 1` gives Perceiver-style latents: several queries, concatenated and
     projected, so the summary is not forced through one attention read.
 
-    Two measured caveats (results/DEBUG_encoder.md), both of which apply under the
-    default `conditioning="xattn"`:
+    Two measured caveats, both of which apply under the default
+    `conditioning="xattn"`:
 
     - Nothing trains these parameters there. The velocity cross-attends to the token
       memory and the base head reads a *detached* context, so `pool()` sits on a
@@ -430,7 +428,7 @@ class AttentionPool(nn.Module):
 class SetTransformer(nn.Module):
     """Encode a token set [B, T, F] -> token memory [B, T, dim] and context [B, ctx_dim].
 
-    Options (see results/DEBUG_encoder.md for the measurements behind them):
+    Options:
 
     - `embed`: `"linear"` or `"mlp"`. A *linear* embed cannot make a
       token's value interact with its own coordinate feature: it maps
@@ -491,11 +489,8 @@ class SetTransformer(nn.Module):
             self.register_buffer("sin", sin, persistent=False)
 
     def _rope(self, T):
-        """RoPE tables for T positions, grown on demand.
-
-        The table used to be capped at the observer's token count, so any input
-        longer than that crashed -- which is why 'handles an arbitrary number of
-        observations' had never actually been exercised."""
+        """RoPE tables for T positions, grown on demand, so inputs longer than
+        the construction-time `max_tokens` are handled instead of rejected."""
         if not self.use_rope:
             return None, None
         if T > self.cos.shape[0]:

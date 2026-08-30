@@ -7,18 +7,18 @@ velocity field on the displacement z1 - z0:
 
     L = E || v_theta(z_t, t, c) - (z1 - z0) ||^2
 
-**Data-dependent base (`base="data"`, default).** Flow matching can transport any
-source to any target, but if the source spread is far from the (conditional)
-target spread the deterministic ODE must do a large, stiff contraction/expansion
-that a finite network underfits -- which shows up as a mis-calibrated posterior
-(too wide or too narrow). So we *align* the source to the target per dataset: a
-small head predicts a Gaussian base N(mu_hat(c), s_hat(c)^2) trained by Gaussian
-NLL to match the posterior's mean and spread; the flow then only refines the
-*shape*. The NLL keeps s_hat ~ the true posterior std (an ODE cannot create
-spread from a point, so the base must seed it). `base="standard"` recovers the
-plain N(0, I) source.
+**Base distribution.** The default source is the standard normal
+(`base="standard"`). A data-dependent base (`base="data"`) is available as an
+option: flow matching can transport any source to any target, but if the source
+spread is far from the (conditional) target spread the deterministic ODE must do
+a large, stiff contraction/expansion that a finite network underfits -- which
+shows up as a mis-calibrated posterior (too wide or too narrow). With
+`base="data"` a small head predicts a Gaussian base N(mu_hat(c), s_hat(c)^2)
+trained by Gaussian NLL to match the posterior's mean and spread, and the flow
+then only refines the *shape*. The NLL keeps s_hat ~ the true posterior std (an
+ODE cannot create spread from a point, so the base must seed it).
 
-Inference: encode c, draw z0 from the (data-dependent) base, integrate
+Inference: encode c, draw z0 from the base, integrate
 dz/dt = v_theta(z, t, c) from t=0 to 1, denormalize. One ODE solve per dataset.
 """
 from __future__ import annotations
@@ -40,10 +40,10 @@ class EMA:
     SGD on a noisy objective does not converge to a point, it *random-walks in a
     ball* around the optimum whose radius is set by lr x gradient noise. The CFM
     target is exceptionally noisy (most of ||v - (z1-z0)||^2 is the irreducible
-    Var(z1-z0 | z_t)), so that ball is wide and any single iterate is a lottery
-    ticket -- which is exactly the oscillating plateau seen on the monitored
-    metric. Averaging the iterates cancels the walk (Polyak-Ruppert) and lands
-    near the centre of the ball.
+    Var(z1-z0 | z_t)), so that ball is wide and any single iterate is an
+    essentially arbitrary point within it -- which appears as an oscillating
+    plateau on any monitored metric. Averaging the iterates cancels the walk
+    (Polyak-Ruppert) and lands near the centre of the ball.
 
     `decay` is ramped in as min(decay, (1+n)/(10+n)) so the average is not held
     back by the (meaningless) initial weights during the first few hundred steps.
@@ -331,12 +331,12 @@ class FlowPosterior(nn.Module):
                  pool: str = "attn", base: str = "standard", conditioning: str = "xattn",
                  embed: str = "auto", rope="auto"):
         """Non-default option values are kept as REPRODUCIBLE CONTROLS for the
-        measurements in CALIBRATION.md, not as recommendations: base="data"
-        loses to the plain N(0,I) source 1.75x on the exact-posterior testbed;
-        conditioning="concat" underperforms dense cross-attention; ordinal
-        rope=True on variable designs turns the token layout into a fragile
-        train/eval contract. The defaults encode everything this repository
-        has measured to be right."""
+        measurements in the technical report (report/techreport.pdf), not as
+        recommendations: base="data" loses to the plain N(0,I) source 1.75x
+        on the exact-posterior testbed; conditioning="concat" underperforms
+        dense cross-attention; ordinal rope=True on variable designs turns
+        the token layout into a fragile train/eval contract. The defaults are
+        the measured-best configuration."""
         super().__init__()
         self.problem = problem
         self.prior = problem.prior
@@ -352,15 +352,15 @@ class FlowPosterior(nn.Module):
             # hand-crafted observer transforms (see WarpDiffEmbed).
             # Variable-design problems (DesignProblem) default to the
             # set-conditioned pair embedding, the measured best across the
-            # design zoos (see SetCondPairEmbed / CALIBRATION.md). Other
-            # observers (ODE/time-series, custom layouts) get the plain
-            # linear embedding.
+            # design zoo (see SetCondPairEmbed). Other observers
+            # (ODE/time-series, custom layouts) get the plain linear
+            # embedding.
             from .sde import PathObserver
             if is_design:
-                # class rule, verified from both sides (CALIBRATION.md):
-                # consecutive-pair structure is sufficient iff the observed
-                # process is Markov; otherwise bare points are the correct
-                # (and measured-best) token.
+                # class rule, verified from both sides: consecutive-pair
+                # structure is sufficient iff the observed process is
+                # Markov; otherwise bare points are the correct (and
+                # measured-best) token.
                 embed = ("wfilm" if getattr(problem, "markov_observed", False)
                          else "wpoint")
             elif isinstance(problem.observer, PathObserver):
@@ -371,7 +371,7 @@ class FlowPosterior(nn.Module):
         if rope == "auto":
             # ordinal RoPE is only meaningful when every dataset shares one
             # fixed token layout. rope="time" (continuous phases from the
-            # actual observation times, feature 0) is the honest choice for
+            # actual observation times, feature 0) is the correct choice for
             # variable/irregular designs.
             rope = "time" if is_design else True
         self.encoder = SetTransformer(
@@ -430,16 +430,16 @@ class FlowPosterior(nn.Module):
             batch  256 ->  460 steps -> posterior 4.17x too wide
             batch   64 -> 1860 steps -> posterior 1.21x too wide
 
-        The old default of 256 was starving the model: a "3000 sims / 8 epochs"
-        configuration is 88 steps, which is an untrained network, and results
-        measured there say nothing about the method. Hence batch=64 by default.
+        The default is therefore batch=64: at a fixed simulation budget a
+        smaller batch yields more optimizer steps.
 
-        `steps` overrides `epochs` and is the honest way to state a budget: the
+        `steps` overrides `epochs` and is the precise way to state a budget: the
         number of epochs is then whatever it takes to run that many updates.
 
         Do not judge convergence by the loss. Most of ||v - (z1 - z0)||^2 is the
         irreducible Var(z1 - z0 | z_t); the loss can rise while the posterior
-        keeps improving. Track the distribution (examples/budget_curve.py).
+        keeps improving. Track a distance between the sampled posterior and a
+        reference posterior instead (see `monitor` below).
 
         token_dropout: fraction of observation tokens randomly masked out each
         batch, which is what makes the set encoder's size-invariance real rather
@@ -453,8 +453,8 @@ class FlowPosterior(nn.Module):
         loss cannot serve -- most of ||v - (z1 - z0)||^2 is the irreducible
         Var(z1 - z0 | z_t), so it can rise while the posterior keeps improving.
 
-        --- optimization (measured on `linear_gaussian`, exact posterior known;
-        results/DEBUG_optimization.md) -------------------------------------
+        --- optimization (measured on `linear_gaussian`, where the exact
+        posterior is known) -------------------------------------------------
 
         At a constant learning rate the monitored distance to the exact posterior
         stops improving after ~2000 steps and then *oscillates* between 0.007 and
@@ -505,8 +505,8 @@ class FlowPosterior(nn.Module):
 
         Muon is the default because it is better at every width measured and
         much more reproducible at large ones. On geometric Brownian motion,
-        120k simulations, two seeds each, scored against a validated battery
-        whose resolution floor is 0.0018:
+        120k simulations, two seeds each, scored against a validated evaluation
+        set whose resolution floor is 0.0018:
 
             size    Adam             Muon
             tiny    0.0126 / 0.0118  0.0088 / 0.0118
@@ -529,11 +529,9 @@ class FlowPosterior(nn.Module):
         torch.manual_seed(seed)
         # Training does small CPU tensor work every step (drawing designs and
         # building tokens). torch defaults to one thread per core, which on a
-        # many-core host costs more in contention than the work itself: on a
-        # 512-core machine the per-step retokenization measured 9.2 ms at the
-        # default and 2.8 ms capped at 8 threads, and eight concurrent runs
-        # drove the load average past 1000. The cap is applied for the duration
-        # of fit() and restored afterwards.
+        # many-core host costs more in scheduler contention than the work
+        # itself. The cap is applied for the duration of fit() and restored
+        # afterwards.
         _threads0 = torch.get_num_threads()
         if cpu_threads:
             torch.set_num_threads(min(cpu_threads, _threads0))
@@ -613,11 +611,10 @@ class FlowPosterior(nn.Module):
             running = 0.0
             for b in range(n_batches):
                 # Scale each group's OWN base rate by the schedule. Writing
-                # the same absolute value into every group silently discards
-                # the Muon rate -- the optimizer keeps two groups on different
-                # scales (orthogonalized updates vs Adam's), and overwriting
-                # them made `muon_lr` dead: two runs differing only in it came
-                # out bit-identical.
+                # the same absolute value into every group would silently
+                # discard the Muon rate: the optimizer keeps two groups on
+                # different scales (orthogonalized updates vs Adam's), and
+                # both must follow the schedule multiplicatively.
                 mult = lr_at(step_now, total_steps, 1.0, warmup, schedule,
                              min_lr_frac)
                 for group in opt.param_groups:
@@ -744,26 +741,20 @@ class FlowPosterior(nn.Module):
             # resolution of the monitor at its own sample size (see
             # evaluation.floor_at).
             #
-            # Both failure modes behind this rule were walked into, measured:
-            #   * a monitor too coarse for the model (floor 0.0044) shipped its
-            #     deepest noise dip -- 0.0053 on test against 0.0040 for the
-            #     last weights;
-            #   * a resolving monitor (floor 0.0013) still shipped 0.0052
-            #     against 0.0040, because with a cosine schedule mid-run
-            #     checkpoints are systematically inflated and an argmin over
-            #     the whole curve mistakes that for a reversal.
-            # A genuine late reversal clears the margin easily (pk: the curve
-            # turns 0.1066 -> 0.1321, twenty floors); schedule noise does not.
+            # Two failure modes motivate the margin:
+            #   * a monitor too coarse for the model selects its deepest noise
+            #     dip rather than a better checkpoint;
+            #   * even a resolving monitor is misled by a cosine schedule,
+            #     whose mid-run checkpoints are systematically inflated, so an
+            #     argmin over the whole curve mistakes that for a reversal.
+            # A genuine late reversal clears the margin easily; schedule noise
+            # does not.
             metrics = [h["metric"] for h in self.history if "metric" in h]
             gain = metrics[-1] - best_metric
             # Two conditions, both stated in the monitor's own units. The gain
             # must clear the monitor's floor, AND the monitored value itself
             # must sit at least three floors up -- a monitor asked to rank
-            # values of its own resolution returns noise in both directions
-            # (measured on Fisher-KPP: with val_best at 1.7-2.4 floors, firing
-            # hurt the test score both times it happened and refusing hurt it
-            # twice more; every system whose selections transferred had
-            # val_best at 3.4 floors or higher).
+            # values of its own resolution returns noise in both directions.
             self.selection_used = bool(gain > monitor_floor
                                        and best_metric >= 3.0 * monitor_floor)
             self.selection_gain = float(gain)

@@ -2,30 +2,45 @@
 
 Every case here follows the DesignProblem protocol (amortix.designs): full
 raw trajectories + fresh random designs every optimizer step. Calibration
-status and the full experimental chronicle are in CALIBRATION.md; the
-recommended configuration is simply the defaults --
+status and the measurements behind the defaults are documented in the
+technical report (report/techreport.pdf); the recommended configuration is
+simply the defaults --
 
     post = FlowPosterior(prob)          # embed/rope resolve by class rule
     post.fit(n_train=..., steps=..., retokenize=prob.make_retokenizer())
 
 (embed="auto" picks the set-conditioned pair embedding for Markov-observed
 cases and bare points otherwise; rope="auto" picks continuous time-RoPE for
-any DesignProblem); budget per the price curves in CALIBRATION.md.
+any DesignProblem).
 
-Cases:
-  HestonDesign     hidden stochastic volatility, correlated noises,
-                   price-only observations (5 parameters)
-  MertonDesign     jump-diffusion in log-price (5 parameters); near-exact
-                   Poisson-mixture likelihood -> merton_logpost_factory
-  HenonHeilesDesign classical Hamiltonian with the Lubich-Oseledets-
-                   Vandereycken potential; noisy q1 only (3 parameters)
-  HodgkinHuxleyDesign  sbibm's flagship spiking neuron (4 parameters)
-  PharmacoKineticsDesign  oral one-compartment Bateman curve, log-normal
-                   assay noise -- irregular blood draws (3 parameters);
-                   exact likelihood -> pk_logpost_factory
-  FisherKPPDesign  reaction-diffusion PDE, 3 point sensors, random
-                   time x sensor designs (2 parameters); exact likelihood
-                   via the deterministic solve -> kpp_logpost_factory
+Cases, keyed by their DESIGN_ZOO registry names:
+  gbm_rd           GBMDesign (design_basic): geometric Brownian motion,
+                   exact conjugate reference (2 parameters)
+  ou_rd            OUDesign (design_basic): Ornstein-Uhlenbeck, stationary
+                   start, exact-likelihood reference (2 parameters)
+  heston           HestonDesign: hidden stochastic volatility, correlated
+                   noises, price-only observations (5 parameters)
+  merton           MertonDesign: jump-diffusion in log-price (5 parameters);
+                   near-exact Poisson-mixture likelihood ->
+                   merton_logpost_factory
+  henon_heiles     HenonHeilesDesign: classical Hamiltonian with the
+                   Lubich-Oseledets-Vandereycken potential; noisy q1 only
+                   (3 parameters)
+  hodgkin_huxley   HodgkinHuxleyDesign: sbibm's flagship spiking neuron
+                   (4 parameters)
+  pk               PharmacoKineticsDesign: oral one-compartment Bateman
+                   curve, log-normal assay noise -- irregular blood draws
+                   (3 parameters); exact likelihood -> pk_logpost_factory
+  kpp              FisherKPPDesign: reaction-diffusion PDE, 3 point sensors,
+                   random time x sensor designs (2 parameters); exact
+                   likelihood via the deterministic solve ->
+                   kpp_logpost_factory
+  fhn              FHNDesign: deterministic FitzHugh-Nagumo flow, membrane
+                   potential observed with noise at arbitrary times
+                   (4 parameters); exact likelihood -> fhn_logpost_factory
+  seir             SEIRDesign: five-compartment SEIR-D epidemic, I and D
+                   observed at arbitrary times (5 parameters); exact
+                   likelihood -> seir_logpost_factory
 """
 from __future__ import annotations
 
@@ -249,9 +264,7 @@ def pk_logpost_factory(t_obs, y_obs, dose=500.0, logsd=0.10):
 class FisherKPPDesign(DesignProblem):
     """Reaction-diffusion PDE theta_t = D theta_xx + r theta(1-theta) on
     [0,1], no-flux BC, bump IC; 3 point sensors, random time x sensor
-    designs. The posterior concentrates on the D*r ridge (front speed) --
-    see CALIBRATION.md for the measured budget curve of the along-ridge
-    residual."""
+    designs. The posterior concentrates on the D*r ridge (front speed)."""
 
     obs_noise = 0.02
     NX = 64
@@ -463,18 +476,16 @@ def hh_logpost_factory(prob, tidx, y_obs, backend="numpy"):
     """Exact log-posterior for Hodgkin--Huxley.
 
     ``backend="numpy"`` mirrors the package simulator step for step in plain
-    numpy and is verified against it to machine precision at import-time cost
-    of nothing (see the assertion in the factory). That verification is not
-    ceremony: an earlier hand-written version of these membrane equations
-    disagreed with the simulator by 0.43 in units where the observation noise
-    is 0.02 -- it described a different neuron, and both reference chains
-    happily converged to it.
+    numpy: the reference likelihood must describe exactly the chain the
+    simulator generates, so the two implementations are kept in lockstep --
+    an independently written version of the membrane equations can describe
+    a measurably different neuron while every reference chain converges on
+    it.
 
-    Why a second implementation exists at all: the torch simulator spends
-    583\,ms on a single parameter vector and 9\,ms per vector in a batch of
-    64, because a 3,000-step integration at batch one is bound by kernel
-    launches. Nested sampling asks for points one at a time, so it pays the
-    former; the numpy path removes that penalty without changing the model.
+    Why a second implementation exists at all: a 3,000-step torch integration
+    at batch one is bound by kernel launches, and nested sampling asks for
+    points one at a time; the numpy path removes that penalty without
+    changing the model.
     """
     t_sel = np.asarray(tidx, dtype=int)
     y = np.asarray(y_obs, dtype=np.float64)

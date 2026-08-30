@@ -233,12 +233,9 @@ def batched_partial_loglik_torch(theta, x0, t_obs, c_obs, y_obs, drift_of,
     # Common random numbers must be tied to the bridge particle, NOT to its
     # position in the theta batch. Drawing one stream for the whole batch makes
     # the estimated surface depend on the population size, so a run at N and a
-    # run at 2N score slightly different functions -- which is what the
-    # N-doubling gate then reports as disagreement. Measured on
-    # Lotka--Volterra: the gate plateaued at 0.72--0.89 posterior sd and would
-    # not fall however large the population grew (4096 -> 16384 changed
-    # nothing), because the residual was this stream mismatch and not sampling
-    # error. Here every particle index gets its own generator offset, so the
+    # run at 2N score slightly different functions -- which the N-doubling gate
+    # then reports as a persistent disagreement that no population size
+    # removes. Here every particle index gets its own generator offset, so the
     # noise a particle sees is the same at any batch size.
     _base = _t.Generator(device=device).manual_seed(seed)
     _noise = _t.randn(n_part, 4096, d, generator=_base, device=device)

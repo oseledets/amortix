@@ -96,11 +96,10 @@ def gbm_exact_from_points(prob, traj_i, tidx, n_samples=2000, seed=0,
     # The conjugate draw is exact only up to the importance correction onto the
     # box prior, and that correction is not free: at dense designs the
     # posterior is narrow, and when the truth sits near a corner of the box
-    # most candidates land outside it. One battery set had 45 usable draws out
-    # of 32,000, so its "exact" sample was fifty distinct values with repeats
-    # and two independent draws disagreed by 0.4 posterior sd. The pool is
-    # therefore grown until the effective sample size is adequate, and the
-    # caller is told when it cannot be.
+    # most candidates land outside it, leaving an effective sample size far
+    # below the nominal draw count. The pool is therefore grown until the
+    # effective sample size is adequate, and the caller is told when it
+    # cannot be.
     draws_all, w_all = [], []
     npool = n_samples * pool_factor
     for _ in range(6):
@@ -289,9 +288,11 @@ class LinGaussDesign(DesignProblem):
 class DoubleWellDesign(DesignProblem):
     """dX = (theta1 X - theta2 X^3) dt + sigma dW, arbitrary observation times.
 
-    Reference likelihood: exact density transport of the generative Euler
-    chain (amortix.transfer) -- a banded transition matrix per step, exact
-    conditioning at observed points. No latent variables, no bridges.
+    Reference likelihood: the unbiased modified-diffusion-bridge estimate of
+    the per-gap transition density (amortix.bridgelik), used as a
+    pseudo-marginal likelihood inside Metropolis--Hastings (see
+    dw_logpost_factory). Grid-free: no state-space discretization enters the
+    reference.
     """
 
     markov_observed = True
@@ -353,8 +354,8 @@ def dw_logpost_factory(prob, traj_i, tidx, n_part=256):
 class PolyDriftDesign(DesignProblem):
     """dX = (c0 + c1 X + c2 X^2 + c3 X^3) dt + sigma dW, observed anywhere.
 
-    Same transport reference as the double well (amortix.transfer) -- the
-    drift is a different lambda, nothing else changes.
+    Same bridge-likelihood reference as the double well (amortix.bridgelik)
+    -- the drift is a different polynomial, nothing else changes.
     """
 
     markov_observed = True
@@ -384,12 +385,9 @@ def poly_logpost_factory(prob, traj_i, tidx, n_part=256):
     """Unbiased bridge likelihood for the polynomial-drift SDE.
 
     Uses the same grid-free estimator as every other diffusion in the suite
-    (amortix.bridgelik). The earlier density-transport version is retired: its
-    accuracy is set by a state-space grid, and on this system the affordable
-    grid put only ~150 cells across the region the state actually visits,
-    which biases the reference the model is scored against -- the failure mode
-    where a more accurate model reads as worse because it has moved away from
-    a mis-stated target.
+    (amortix.bridgelik). A density-transport reference on a state-space grid
+    would make the reference's accuracy a tuning parameter, and a reference
+    the model can out-resolve turns improvement into apparent degradation.
     """
     from ..bridgelik import path_loglik_factory
     x = np.asarray(traj_i, dtype=np.float64).reshape(-1, 1)
@@ -433,8 +431,8 @@ class LotkaVolterraDesign(DesignProblem):
 
     Multiplicative noise on each species. The reference likelihood is the
     unbiased bridge estimate of amortix.bridgelik inside adaptive tempered
-    SMC (amortix.smc); the density-transport reference this replaced made
-    grid resolution a tuning parameter of the reference itself.
+    SMC (amortix.smc); a density-transport reference would make grid
+    resolution a tuning parameter of the reference itself.
     """
 
     markov_observed = True
@@ -472,10 +470,9 @@ def lv_logpost_factory(prob, traj_i, tidx, cidx=None, n_part=512):
 
     Each design point observes ONE species, so the reference must pin one
     coordinate and leave the other latent -- the partially observed case of
-    amortix.bridgelik. A first version conditioned on both species at every
-    point; its posterior was four times narrower than the network could
-    possibly match, and the resulting score (FID 57--152 against a floor of
-    0.004) measured the mismatch, not the model.
+    amortix.bridgelik. Conditioning on both species at every point would
+    target a much narrower posterior than the observations support, and the
+    score would then measure that mismatch rather than the model.
     """
     from ..bridgelik import gap_loglik_partial
     xy = np.asarray(traj_i, dtype=np.float64)

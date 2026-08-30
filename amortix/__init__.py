@@ -4,7 +4,8 @@ Core idea (arXiv:2503.01375): give a prior + simulator, get a fast amortized
 posterior over parameters. A transformer set-encoder conditions a conditional
 flow-matching velocity field; inference is a single ODE solve.
 
-This is the SDE-recovery seed of the package.
+The core use case is SDE parameter recovery; ODE and variable-design problems
+share the same machinery.
 """
 from __future__ import annotations
 

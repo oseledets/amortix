@@ -5,8 +5,8 @@
     amortix sbc ou                    strict calibration check (SBC) for one case
     amortix gallery                   accuracy benchmark across all cases
 
-Installed as a console script, so with uv it also runs without installing:
-    uvx --from amortix amortix cases
+Installed as a console script; from the repository it runs via uv:
+    uv run amortix cases
 """
 from __future__ import annotations
 

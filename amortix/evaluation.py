@@ -1,30 +1,27 @@
-"""The evaluation instrument: one FID, one battery format, one entry point.
+"""The evaluation instrument: one FID, one evaluation-set format, one entry point.
 
 Everything the report measures against a reference posterior goes through this
-module. That is deliberate. The alternative -- a script per experiment, each
-rebuilding the test set from its own seeds and its reference from its own chain
-settings -- was tried first and produced numbers that could not be compared
-with each other: the same system read 0.19 or 0.05 depending on which script
-had computed its chains, and nothing could be re-scored without retraining,
-because evaluation scripts did not keep the models they trained.
+module, so that numbers computed by different scripts, at different times, and
+on different machines stay comparable and re-scorable.
 
-Three rules follow from that experience and are enforced here:
+Three rules are enforced here:
 
   * one implementation of the discrepancy (:func:`fid`), never copied;
-  * a battery is an artifact, not code -- built once, validated on the spot,
-    written to disk with the provenance needed to trust it later
-    (:class:`Battery`), and loaded by everything downstream;
-  * a battery carries its own floor. Two independent reference draws are
-    stored, so every reported number can be quoted against the resolution of
-    the instrument that produced it. :meth:`Battery.build` refuses to save a
-    battery whose two chains disagree by more than ``max_discrepancy``
-    posterior standard deviations, which is the check that would have caught
-    the under-converged chains above.
+  * an evaluation set is an artifact, not code -- built once, validated on
+    the spot, written to disk with the provenance needed to trust it later
+    (:class:`EvalSet`), and loaded by everything downstream;
+  * an evaluation set carries its own floor. Two independent reference draws
+    are stored, so every reported number can be quoted against the resolution
+    of the instrument that produced it. :func:`build_eval_set` refuses to
+    save a set whose two chains disagree by more than ``max_discrepancy``
+    posterior standard deviations -- such a set would measure its own sampler
+    rather than the model.
 
 Typical use::
 
-    bat = Battery.build(problem, K=20, n_sets=32, path="merton_K20.npz")
-    res = evaluate(posterior, bat)          # seconds, no retraining
+    es = build_eval_set(problem, "merton", K=20, n_sets=32,
+                        path="merton_K20.npz")
+    res = evaluate(posterior, es)           # seconds, no retraining
     print(res["fid_median"], res["null_median"])
 """
 from __future__ import annotations
@@ -68,7 +65,7 @@ def fid(a: np.ndarray, r: np.ndarray, scale: np.ndarray = None) -> float:
 
 
 # ------------------------------------------------------------- model loading
-#: The size ladder used throughout the report. Width x transformer blocks.
+#: The named model sizes used throughout the report. Width x transformer blocks.
 SIZES = {"pico": (8, 2), "nano": (16, 2), "tiny": (32, 2),
          "small": (64, 3), "big": (128, 4)}
 
@@ -91,9 +88,9 @@ def load_posterior(problem, path: str, device=None):
     ``device`` defaults to CUDA when it is available. That default is not
     cosmetic: ``sample_batch`` takes its device from the model's parameters, so
     a checkpoint left on the CPU is scored on the CPU, and the scoring is the
-    expensive half of a sweep -- the measured gap on the big model over the
-    six-K ladder is minutes against hours. A CPU-resident model is silent about
-    this; it simply runs.
+    expensive half of a sweep -- on the largest model a full sweep over the
+    design sizes takes minutes on the GPU against hours on the CPU. A
+    CPU-resident model is silent about this; it simply runs.
     """
     from . import FlowPosterior
     if device is None:
@@ -108,7 +105,7 @@ def load_posterior(problem, path: str, device=None):
     return post.to(device)
 
 
-# ------------------------------------------------------------------ battery
+# ----------------------------------------------------------- evaluation set
 @dataclass
 class EvalSet:
     """A frozen evaluation set: observation instances with validated references.
@@ -150,7 +147,7 @@ class EvalSet:
     @property
     def floor(self) -> float:
         """Median FID between the two independent reference draws: the
-        smallest difference this battery can resolve."""
+        smallest difference this evaluation set can resolve."""
         return float(np.median([fid(self.chain_b[i], self.chain_a[i])
                                 for i in range(len(self.chain_a))]))
 
@@ -170,9 +167,9 @@ Battery = EvalSet
 def provenance() -> dict:
     """What produced a number: package version, source fingerprint, git state.
 
-    Recorded in every result. The campaign this module replaces ran for days
-    with a remote copy of the package whose retokenizer default differed from
-    the repository's, and nothing in the outputs said so.
+    Recorded in every result, so that any reported number can be traced to the
+    exact source state that produced it -- version drift between hosts is
+    otherwise invisible in the outputs.
     """
     import hashlib
     import subprocess
@@ -197,18 +194,14 @@ def provenance() -> dict:
 
 
 def floor_at(battery: EvalSet, n_draw: int) -> float:
-    """The battery's resolution at a given number of model draws.
+    """The evaluation set's resolution at a given number of model draws.
 
-    ``Battery.floor`` quotes the resolution at the reference chain length. A
-    monitor that draws fewer samples is coarser, and by a lot: on the GBM
-    validation battery the floor is 0.0013 at 4,000 draws and 0.0044 at 1,000.
-
-    That difference decides whether a selection rule works. Choosing the best
-    checkpoint on a monitor whose floor sits above the model's own error means
-    choosing the deepest noise dip -- measured, not hypothetical: at 1,000
-    draws the rule shipped 0.0053 where the final weights scored 0.0040. Check
-    the floor at the sample size you actually monitor with, not at the
-    battery's nominal one.
+    ``EvalSet.floor`` quotes the resolution at the reference chain length; a
+    monitor that draws fewer samples is substantially coarser. Choosing the
+    best checkpoint on a monitor whose floor sits above the model's own error
+    means choosing the deepest noise dip rather than a better model, so check
+    the floor at the sample size actually used for monitoring, not at the
+    set's nominal one.
     """
     nb = battery.chain_b.shape[1]
     idx = (np.linspace(0, nb - 1, min(n_draw, nb)).astype(int)
@@ -219,15 +212,15 @@ def floor_at(battery: EvalSet, n_draw: int) -> float:
 
 def evaluate(post, battery: EvalSet, n_draw: int = 4000, seed: int = 0,
              prior_range: np.ndarray = None) -> dict:
-    """Score a trained posterior against a battery.
+    """Score a trained posterior against an evaluation set.
 
     ``n_draw`` is the number of samples drawn from the model; the reference
-    side is whatever the battery stores (4,000 draws by default). Both sample
-    sizes enter the estimator's noise, so the floor is computed with the same
-    left-hand sample size as the measurement.
+    side is whatever the evaluation set stores (4,000 draws by default). Both
+    sample sizes enter the estimator's noise, so the floor is computed with the
+    same left-hand sample size as the measurement.
 
-    Returns the median and mean FID over the battery's observation sets, the
-    battery's own floor, their ratio (below ~2 the comparison is not resolved),
+    Returns the median and mean FID over the set's observation instances, the
+    set's own floor, their ratio (below ~2 the comparison is not resolved),
     the per-set values, and -- when ``prior_range`` is given -- the absolute
     posterior-mean error in prior-range units, which does not depend on how
     narrow the target posterior is.
@@ -371,12 +364,12 @@ def _draw_worker(args):
 
 def build_eval_set(problem, name, K, n_sets=32, n_chain=200000, seed=4243,
                   path=None, max_discrepancy=0.25, workers=None):
-    """Build, validate, and (optionally) save a battery.
+    """Build, validate, and (optionally) save an evaluation set.
 
     Raises if the two independent reference draws disagree by more than
-    ``max_discrepancy`` posterior standard deviations on any set: such a
-    battery measures its own sampler rather than the model, and saving it
-    would let that number reach a table.
+    ``max_discrepancy`` posterior standard deviations on any instance: such an
+    evaluation set measures its own sampler rather than the model, and saving
+    it would let that number reach a table.
     """
     from concurrent.futures import ProcessPoolExecutor
 
@@ -393,9 +386,9 @@ def build_eval_set(problem, name, K, n_sets=32, n_chain=200000, seed=4243,
             tidx = torch.unique(tidx)
             cidx = torch.zeros_like(tidx)
         # Multi-channel systems keep the (time, channel) pairs their design law
-        # produced. Forcing channel 0 here once built a Lotka--Volterra set
-        # that never observed the predator while the network had trained on
-        # both, so the evaluation measured a design the model never sees.
+        # produced: collapsing everything to channel 0 can build sets that
+        # never observe one of the channels the network trained on, and the
+        # evaluation would then measure a design the model never sees.
         tk = problem.tokens_for(raw[i], tidx, cidx, gen)
         tokens[i, :tk.shape[0]] = tk
         mask[i, :tk.shape[0]] = True

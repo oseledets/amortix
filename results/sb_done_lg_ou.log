@@ -1,5 +1,0 @@
-honest scoreboard | 40000 sims, 12000 steps | 100 datasets x 400 draws
-          case | prior-only |   ridge | amortized | classical | verdict
-------------------------------------------------------------------------------
-linear_gaussian |     24.19% |  18.24% |     4.25% |     4.19% | beats ridge
-            ou |     24.84% |  11.12% |     8.90% |     8.45% | beats ridge

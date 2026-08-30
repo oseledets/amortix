@@ -9,10 +9,11 @@ so the velocity field only has to learn the data-induced deviation from the prio
 (easier to fit, better calibrated), and denormalization through Phi keeps every
 posterior sample strictly inside the prior box.
 
-(An earlier affine standardization mapped the prior to a *bounded uniform* while
-the base stayed Gaussian; that marginal mismatch forced the flow to transport
-Gaussian tails into a flat box, piling mass at the boundaries and miscalibrating
-the posterior — visible in SBC. The probit map removes that mismatch.)
+(An affine standardization would map the prior to a *bounded uniform* while
+the base stays Gaussian; that marginal mismatch forces the flow to transport
+Gaussian tails into a flat box, piling mass at the boundaries and
+miscalibrating the posterior — visible in SBC. The probit map removes the
+mismatch.)
 """
 from __future__ import annotations
 

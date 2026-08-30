@@ -7,13 +7,11 @@ O(1/sqrt(N)) error, unbiased normalizing constant). The admission protocol is
 N-doubling: a reference is accepted when the population at N and an
 independent population at 2N agree below the evaluation floor.
 
-Validation record (the one-time referee panel that selected this engine, on
-the two hardest FitzHugh-Nagumo instances -- needle posteriors on which plain
-MH chains disagreed by 841 sd and dense quadrature failed its own refinement
-gate):
+Validation record, on the two hardest FitzHugh-Nagumo instances (needle
+posteriors):
   * two independent SMC populations: 0.026-0.035 sd, FID 0.003-0.006;
   * against dynesty nested sampling (external package, different algorithm
-    family, ~110k likelihood evaluations): 0.012-0.018 sd, FID 0.0013-0.0014.
+    family): 0.012-0.018 sd, FID 0.0013-0.0014.
 """
 import numpy as np
 import torch
@@ -28,7 +26,7 @@ def smc_posterior(logp_batch, lo, hi, n_part=4096, seed=0, ess_frac=0.5,
     beta = 0.0
     logw = torch.zeros(n_part)
     for stage in range(max_stages):
-        # адаптивный шаг температуры: ESS(dbeta) = ess_frac * N
+        # adaptive temperature step: choose dbeta so that ESS(dbeta) = ess_frac * N
         lo_b, hi_b = 0.0, 1.0 - beta
         for _ in range(40):
             mid = 0.5 * (lo_b + hi_b)
@@ -41,7 +39,7 @@ def smc_posterior(logp_batch, lo, hi, n_part=4096, seed=0, ess_frac=0.5,
                 hi_b = mid
         dbeta = lo_b if beta + lo_b < 1.0 - 1e-9 else 1.0 - beta
         beta += dbeta
-        # перевзвешивание + систематический ресэмплинг
+        # reweight + systematic resampling
         w = dbeta * lp
         w = torch.exp(w - torch.logsumexp(w, 0))
         u = (torch.rand(1) + torch.arange(n_part)) / n_part
@@ -51,7 +49,7 @@ def smc_posterior(logp_batch, lo, hi, n_part=4096, seed=0, ess_frac=0.5,
         idx = torch.searchsorted(torch.cumsum(w, 0),
                                  u.clamp(max=1 - 1e-9)).clamp(max=n_part - 1)
         m, lp = m[idx], lp[idx]
-        # освежение: батчевый RW-MH при текущей beta
+        # rejuvenation: batched random-walk MH at the current beta
         cov = torch.cov(m.T) + 1e-9 * torch.eye(d)
         L = torch.linalg.cholesky(cov) * (2.38 / d ** 0.5) * 0.7
         for _ in range(n_rejuv):
