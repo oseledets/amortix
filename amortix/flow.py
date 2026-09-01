@@ -357,12 +357,12 @@ class FlowPosterior(nn.Module):
             # embedding.
             from .sde import PathObserver
             if is_design:
-                # class rule, verified from both sides: consecutive-pair
-                # structure is sufficient iff the observed process is
-                # Markov; otherwise bare points are the correct (and
-                # measured-best) token.
-                embed = ("wfilm" if getattr(problem, "markov_observed", False)
-                         else "wpoint")
+                # one universal default for every variable-design problem:
+                # bare-point tokens with the learnable warp. The pair
+                # embedding (embed="wfilm"/"wpair"), which adds consecutive
+                # warped-increment features, is an explicit opt-in -- it is
+                # never selected automatically.
+                embed = "wpoint"
             elif isinstance(problem.observer, PathObserver):
                 embed = "wbasis"
             else:

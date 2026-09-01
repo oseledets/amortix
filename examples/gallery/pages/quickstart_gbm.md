@@ -1,6 +1,6 @@
 # The amortized posterior matches the exact GBM posterior at arbitrary observation points
 
-The example script contains the whole problem definition — a prior box, a simulator loop, an observation grid. A small design-amortized posterior trains on it for 1,200 optimizer steps on a laptop CPU and then answers one fresh observation set: 20 points of a single path at uniformly random times. For geometric Brownian motion the posterior on any such point set exists in closed form, and that referee is the only piece imported from the package. The comparison is quantitative: the run below reaches a squared Fréchet distance (FID) of 0.0281 between 2,000 amortized draws and 2,000 exact draws, where two independent 2,000-draw sets from the *same* distribution already score about 0.004.
+The example script contains the whole problem definition — a prior box, a simulator loop, an observation grid. A small design-amortized posterior trains on it for 1,200 optimizer steps on a laptop CPU and then answers one fresh observation set: 20 points of a single path at uniformly random times. For geometric Brownian motion the posterior on any such point set exists in closed form, and that referee is the only piece imported from the package. The comparison is quantitative: with the package default (bare-point tokens) the run below reaches a squared Fréchet distance (FID) of 0.165 between 2,000 amortized draws and 2,000 exact draws, where two independent 2,000-draw sets from the *same* distribution already score about 0.004; the opt-in pair embedding (`embed="wfilm"`, which adds learnable warped-increment features) brings the same budget to 0.028.
 
 <img src="../../../docs/media/quickstart_gbm.png" width="100%">
 
@@ -32,7 +32,6 @@ The script contains the full problem definition. A `DesignProblem` subclass stat
 class GBM(DesignProblem):
     """dS = mu S dt + sigma S dW, S0 = 1, observed at arbitrary times."""
 
-    markov_observed = True      # observations determine the state exactly
 
     def __init__(self):
         self.prior = BoxUniform(low=[-0.20, 0.10], high=[0.40, 0.60],
@@ -133,8 +132,8 @@ and the final printout:
 
 ```
 true parameters : [0.25457894802093506, 0.23965543508529663]
-posterior mean  : [0.24510666728019714, 0.2736765742301941]
-FID vs exact    : 0.0281 (estimator floor at n=2000 is ~0.004)
+posterior mean  : [0.2282574474811554, 0.28653472661972046]
+FID vs exact    : 0.1646 (estimator floor at n=2000 is ~0.004)
 ```
 
 Training takes about 25 minutes here (1499.3 s at the last logged step); sampling the 2,000 posterior draws afterwards takes milliseconds. The observation set and the reference are fixed by explicit seeds, so the true parameters and the exact posterior reproduce exactly; the trained network — and with it the posterior mean and the FID — varies slightly between platforms, which is why the test below asserts a ratio rather than this exact number.
@@ -142,7 +141,7 @@ Training takes about 25 minutes here (1499.3 s at the last logged step); samplin
 ## Verification
 
 * [`tests/test_examples.py`](../../../tests/test_examples.py)`::test_gbm_beats_prior_fid` pins a shrunk version of this script — the `pico` model (width 8, two blocks), `n_train=1500`, 400 optimizer steps, the same seed-1 observation set — and requires the trained posterior's FID against the exact posterior to be at most half the FID of 2,000 prior samples against the same reference (`assert f_model <= 0.5 * f_prior`). The test imports the `GBM` class from this example file itself, so the problem it pins is the one shown above.
-* The FID estimator is positive even for two draw sets from the same distribution, at order $d/n$; at $n = 2000$ this floor is about 0.004, so the run's 0.0281 is to be read against 0.004 as the value indistinguishable from a perfect match at this draw count, and against the much larger FID of prior samples pinned by the test.
+* The FID estimator is positive even for two draw sets from the same distribution, at order $d/n$; at $n = 2000$ this floor is about 0.004, so the run's 0.165 is to be read against 0.004 as the value indistinguishable from a perfect match at this draw count, and against the much larger FID of prior samples pinned by the test.
 * The reference guards its own validity: `gbm_exact_from_points` raises when the effective sample size of the importance correction stays below the requested draw count, so a degraded reference cannot silently enter the comparison.
 
 ## Running the example

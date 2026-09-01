@@ -1,6 +1,6 @@
 # A frozen evaluation set carries validated exact-likelihood references and its own resolution floor
 
-The other gallery pages train a model and check it against a single reference instance; this one runs the package's full evaluation instrument. `build_eval_set` freezes four observation instances of the Cox--Ingersoll--Ross process at $K = 20$ points each, draws **two independent** exact-likelihood MCMC chains per instance, refuses the set if the chains disagree, and records the set's own resolution floor; `evaluate` then scores a trained posterior against it in seconds. CIR is imported from the package rather than defined in the script: its simulator draws the exact noncentral chi-square transition, and that simulator is what makes an exact-likelihood reference possible at all — defining your own system is [`01_quickstart_gbm.py`](../01_quickstart_gbm.py) and [`04_custom_problem.py`](../04_custom_problem.py). A `tiny` model trained at a small budget (8,000 trajectories, 3,000 optimizer steps) scores a median FID of 0.3369 against a floor of 0.0095: a well-resolved measurement of a posterior that the budget leaves visibly over-dispersed.
+The other gallery pages train a model and check it against a single reference instance; this one runs the package's full evaluation instrument. `build_eval_set` freezes four observation instances of the Cox--Ingersoll--Ross process at $K = 20$ points each, draws **two independent** exact-likelihood MCMC chains per instance, refuses the set if the chains disagree, and records the set's own resolution floor; `evaluate` then scores a trained posterior against it in seconds. CIR is imported from the package rather than defined in the script: its simulator draws the exact noncentral chi-square transition, and that simulator is what makes an exact-likelihood reference possible at all — defining your own system is [`01_quickstart_gbm.py`](../01_quickstart_gbm.py) and [`04_custom_problem.py`](../04_custom_problem.py). A `tiny` model trained at a small budget (8,000 trajectories, 3,000 optimizer steps) scores a median FID of 0.2874 against a floor of 0.0095: a well-resolved measurement of a posterior that the budget leaves visibly over-dispersed.
 
 <img src="../../../docs/media/cir_reference.png" width="100%">
 
@@ -92,37 +92,37 @@ The training trace of the recorded run (`cfm` is the flow-matching training loss
 
 ```
 [fit] simulating 8000 training trajectories (31 batches/epoch)...
-  epoch   0  step     31  cfm 2.1138  (38.1s)
-  epoch   9  step    310  cfm 0.8374  (396.2s)
-  epoch  18  step    589  cfm 0.7510  (734.8s)
-  epoch  27  step    868  cfm 0.7380  (1127.6s)
-  epoch  36  step   1147  cfm 0.7375  (1464.1s)
-  epoch  45  step   1426  cfm 0.7238  (1690.9s)
-  epoch  54  step   1705  cfm 0.7240  (1876.3s)
-  epoch  63  step   1984  cfm 0.7061  (2075.1s)
-  epoch  72  step   2263  cfm 0.7162  (2216.6s)
-  epoch  81  step   2542  cfm 0.7045  (2277.4s)
-  epoch  90  step   2821  cfm 0.7073  (2343.2s)
-  epoch  96  step   3007  cfm 0.7015  (2403.0s)
+  epoch   0  step     31  cfm 2.0689  (12.1s)
+  epoch   9  step    310  cfm 0.9884  (88.3s)
+  epoch  18  step    589  cfm 0.8051  (172.2s)
+  epoch  27  step    868  cfm 0.7754  (247.0s)
+  epoch  36  step   1147  cfm 0.7655  (332.0s)
+  epoch  45  step   1426  cfm 0.7478  (405.0s)
+  epoch  54  step   1705  cfm 0.7434  (509.9s)
+  epoch  63  step   1984  cfm 0.7209  (601.7s)
+  epoch  72  step   2263  cfm 0.7246  (674.5s)
+  epoch  81  step   2542  cfm 0.7123  (748.9s)
+  epoch  90  step   2821  cfm 0.7144  (816.0s)
+  epoch  96  step   3007  cfm 0.7075  (862.2s)
 ```
 
 and the final printout:
 
 ```
 evaluation set: EvalSet(cir, K=20, 4 sets, chain=20000, floor=0.0087, max inter-chain 0.100 sd)
-median FID 0.3369 against a floor of 0.0095
+median FID 0.2874 against a floor of 0.0095
 ```
 
 The repr is the set's own certificate: the worst per-parameter disagreement between the two reference chains is 0.100 posterior standard deviations, against the admission limit of 0.25, and the floor at the stored chain length is 0.0087. The score line quotes 0.0095 instead — the same floor recomputed at the 2,000-draw configuration of the measurement, as the source comment above requires.
 
-The per-set FIDs in the figure are 0.4423, 0.5341, 0.2316 and 0.0611 — the printed 0.3369 is their median. The spread of nearly an order of magnitude across four instances is why the default `n_sets` is 32; this script builds 4 to keep the reference chains to minutes. The figure shows what the numbers mean: in sets 0--2 the blue draws cover the orange reference regions but spill well beyond them — toward larger $a$ and across $b$ — so the amortized posterior at this budget is too wide rather than centered in the wrong place; set 3 sits nearly on top of its reference at 0.0611.
+The per-set FIDs in the figure are 0.2895, 0.2310, 0.6197 and 0.2853 — the printed 0.2874 is their median. The spread across instances is why the default `n_sets` is 32; this script builds 4 to keep the reference chains to minutes. The figure shows what the numbers mean: in every set the blue draws cover the orange reference regions but extend beyond them, so the amortized posterior at this budget is too wide rather than centered in the wrong place; the worst score (set 2, 0.62) comes from the long ridge along $a$ that the model resolves only partially.
 
 The over-dispersion reflects the training budget. This run uses the `tiny` model with 8,000 simulations and 3,000 optimizer steps; the technical report's main comparison trains the same architecture under the full recipe — 90,000 optimizer steps, simulation budgets from 5,000 to 480,000 per system — and its Cox--Ingersoll--Ross row reads $0.0733 \pm 0.0110$ at the same `tiny` size (against a floor of 0.0028 on the report's longer-chain sets).
 
 ## Verification
 
 * **Two independent chains, and a gate.** Every instance carries two reference draws from different seeds, and `build_eval_set` raises rather than returning a set whose chains disagree by more than 0.25 posterior standard deviations on any parameter of any instance. The gate runs on every execution of this script; the recorded run passed it at 0.100 sd.
-* **The floor travels with the score.** 0.3369 is printed next to 0.0095 in the same line, and the floor is itself a measurement: the FID between the two reference chains at the measurement's own draw count. The ratio here is about 35; `evaluate` flags a comparison as unresolved when it falls below roughly 2.
+* **The floor travels with the score.** 0.2874 is printed next to 0.0095 in the same line, and the floor is itself a measurement: the FID between the two reference chains at the measurement's own draw count. The ratio here is about 30; `evaluate` flags a comparison as unresolved when it falls below roughly 2.
 * **The reference describes the simulator, exactly.** The likelihood the chains sample is the noncentral chi-square transition over each observed gap plus the stationary Gamma start — the same distributions the simulator draws from, so no discretization error separates the data-generating chain from the posterior it is scored against.
 
 Unlike the GBM and oscillator pages, this example has no shrunk counterpart pinned in [`tests/test_examples.py`](../../../tests/test_examples.py); the checks above are the instrument's own, and the admission gate re-runs whenever the set is rebuilt.

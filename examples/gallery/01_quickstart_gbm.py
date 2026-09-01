@@ -28,7 +28,6 @@ MEDIA = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 class GBM(DesignProblem):
     """dS = mu S dt + sigma S dW, S0 = 1, observed at arbitrary times."""
 
-    markov_observed = True      # observations determine the state exactly
 
     def __init__(self):
         self.prior = BoxUniform(low=[-0.20, 0.10], high=[0.40, 0.60],

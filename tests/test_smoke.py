@@ -374,9 +374,13 @@ def test_design_zoo_end_to_end():
         m, raw = prob.simulate(4)
         assert torch.isfinite(raw).all(), name
         post = FlowPosterior(prob, dim_model=32, depth=2)
-        expected = (SetCondPairEmbed if getattr(prob, "markov_observed", False)
-                    else PointEmbed)
-        assert isinstance(post.encoder.embed, expected), name
+        # one universal default for every design problem; the pair embedding
+        # is opt-in only
+        assert isinstance(post.encoder.embed, PointEmbed), name
+        assert isinstance(
+            FlowPosterior(prob, dim_model=32, depth=2,
+                          embed="wfilm").encoder.embed,
+            SetCondPairEmbed), name
         post.fit(n_train=32, epochs=1, batch=16, verbose=False,
                  retokenize=prob.make_retokenizer())
         gen = torch.Generator().manual_seed(0)

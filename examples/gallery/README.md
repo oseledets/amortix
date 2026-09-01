@@ -15,8 +15,10 @@ with `--png` and caches its trained model with `--ckpt PATH`.
 <b><a href="pages/quickstart_gbm.md">quickstart_gbm</a></b> (<a href="01_quickstart_gbm.py">code</a>) —
 geometric Brownian motion dS = &mu;S&thinsp;dt + &sigma;S&thinsp;dW recovered from 20 points at
 random times, with the whole interface written out in the file: prior box, simulator loop,
-observation grid. The tiny posterior of this run reaches FID 0.028 against the exact posterior
-on the same points, where the 2,000-draw sampling floor is about 0.004.
+observation grid. With the package default (bare-point tokens) this run reaches FID 0.16
+against the exact posterior on the same points (2,000-draw sampling floor about 0.004);
+passing the opt-in pair embedding, <code>embed="wfilm"</code>, brings the
+same budget to FID 0.028.
 <i>Reference: the exact conjugate posterior, in closed form.</i>
 </td>
 <td width="50%">
