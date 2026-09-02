@@ -628,6 +628,12 @@ class FlowPosterior(nn.Module):
                 else:
                     tb = tokens[idx]
                     mb = None if data_mask is None else data_mask[idx]
+                if ep == 0 and b == 0:
+                    # Tokens from a retokenizer or a precomputed set are
+                    # checked against the layout contract once, on the first
+                    # batch; every later batch comes from the same
+                    # constructor.
+                    self._check_design_tokens(tb, mb)
                 if token_dropout == "design":
                     # design amortization: every example keeps K_i ~ log-uniform
                     # in [2, T] randomly chosen tokens, so ONE network learns
@@ -774,6 +780,21 @@ class FlowPosterior(nn.Module):
         torch.set_num_threads(_threads0)
         return self
 
+    def _check_design_tokens(self, tokens, mask=None) -> None:
+        """Layout check for DesignObserver tokens built outside the package.
+
+        The bare-point embedding reads token slots 0, 1, 4 and 5 and ignores
+        the reserved slots 2-3, so a token set that departs from the
+        documented layout is otherwise accepted and conditioned on wrongly
+        with no error raised (see designs.validate_design_tokens). Only
+        DesignProblem models are checked: PathObserver and
+        TimeSeriesObserver tokens carry increments in slots 2-3 by design.
+        """
+        from .designs import DesignObserver, DesignProblem, validate_design_tokens
+        if (isinstance(self.problem, DesignProblem)
+                and isinstance(self.problem.observer, DesignObserver)):
+            validate_design_tokens(tokens, self.problem.observer, mask)
+
     # --- inference -------------------------------------------------------
     @torch.no_grad()
     def sample_batch(self, tokens, n: int = 1000, n_steps: int = 20,
@@ -787,6 +808,7 @@ class FlowPosterior(nn.Module):
         """
         if isinstance(tokens, (list, tuple)):                 # variable-length input
             tokens, mask = pack_tokens([torch.as_tensor(t) for t in tokens])
+        self._check_design_tokens(tokens, mask)
         gen = torch.Generator().manual_seed(seed)
         dev = next(self.parameters()).device
         outs = []

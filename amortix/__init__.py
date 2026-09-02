@@ -24,7 +24,8 @@ from .problems.stoch_lv import StochasticLotkaVolterra
 from .problems.fhn import FitzHughNagumo
 from .problems.sindy_sde import PolynomialDriftSDE
 
-from .designs import DesignProblem, DesignObserver, sbc_design, tokens_from_data
+from .designs import (DesignProblem, DesignObserver, sbc_design,
+                      tokens_from_data, validate_design_tokens)
 from .problems.design_zoo import DESIGN_ZOO
 
 __all__ = [
@@ -53,5 +54,6 @@ __all__ = [
     "DesignObserver",
     "sbc_design",
     "tokens_from_data",
+    "validate_design_tokens",
     "DESIGN_ZOO",
 ]

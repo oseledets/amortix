@@ -195,16 +195,128 @@ def tokens_from_data(prob: DesignProblem, times, values, channels=None):
     if channels is None:
         c = torch.zeros(t.numel())
     else:
-        c = torch.as_tensor(np.asarray(channels)).reshape(-1).float()
+        c = torch.as_tensor(np.asarray(channels)).reshape(-1)
         if c.numel() != t.numel():
             raise ValueError("channels must have one entry per reading")
+        if c.is_floating_point() and not torch.equal(c, c.round()):
+            raise ValueError("channels must be integer channel ids, got "
+                             f"{c.tolist()}")
+        c = c.long()
+        if c.numel() and (c.min() < 0 or c.max() >= obs.n_channels):
+            raise ValueError(
+                f"channels must lie in [0, n_channels={obs.n_channels}), "
+                f"got {c.tolist()}")
+        c = c.float()
     order = torch.argsort(t, stable=True)
     t, y, c = t[order], y[order], c[order]
     # same feature layout as DesignProblem.tokens_for:
     # [t/horizon, y, 0, 0, log(K)/log(k_max), channel]
     z = torch.zeros_like(y)
     kf = torch.full_like(y, math.log(t.numel()) / math.log(obs.k_max))
-    return torch.stack([t / obs.horizon, y, z, z, kf, c], dim=-1)
+    tokens = torch.stack([t / obs.horizon, y, z, z, kf, c], dim=-1)
+    validate_design_tokens(tokens, obs)
+    return tokens
+
+
+def validate_design_tokens(tokens, observer: DesignObserver, mask=None,
+                           tol: float = 1e-4) -> None:
+    """Check that ``tokens`` follow the DesignObserver layout; raise otherwise.
+
+    tokens: [..., K, 6] with rows [t/horizon, value, 0, 0, log K/log k_max,
+    channel]. mask: optional bool [..., K]; rows with mask False are padding
+    and are not inspected. The bare-point embedding reads slots 0, 1, 4 and
+    5 and ignores slots 2 and 3, so a token set that departs from the layout
+    (a second reading packed into a reserved slot, a channel id outside the
+    observer's range, a design-size entry that does not match the set) is
+    otherwise conditioned on wrongly with no error raised. The checks:
+
+      slot 0     normalized time in [0, 1]
+      slot 1     finite value
+      slots 2-3  exactly zero (reserved)
+      slot 4     log K / log k_max in [0, 1], with K the number of valid
+                 rows of the set, i.e. the design size the network is told
+      slot 5     integer channel id in [0, n_channels)
+
+    ``DesignProblem.tokens_for`` and ``tokens_from_data`` produce conforming
+    tokens; FlowPosterior calls this check on the tokens it receives for a
+    DesignProblem. ``tol`` absorbs float32 rounding of the normalized time
+    and of the design-size entry.
+    """
+    tokens = torch.as_tensor(tokens)
+    nf = observer.N_FEATURES
+    if tokens.dim() < 2 or tokens.shape[-1] != nf:
+        raise ValueError(
+            f"design tokens must have shape [..., K, {nf}], got "
+            f"{tuple(tokens.shape)}. {_LAYOUT_HINT}")
+    K = tokens.shape[-2]
+    sets = tokens.reshape(-1, K, nf)
+    if mask is None:
+        valid = torch.ones(sets.shape[:2], dtype=torch.bool, device=sets.device)
+    else:
+        valid = torch.as_tensor(mask, dtype=torch.bool, device=sets.device)
+        if valid.shape != tokens.shape[:-1]:
+            raise ValueError(f"mask shape {tuple(valid.shape)} does not match "
+                             f"token sets {tuple(tokens.shape[:-1])}")
+        valid = valid.reshape(-1, K)
+    rows = sets[valid]                                   # [N, 6], valid only
+    if rows.numel() == 0:
+        return
+    n_valid = valid.sum(1)                               # design size per set
+    set_of_row = torch.nonzero(valid)                    # [N, 2] -> (set, row)
+
+    def fail(slot: int, what: str, bad: torch.Tensor, detail: str = ""):
+        i = int(torch.nonzero(bad)[0])
+        b, r = (int(v) for v in set_of_row[i])
+        raise ValueError(
+            f"design token slot {slot} {what}: found {rows[i, slot].item():g} "
+            f"(set {b}, row {r}){detail}. {_LAYOUT_HINT}")
+
+    finite = torch.isfinite(rows)
+    if not finite.all():
+        bad_row = ~finite.all(1)
+        first = int(torch.nonzero(bad_row)[0])
+        fail(int(torch.nonzero(~finite[first])[0]), "must be finite", bad_row)
+    t = rows[:, 0]
+    fail_t = (t < -tol) | (t > 1.0 + tol)
+    if fail_t.any():
+        fail(0, "(time / horizon) must lie in [0, 1]", fail_t)
+    for slot in (2, 3):
+        nz = rows[:, slot] != 0
+        if nz.any():
+            fail(slot, "is reserved and must be exactly 0", nz)
+    kf = rows[:, 4]
+    too_many = n_valid[set_of_row[:, 0]] > observer.k_max
+    if too_many.any():
+        b = int(set_of_row[int(torch.nonzero(too_many)[0]), 0])
+        fail(4, "(log K / log k_max) exceeds 1", too_many,
+             f"; set {b} has K={int(n_valid[b])} valid rows, more than "
+             f"observer.k_max={observer.k_max}")
+    if observer.k_max > 1:
+        expected = (torch.log(n_valid.clamp_min(1).float())
+                    / math.log(observer.k_max))
+        off = (kf - expected[set_of_row[:, 0]]).abs() > tol
+        if off.any():
+            b = int(set_of_row[int(torch.nonzero(off)[0]), 0])
+            k_b = int(n_valid[b])
+            fail(4, "(log K / log k_max) does not match the set", off,
+                 f"; set {b} has K={k_b} valid rows, so the entry must be "
+                 f"log({k_b})/log({observer.k_max}) = {float(expected[b]):.4f}"
+                 " (padding rows must be marked with mask=False)")
+    fail_kf = (kf < -tol) | (kf > 1.0 + tol)
+    if fail_kf.any():
+        fail(4, "(log K / log k_max) must lie in [0, 1]", fail_kf)
+    c = rows[:, 5]
+    fail_c = (c != c.round()) | (c < 0) | (c >= observer.n_channels)
+    if fail_c.any():
+        fail(5, "(channel id) must be an integer in "
+                f"[0, n_channels={observer.n_channels})", fail_c)
+
+
+_LAYOUT_HINT = (
+    "DesignObserver tokens are [t/horizon, value, 0, 0, log K/log k_max, "
+    "channel] with one reading per row; the embedding reads slots 0, 1, 4 "
+    "and 5 only. Build tokens with DesignProblem.tokens_for or "
+    "amortix.designs.tokens_from_data.")
 
 
 def sbc_design(post, prob: DesignProblem, n_sims: int = 400,

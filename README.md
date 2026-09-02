@@ -200,6 +200,12 @@ tokens = tokens_from_data(prob, times=[0.4, 1.1, 2.6, 7.3, 9.0],
 draws = post.sample(tokens, n=2000)
 ```
 
+A token is one reading of one channel at one time, in the slots
+`[t/horizon, value, 0, 0, log K/log k_max, channel]`; `sample` and `fit` check tokens of a
+design problem against this layout (`amortix.validate_design_tokens`) and raise on a
+departure from it, since the embedding reads slots 0, 1, 4 and 5 and would otherwise
+ignore data placed elsewhere.
+
 **Step 5 — the check.** Where a tractable likelihood exists, compare against a reference
 posterior: `amortix.evaluation.build_eval_set` freezes an evaluation set with two independent
 reference chains, and `evaluate` scores any posterior against it (the pattern of

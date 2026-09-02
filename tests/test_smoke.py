@@ -7,6 +7,7 @@ install and the Problem contract, not statistical quality.
 from __future__ import annotations
 
 import importlib
+import math
 
 import numpy as np
 import pytest
@@ -415,6 +416,134 @@ def test_tokens_from_data_matches_tokens_for():
     assert torch.allclose(tok, ref)
     # channel default: all zeros, matching the single-channel design draw
     assert torch.allclose(tokens_from_data(prob, times, values), ref)
+
+
+def test_design_token_layout_is_enforced():
+    """DesignObserver tokens that depart from the documented layout are
+    rejected at sample() and at the first batch of fit(); padded rows are
+    not inspected.
+
+    The bare-point embedding reads slots 0, 1, 4 and 5 only. A second
+    series packed into slot 2 is therefore dropped without any error unless
+    the layout is checked at the entry points; the error must name the
+    slot and the supported constructors.
+    """
+    from amortix.problems.design_basic import LotkaVolterraDesign
+
+    prob = LotkaVolterraDesign()
+    obs = prob.observer
+    post = FlowPosterior(prob, dim_model=32, depth=2)
+    gen = torch.Generator().manual_seed(0)
+    _, raw = prob.simulate(1, generator=gen)
+    tidx, cidx = prob.sample_design(gen, 12)
+    tok = prob.tokens_for(raw[0], tidx, cidx, gen)
+    assert post.sample(tok, n=4, n_steps=2).shape == (4, prob.prior.dim)
+
+    # a second data channel in the reserved slot 2
+    bad = tok.clone()
+    bad[:, 2] = raw[0, tidx, 1]
+    with pytest.raises(ValueError, match="slot 2") as info:
+        post.sample(bad, n=4, n_steps=2)
+    assert "tokens_for" in str(info.value)
+    assert "tokens_from_data" in str(info.value)
+    # the batch entry point and the variable-length list input, same check
+    with pytest.raises(ValueError, match="slot 2"):
+        post.sample_batch(bad[None], n=4, n_steps=2)
+    with pytest.raises(ValueError, match="slot 2"):
+        post.sample_batch([tok, bad], n=4, n_steps=2)
+
+    def rejected(edit, slot):
+        t = tok.clone()
+        edit(t)
+        with pytest.raises(ValueError, match=f"slot {slot}"):
+            post.sample(t, n=4, n_steps=2)
+
+    rejected(lambda t: t.__setitem__((3, 3), 1.0), 3)          # reserved
+    rejected(lambda t: t.__setitem__((0, 0), 1.5), 0)          # beyond horizon
+    rejected(lambda t: t.__setitem__((0, 0), -0.1), 0)         # before zero
+    rejected(lambda t: t.__setitem__((5, 1), float("nan")), 1) # non-finite value
+    rejected(lambda t: t.__setitem__((slice(None), 4), 1.0), 4)   # K metadata != 12
+    rejected(lambda t: t.__setitem__((slice(None), 4), 1.5), 4)   # out of [0, 1]
+    rejected(lambda t: t.__setitem__((slice(None), 5), 2.0), 5)   # channel >= n_channels
+    rejected(lambda t: t.__setitem__((slice(None), 5), 0.5), 5)   # non-integer channel
+    rejected(lambda t: t.__setitem__((0, 5), -1.0), 5)            # negative channel
+
+    # padded rows are skipped: arbitrary content under mask=False is fine
+    padded = torch.zeros(1, obs.k_max, 6)
+    padded[0, :12] = tok
+    padded[0, 12:, 2] = 7.0
+    mask = torch.zeros(1, obs.k_max, dtype=torch.bool)
+    mask[0, :12] = True
+    out = post.sample_batch(padded, n=4, n_steps=2, mask=mask)
+    assert out.shape == (1, 4, prob.prior.dim) and torch.isfinite(out).all()
+    # zero padding with the mask forgotten: the design-size entry no longer
+    # matches the number of rows the set would be read with
+    padded[0, 12:, 2] = 0.0
+    with pytest.raises(ValueError, match="slot 4"):
+        post.sample_batch(padded, n=4, n_steps=2)
+    # wrong feature count
+    with pytest.raises(ValueError, match="shape"):
+        post.sample(tok[:, :5], n=4, n_steps=2)
+
+    # fit(): a retokenizer that writes slot 2 is rejected on the first batch
+    base = prob.make_retokenizer()
+
+    def retok(raw_b, g):
+        t, m = base(raw_b, g)
+        t = t.clone()
+        t[..., 2] = 1.0
+        return t, m
+
+    with pytest.raises(ValueError, match="slot 2"):
+        post.fit(n_train=32, epochs=1, batch=16, verbose=False, retokenize=retok)
+    # the conforming retokenizer trains
+    post.fit(n_train=32, epochs=1, batch=16, verbose=False,
+             retokenize=base)
+
+
+def test_tokens_from_data_multi_channel():
+    """Two channels through tokens_from_data: one reading per row, channel
+    id in slot 5, reserved slots zero; the set passes the layout check and
+    samples. Channel ids outside [0, n_channels) or non-integer are
+    rejected by the constructor itself.
+    """
+    from amortix import tokens_from_data
+    from amortix.problems.design_basic import LotkaVolterraDesign
+
+    prob = LotkaVolterraDesign()
+    obs = prob.observer
+    post = FlowPosterior(prob, dim_model=32, depth=2)
+    gen = torch.Generator().manual_seed(1)
+    _, raw = prob.simulate(1, generator=gen)
+    tidx = torch.tensor([50, 100, 150, 200, 250, 300]).repeat_interleave(2)
+    channels = [0, 1] * 6
+    times = tidx.float() * obs.dt_sim
+    values = raw[0, tidx, torch.tensor(channels)]
+
+    tok = tokens_from_data(prob, times, values, channels=channels)
+    assert tok.shape == (12, 6)
+    assert torch.equal(tok[:, 5], torch.tensor(channels, dtype=torch.float32))
+    assert (tok[:, 2:4] == 0).all()
+    assert torch.allclose(tok[:, 4], torch.full((12,), math.log(12) / math.log(obs.k_max)))
+    out = post.sample(tok, n=4, n_steps=2)
+    assert out.shape == (4, prob.prior.dim) and torch.isfinite(out).all()
+    # numpy channel ids and a tensor of ids are accepted alike
+    assert torch.equal(tokens_from_data(prob, times, values, channels=np.array(channels)), tok)
+    assert torch.equal(tokens_from_data(prob, times, values, channels=torch.tensor(channels)), tok)
+
+    with pytest.raises(ValueError, match="channel"):
+        tokens_from_data(prob, times, values, channels=[0, 2] * 6)
+    with pytest.raises(ValueError, match="channel"):
+        tokens_from_data(prob, times, values, channels=[-1, 0] * 6)
+    with pytest.raises(ValueError, match="channel"):
+        tokens_from_data(prob, times, values, channels=[0, 0.5] * 6)
+    # times beyond the horizon and designs larger than k_max are layout errors too
+    with pytest.raises(ValueError, match="slot 0"):
+        tokens_from_data(prob, times + obs.horizon, values, channels=channels)
+    big = obs.k_max + 1
+    with pytest.raises(ValueError, match="more than observer.k_max"):
+        tokens_from_data(prob, torch.linspace(0, obs.horizon, big),
+                         torch.ones(big))
 
 
 def test_design_sbc_runs():
