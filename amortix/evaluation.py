@@ -77,13 +77,70 @@ def model_of_size(problem, size: str = "small"):
     return FlowPosterior(problem, dim_model=dim, depth=depth)
 
 
-def load_posterior(problem, path: str, device=None):
-    """Load a checkpoint without being told its size, onto the fast device.
+# State-dict signature of every embedding mode ``SetTransformer`` can build,
+# by the parameter names each class registers under ``encoder.embed.``
+# (see encoder.py: SetCondPairEmbed, WarpPairEmbed, WarpDiffEmbed, PointEmbed,
+# and the plain nn.Linear / nn.Sequential branches):
+#
+#   wfilm   SetCondPairEmbed   warp_x.*  warp_t.*  norm.*  proj.*  cond.{0,2}.*
+#   wpair   WarpPairEmbed      warp_x.*  warp_t.*  norm.*  proj.*
+#   wdiff   WarpDiffEmbed      raw_s               norm.*  proj.*   (kind="slog")
+#   wbasis  WarpDiffEmbed      warp.*              norm.*  proj.[dim, 6]
+#   wpoint  PointEmbed         warp.*              norm.*  proj.[dim, 4]
+#   mlp     nn.Sequential      0.*  2.*
+#   linear  nn.Linear          weight  bias
+#
+# The rows are tested from the most specific marker to the least: ``cond`` is
+# unique to wfilm, ``warp_t`` to the two pair embeddings, ``raw_s`` to the
+# slog warp. wbasis and wpoint register the same names and are told apart by
+# the fan-in of ``proj``: WarpDiffEmbed insists on the 6-feature PathObserver
+# layout, PointEmbed always builds 4 features. The width is the fan-out of the
+# embedding's output projection in every mode.
+_EMBED_SIGNATURES = (
+    ("wfilm", "cond.0.weight", "proj.weight"),
+    ("wpair", "warp_t.log_s", "proj.weight"),
+    ("wdiff", "raw_s", "proj.weight"),
+    ("wbasis", "warp.log_s", "proj.weight"),      # wpoint when the fan-in is 4
+    ("mlp", "0.weight", "2.weight"),
+    ("linear", "weight", "weight"),
+)
 
-    The width and depth are read off the state dict, so a checkpoint can never
-    be loaded into a differently shaped model -- a mistake that is otherwise
-    silent right up to a wall of shape errors, and that costs a training run
-    when the checkpoint is the only copy.
+
+def _embed_signature(sd) -> tuple[str, int]:
+    """(embed mode, model width) read off the ``encoder.embed.*`` keys."""
+    for mode, marker, out in _EMBED_SIGNATURES:
+        if f"encoder.embed.{marker}" in sd:
+            w = sd[f"encoder.embed.{out}"]
+            if mode == "wbasis" and w.shape[1] == 4:
+                mode = "wpoint"
+            return mode, int(w.shape[0])
+    keys = sorted(k for k in sd if k.startswith("encoder.embed."))
+    raise ValueError(f"unrecognised embedding in checkpoint; encoder.embed keys: {keys}")
+
+
+def _n_blocks(sd, prefix: str) -> int:
+    """Number of ``<prefix><i>.*`` blocks in the state dict."""
+    idx = [int(k[len(prefix):].split(".")[0]) for k in sd if k.startswith(prefix)]
+    if not idx:
+        raise ValueError(
+            f"no {prefix}* keys in checkpoint: load_posterior reconstructs the "
+            "default architecture (cross-attention conditioning) only")
+    return 1 + max(idx)
+
+
+def load_posterior(problem, path: str, device=None):
+    """Load a checkpoint without being told its architecture, onto the fast device.
+
+    The width, the encoder and velocity depths and the embedding mode are all
+    read off the state dict (see ``_EMBED_SIGNATURES``), so a checkpoint can
+    never be loaded into a differently shaped model -- a mistake that is
+    otherwise silent right up to a wall of shape errors, and that costs a
+    training run when the checkpoint is the only copy. The embedding mode in
+    particular cannot be taken from ``FlowPosterior``'s default: that default
+    depends on the problem class and has changed over time (variable-design
+    problems once defaulted to the pair embedding, now ``embed="wfilm"`` is an
+    explicit option), so a checkpoint records which one it was trained with
+    only through its parameter names.
 
     ``device`` defaults to CUDA when it is available. That default is not
     cosmetic: ``sample_batch`` takes its device from the model's parameters, so
@@ -96,10 +153,11 @@ def load_posterior(problem, path: str, device=None):
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     sd = torch.load(path, map_location="cpu")
-    dim = sd["encoder.embed.proj.weight"].shape[0]
-    depth = 1 + max(int(k.split(".")[2]) for k in sd
-                    if k.startswith("velocity.blocks."))
-    post = FlowPosterior(problem, dim_model=dim, depth=depth)
+    embed, dim = _embed_signature(sd)
+    n_layer = _n_blocks(sd, "encoder.blocks.")
+    depth = _n_blocks(sd, "velocity.blocks.")
+    post = FlowPosterior(problem, dim_model=dim, n_layer=n_layer, depth=depth,
+                         embed=embed)
     post.load_state_dict(sd)
     post.eval()
     return post.to(device)

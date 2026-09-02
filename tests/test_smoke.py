@@ -429,3 +429,78 @@ def test_design_sbc_runs():
              retokenize=prob.make_retokenizer())
     p = sbc_design(post, prob, n_sims=24, n_post=20, seed=0)
     assert p.shape == (3,) and np.isfinite(p).all()
+
+
+@pytest.mark.parametrize("embed, cls_name", [
+    ("auto", "PointEmbed"),          # the design default (bare-point tokens)
+    ("wfilm", "SetCondPairEmbed"),   # the opt-in set-conditioned pair embedding
+    ("wpair", "WarpPairEmbed"),
+])
+def test_load_posterior_roundtrip_design(tmp_path, embed, cls_name):
+    """load_posterior rebuilds the embedding a checkpoint was trained with.
+
+    The default embedding depends on the problem class and has changed over
+    time, so a loader that assumes the current default silently puts an
+    older checkpoint into the wrong architecture. The mode, width and depths
+    are read off the state dict; the reloaded model must be the same class
+    and reproduce the original's draws exactly.
+    """
+    from amortix import encoder
+    from amortix.evaluation import load_posterior
+    from amortix.problems.design_basic import OUDesign
+
+    prob = OUDesign()
+    post = FlowPosterior(prob, dim_model=32, depth=2, embed=embed)
+    post.fit(n_train=32, epochs=1, batch=16, verbose=False,
+             retokenize=prob.make_retokenizer())
+    path = tmp_path / f"{embed}.pt"
+    torch.save(post.state_dict(), path)
+
+    loaded = load_posterior(prob, str(path), device="cpu")
+    assert type(loaded.encoder.embed) is getattr(encoder, cls_name)
+    assert type(loaded.encoder.embed) is type(post.encoder.embed)
+    assert loaded.embed_mode == post.embed_mode
+    assert loaded.encoder.dim == 32
+    assert len(loaded.encoder.blocks) == len(post.encoder.blocks)
+    assert len(loaded.velocity.blocks) == 2
+
+    gen = torch.Generator().manual_seed(0)
+    _, raw = prob.simulate(1)
+    tidx, cidx = prob.sample_design(gen, prob.k_min + 4)
+    tok = prob.tokens_for(raw[0], tidx, cidx, gen)
+    post.eval()
+    a = post.sample_batch([tok], n=8, seed=0, n_steps=6)
+    b = loaded.sample_batch([tok], n=8, seed=0, n_steps=6)
+    assert b.shape == (1, 8, prob.prior.dim) and torch.isfinite(b).all()
+    assert torch.allclose(a, b, atol=1e-5), "reloaded model draws differ"
+
+
+@pytest.mark.parametrize("problem_name, cls_name", [
+    ("linear_gaussian", "Linear"),   # plain linear embed: keys embed.weight/bias
+    ("ou", "WarpDiffEmbed"),         # PathObserver default (wbasis)
+])
+def test_load_posterior_roundtrip_gallery(tmp_path, problem_name, cls_name):
+    """The audit case and the SDE default: neither embedding has a ``proj``
+    submodule at the place the previous loader assumed (linear has none;
+    the warp classes do, the linear one does not), and both must load."""
+    import torch.nn as nn
+    from amortix import encoder
+    from amortix.evaluation import load_posterior
+
+    mod = importlib.import_module(f"amortix.problems.{problem_name}")
+    prob = mod.make()
+    post = FlowPosterior(prob, dim_model=32, depth=2)
+    post.fit(n_train=64, epochs=1, batch=32, verbose=False)
+    path = tmp_path / f"{problem_name}.pt"
+    torch.save(post.state_dict(), path)
+
+    loaded = load_posterior(prob, str(path), device="cpu")
+    expected = getattr(nn, cls_name, None) or getattr(encoder, cls_name)
+    assert type(loaded.encoder.embed) is expected
+    assert type(loaded.encoder.embed) is type(post.encoder.embed)
+    tk, _ = prob.observe(prob.prior.sample(1, generator=torch.Generator().manual_seed(0)))
+    post.eval()
+    a = post.sample_batch(tk, n=8, seed=0, n_steps=6)
+    b = loaded.sample_batch(tk, n=8, seed=0, n_steps=6)
+    assert b.shape == (1, 8, prob.prior.dim) and torch.isfinite(b).all()
+    assert torch.allclose(a, b, atol=1e-5), "reloaded model draws differ"
