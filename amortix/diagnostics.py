@@ -18,7 +18,7 @@ import torch
 
 
 def run_sbc(post, prob, n_sims: int = 300, n_post: int = 200, seed: int = 0,
-            chunk: int = 32):
+            chunk: int = 32, *, n_steps: int, solver: str, t_grid: str):
     """One pass of SBC. Returns a dict with ranks, estimates, stds, truths.
 
     ranks[i, j] in {0,...,n_post} is the rank of the true j-th parameter among
@@ -30,7 +30,7 @@ def run_sbc(post, prob, n_sims: int = 300, n_post: int = 200, seed: int = 0,
     m_true = prob.prior.sample(n_sims, generator=gen)
     tokens, _ = prob.observe(m_true, generator=gen)
 
-    draws = post.sample_batch(tokens, n=n_post, seed=seed, chunk=chunk)  # [n_sims, L, d]
+    draws = post.sample_batch(tokens, n=n_post, n_steps=n_steps, solver=solver, t_grid=t_grid, seed=seed, chunk=chunk)  # [n_sims, L, d]
     mt = m_true.numpy()
     s = draws.numpy()
     ranks = (s < mt[:, None, :]).sum(1).astype(np.int64)
@@ -105,10 +105,11 @@ def _ascii_hist(vals01, width: int = 24, n_bins: int = 10):
 
 
 def diagnose(post, prob, n_sims: int = 300, n_post: int = 200, seed: int = 0,
-             levels=(0.5, 0.9, 0.95), plot_path: str = None, verbose: bool = True):
+             levels=(0.5, 0.9, 0.95), plot_path: str = None, verbose: bool = True, *, n_steps: int, solver: str, t_grid: str):
     """Run SBC + coverage + error/uncertainty and print a report. Returns the
     raw results dict (so callers can post-process or plot)."""
-    res = run_sbc(post, prob, n_sims=n_sims, n_post=n_post, seed=seed)
+    res = run_sbc(post, prob, n_sims=n_sims, n_post=n_post, seed=seed,
+                  n_steps=n_steps, solver=solver, t_grid=t_grid)
     ranks, names, rng = res["ranks"], res["names"], res["rng"]
     cov = coverage_from_ranks(ranks, n_post, levels)
     pvals = sbc_uniformity(ranks, n_post)

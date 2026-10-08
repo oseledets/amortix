@@ -47,7 +47,7 @@ def test_gbm_beats_prior_fid():
     raw = prob.trajectories(m_true, gen)
     tidx, cidx = prob.sample_design(gen, 20)
     tokens = prob.tokens_for(raw[0], tidx, cidx, gen)
-    draws = post.sample(tokens, n=2000)
+    draws = post.sample(tokens, n=2000, n_steps=20, solver="midpoint", t_grid="late")
     exact = gbm_exact_from_points(prob, raw[0, :, 0], tidx, n_samples=2000)
     f_model = fid(draws.numpy(), exact)
     prior_draws = prob.prior.sample(2000, torch.Generator().manual_seed(2))
@@ -65,7 +65,7 @@ def test_oscillator_recovers_truth():
     m_true = prob.prior.sample(1, gen)
     raw = prob.trajectories(m_true, gen)
     tidx, cidx = prob.sample_design(gen, 12)
-    d = post.sample(prob.tokens_for(raw[0], tidx, cidx, gen), n=2000)
+    d = post.sample(prob.tokens_for(raw[0], tidx, cidx, gen), n=2000, n_steps=20, solver="midpoint", t_grid="late")
     prior_range = prob.prior.high - prob.prior.low
     err = (d.mean(0) - m_true[0]).abs()
     assert (err <= 0.35 * prior_range).all(), (err / prior_range).tolist()
@@ -85,5 +85,5 @@ def test_pk_design_size_monotonicity():
     for K in (6, 50):
         tidx, cidx = prob.sample_design(gen, K)
         tokens = prob.tokens_for(raw[0], tidx, cidx, gen)
-        sd[K] = post.sample(tokens, n=2000).std(0)
+        sd[K] = post.sample(tokens, n=2000, n_steps=20, solver="midpoint", t_grid="late").std(0)
     assert (sd[50] < sd[6]).any(), (sd[6].tolist(), sd[50].tolist())

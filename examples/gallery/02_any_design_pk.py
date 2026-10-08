@@ -26,6 +26,7 @@ MEDIA = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 class PK(DesignProblem):
     """C(t) = D ka / (V (ka - ke)) (e^{-ke t} - e^{-ka t}), noisy assays."""
+    value_coord = "log"          # log-normal noise: the token carries log y
 
     DOSE = 500.0
     LOGSD = 0.10                # multiplicative log-normal measurement noise
@@ -117,7 +118,7 @@ def render_gif(prob, post, m_true, raw, path):
     def draw(j):
         k = ks[min(j, len(ks) - 1)]
         tokens = tokens_from_data(prob, times[:k], y[:k])
-        d = post.sample(tokens, n=1200, seed=0).numpy()
+        d = post.sample(tokens, n=1200, seed=0, n_steps=20, solver="midpoint", t_grid="late").numpy()
         pts.set_data(times[:k].numpy(), y[:k].numpy())
         tl.set_text(f"K = {k} blood draws")
         sc.set_offsets(d[:, :2])
@@ -151,7 +152,7 @@ def main(argv=None):
     for K in (6, 20, 50):
         tidx, cidx = prob.sample_design(gen, K)
         tokens = prob.tokens_for(raw[0], tidx, cidx, gen)
-        d = post.sample(tokens, n=2000)
+        d = post.sample(tokens, n=2000, n_steps=20, solver="midpoint", t_grid="late")
         lo, hi = d.quantile(0.05, 0), d.quantile(0.95, 0)
         inside = bool(((m_true[0] >= lo) & (m_true[0] <= hi)).all())
         print(f"K={K:>3}: posterior sd {d.std(0).tolist()}"

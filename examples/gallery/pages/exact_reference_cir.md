@@ -38,7 +38,7 @@ The central exhibit is what follows — the two calls that everything the techni
 es = build_eval_set(prob, "cir", K=20, n_sets=4, n_chain=20000,
                     seed=11, workers=4)
 print(f"\nevaluation set: {es!r}")
-r = evaluate(post, es, n_draw=2000)
+r = evaluate(post, es, n_draw=2000, n_steps=20, solver="midpoint", t_grid="late")
 print(f"median FID {r['fid_median']:.4f} against a floor of "
       f"{r['null_median']:.4f}")
 ```

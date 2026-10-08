@@ -55,6 +55,7 @@ from ..prior import BoxUniform
 
 # --------------------------------------------------------------- Heston
 class HestonDesign(DesignProblem):
+    value_coord = "raw"          # the token carries the observed value itself
     def __init__(self):
         self.prior = BoxUniform(
             low=[-0.10, 0.5, 0.02, 0.10, -0.90],
@@ -86,6 +87,7 @@ class HestonDesign(DesignProblem):
 
 # --------------------------------------------------------------- Merton
 class MertonDesign(DesignProblem):
+    value_coord = "raw"          # the token carries the observed value itself
     markov_observed = True
 
     def __init__(self):
@@ -144,6 +146,7 @@ def merton_logpost_factory(r, tau, low, high, nmax=40):
 class HenonHeilesDesign(DesignProblem):
     """Classical HH (potential of Lubich-Oseledets-Vandereycken, SIAM 2015,
     lambda = 0.1118 at the prior centre); observe q1 + noise."""
+    value_coord = "raw"          # the token carries the observed value itself
 
     obs_noise = 0.05
 
@@ -180,6 +183,7 @@ def _vtrap(x, y):
 
 class HodgkinHuxleyDesign(DesignProblem):
     """Classic HH neuron; V observed in units of 100 mV, noise 2 mV."""
+    value_coord = "raw"          # the token carries the observed value itself
 
     obs_noise = 0.02
 
@@ -222,6 +226,7 @@ class HodgkinHuxleyDesign(DesignProblem):
 class PharmacoKineticsDesign(DesignProblem):
     """Oral one-compartment Bateman curve; log-normal assay noise. The
     real-world archetype of irregular designs (blood draws)."""
+    value_coord = "log"          # log-normal noise: the token carries log y
 
     DOSE = 500.0
     LOGSD = 0.10
@@ -265,6 +270,7 @@ class FisherKPPDesign(DesignProblem):
     """Reaction-diffusion PDE theta_t = D theta_xx + r theta(1-theta) on
     [0,1], no-flux BC, bump IC; 3 point sensors, random time x sensor
     designs. The posterior concentrates on the D*r ridge (front speed)."""
+    value_coord = "raw"          # the token carries the observed value itself
 
     obs_noise = 0.02
     NX = 64
@@ -332,6 +338,7 @@ class FHNDesign(DesignProblem):
     times. The dynamics are the deterministic FHN flow (the suite's gallery
     instrument); randomness enters only as observation noise, so the
     reference likelihood is exact: one RK4 solve per evaluation."""
+    value_coord = "raw"          # the token carries the observed value itself
 
     obs_noise = 0.05
 
@@ -397,6 +404,7 @@ class SEIRDesign(DesignProblem):
     likelihood is exact: one RK4 solve per evaluation, like FitzHugh--Nagumo.
     Two observed channels, which the token contract carries natively.
     """
+    value_coord = "raw"          # the token carries the observed value itself
 
     obs_noise = 0.004
 

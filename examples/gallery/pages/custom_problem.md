@@ -20,6 +20,7 @@ The entire problem definition:
 
 ```python
 class DampedOscillator(DesignProblem):
+    value_coord = "raw"          # the token carries the observed value itself
     obs_noise = 0.05
 
     def __init__(self):
@@ -62,7 +63,7 @@ m_true = prob.prior.sample(1, gen)
 raw = prob.trajectories(m_true, gen)
 tidx, cidx = prob.sample_design(gen, 12)
 tokens = prob.tokens_for(raw[0], tidx, cidx, gen)
-d = post.sample(tokens, n=2000)
+d = post.sample(tokens, n=2000, n_steps=20, solver="midpoint", t_grid="late")
 ```
 
 `tokens_for` applies the observation noise and packs the 12 points into the same six-feature token layout used during training; `post.sample` returns 2,000 posterior draws conditioned on them. The design size is chosen at query time — the same trained network answers any $K$ in $[4, 64]$.

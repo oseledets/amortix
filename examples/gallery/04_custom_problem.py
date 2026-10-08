@@ -23,6 +23,7 @@ MEDIA = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 class DampedOscillator(DesignProblem):
+    value_coord = "raw"          # the token carries the observed value itself
     obs_noise = 0.05
 
     def __init__(self):
@@ -96,7 +97,7 @@ def main(argv=None):
     raw = prob.trajectories(m_true, gen)
     tidx, cidx = prob.sample_design(gen, 12)
     tokens = prob.tokens_for(raw[0], tidx, cidx, gen)
-    d = post.sample(tokens, n=2000)
+    d = post.sample(tokens, n=2000, n_steps=20, solver="midpoint", t_grid="late")
     print(f"\ntrue (omega, gamma): {m_true[0].tolist()}")
     print(f"posterior mean     : {d.mean(0).tolist()}  sd {d.std(0).tolist()}")
 

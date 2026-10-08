@@ -21,6 +21,7 @@ The script contains the full problem definition:
 ```python
 class PK(DesignProblem):
     """C(t) = D ka / (V (ka - ke)) (e^{-ke t} - e^{-ka t}), noisy assays."""
+    value_coord = "log"          # log-normal noise: the token carries log y
 
     DOSE = 500.0
     LOGSD = 0.10                # multiplicative log-normal measurement noise
@@ -63,7 +64,7 @@ raw = prob.trajectories(m_true, gen)
 for K in (6, 20, 50):
     tidx, cidx = prob.sample_design(gen, K)
     tokens = prob.tokens_for(raw[0], tidx, cidx, gen)
-    d = post.sample(tokens, n=2000)
+    d = post.sample(tokens, n=2000, n_steps=20, solver="midpoint", t_grid="late")
     lo, hi = d.quantile(0.05, 0), d.quantile(0.95, 0)
     inside = bool(((m_true[0] >= lo) & (m_true[0] <= hi)).all())
 ```
@@ -82,7 +83,7 @@ y = raw[0, perm, 0] * torch.exp(prob.LOGSD * noise)   # draw the assay noise onc
 ks = [3, 4, 6, 8, 11, 15, 20, 27, 36, 48, 64]
 # per frame:
 tokens = tokens_from_data(prob, times[:k], y[:k])
-d = post.sample(tokens, n=1200, seed=0)
+d = post.sample(tokens, n=1200, seed=0, n_steps=20, solver="midpoint", t_grid="late")
 ```
 
 The permutation of all 500 grid times and the assay noise are drawn once, before any frame; a design of size $K$ is the first $K$ entries of that fixed noisy record, so consecutive frames differ only in how much of the same data the network sees. `tokens_from_data` (in [`amortix/designs.py`](../../../amortix/designs.py)) builds the `[K, 6]` token tensor directly from raw `(times, values)` pairs at arbitrary timestamps, with no simulator in the path and no noise added — per its docstring, the data are already measured. It is the entry point a user would call on assays from an actual study, which is why the noise above is applied by hand when the record is constructed rather than at tokenization.

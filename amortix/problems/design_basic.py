@@ -22,6 +22,7 @@ from ..designs import DesignObserver, DesignProblem
 
 class GBMDesign(DesignProblem):
     """dS = mu S dt + sigma S dW, S0 = 1, observed at arbitrary times."""
+    value_coord = "raw"          # the token carries the observed value itself
 
     markov_observed = True
 
@@ -49,6 +50,7 @@ class GBMDesign(DesignProblem):
 
 class OUDesign(DesignProblem):
     """dX = -theta X dt + sigma dW, stationary start, arbitrary times."""
+    value_coord = "raw"          # the token carries the observed value itself
 
     markov_observed = True
 
@@ -166,6 +168,7 @@ class CIRDesign(DesignProblem):
     path keeps runs bit-reproducible across devices, like every other
     simulator in the package.
     """
+    value_coord = "raw"          # the token carries the observed value itself
 
     markov_observed = True
 
@@ -229,6 +232,7 @@ class LinGaussDesign(DesignProblem):
     to the prior box, so references are exact draws -- the only system whose
     evaluation set involves no MCMC at all.
     """
+    value_coord = "raw"          # the token carries the observed value itself
 
     obs_noise = 0.5          # NOISE of the fixed-design instrument, unchanged
 
@@ -294,6 +298,7 @@ class DoubleWellDesign(DesignProblem):
     dw_logpost_factory). Grid-free: no state-space discretization enters the
     reference.
     """
+    value_coord = "raw"          # the token carries the observed value itself
 
     markov_observed = True
 
@@ -357,6 +362,7 @@ class PolyDriftDesign(DesignProblem):
     Same bridge-likelihood reference as the double well (amortix.bridgelik)
     -- the drift is a different polynomial, nothing else changes.
     """
+    value_coord = "raw"          # the token carries the observed value itself
 
     markov_observed = True
 
@@ -434,6 +440,7 @@ class LotkaVolterraDesign(DesignProblem):
     SMC (amortix.smc); a density-transport reference would make grid
     resolution a tuning parameter of the reference itself.
     """
+    value_coord = "raw"          # the token carries the observed value itself
 
     markov_observed = True
     S1 = S2 = 0.05

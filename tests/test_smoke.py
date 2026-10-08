@@ -56,7 +56,7 @@ def test_train_and_sample(name):
     prob = mod.make()
     post = FlowPosterior(prob).fit(n_train=128, epochs=1, verbose=False)
     _, tokens = prob.simulate(2)
-    s = post.sample(tokens[0], n=32, n_steps=10)
+    s = post.sample(tokens[0], n=32, n_steps=10, solver="midpoint", t_grid="late")
     assert s.shape == (32, prob.prior.dim)
     assert torch.isfinite(s).all()
     # probit denormalization must keep every sample inside the prior box
@@ -70,7 +70,7 @@ def test_both_conditionings_run(conditioning):
     post = FlowPosterior(prob, conditioning=conditioning)
     assert post.conditioning == conditioning
     post.fit(n_train=128, epochs=1, verbose=False)
-    s = post.sample(prob.simulate(2)[1][0], n=16, n_steps=10)
+    s = post.sample(prob.simulate(2)[1][0], n=16, n_steps=10, solver="midpoint", t_grid="late")
     assert s.shape == (16, prob.prior.dim)
 
 
@@ -98,7 +98,7 @@ def test_diagnostics_runs():
     prob = OrnsteinUhlenbeck()
     post = FlowPosterior(prob).fit(n_train=128, epochs=1, verbose=False)
     d = prob.prior.dim
-    res = run_sbc(post, prob, n_sims=12, n_post=20)
+    res = run_sbc(post, prob, n_sims=12, n_post=20, n_steps=20, solver="midpoint", t_grid="late")
     assert res["ranks"].shape == (12, d)
     assert (res["ranks"] >= 0).all() and (res["ranks"] <= 20).all()
     cov = coverage_from_ranks(res["ranks"], 20, (0.5, 0.9))
@@ -123,8 +123,8 @@ def test_sample_batch_matches_single():
     prob = OrnsteinUhlenbeck()
     post = FlowPosterior(prob).fit(n_train=128, epochs=1, verbose=False)
     tk, _ = prob.observe(prob.prior.sample(3, generator=torch.Generator().manual_seed(1)))
-    batch = post.sample_batch(tk, n=32, seed=5, n_steps=10)
-    single = post.sample_batch(tk[:1], n=32, seed=5, n_steps=10)
+    batch = post.sample_batch(tk, n=32, seed=5, n_steps=10, solver="midpoint", t_grid="late")
+    single = post.sample_batch(tk[:1], n=32, seed=5, n_steps=10, solver="midpoint", t_grid="late")
     assert batch.shape == (3, 32, prob.prior.dim)
     assert torch.allclose(batch[0], single[0], atol=1e-5)
 
@@ -135,7 +135,7 @@ def test_solvers_agree(solver):
     from amortix import OrnsteinUhlenbeck
     prob = OrnsteinUhlenbeck()
     post = FlowPosterior(prob).fit(n_train=128, epochs=1, verbose=False)
-    s = post.sample(prob.simulate(2)[1][0], n=32, n_steps=10, solver=solver)
+    s = post.sample(prob.simulate(2)[1][0], n=32, n_steps=10, solver=solver, t_grid="late")
     assert torch.isfinite(s).all()
     assert (s >= prob.prior.low - 1e-4).all() and (s <= prob.prior.high + 1e-4).all()
 
@@ -195,8 +195,8 @@ def test_posterior_samples_are_independent():
     prob = make()
     post = FlowPosterior(prob).fit(n_train=128, epochs=1, verbose=False)
     tk, _ = prob.observe(prob.prior.sample(1, generator=torch.Generator().manual_seed(0)))
-    a = post.sample_batch(tk, n=8, seed=3, n_steps=10)
-    b = post.sample_batch(tk, n=64, seed=3, n_steps=10)
+    a = post.sample_batch(tk, n=8, seed=3, n_steps=10, solver="midpoint", t_grid="late")
+    b = post.sample_batch(tk, n=64, seed=3, n_steps=10, solver="midpoint", t_grid="late")
     # the first 8 draws must not change when 56 more are drawn alongside them
     assert torch.allclose(a[0], b[0, :8], atol=1e-5), "samples interact with each other"
 
@@ -238,8 +238,8 @@ def test_padding_is_invisible():
     tkp = torch.cat([tk, pad], dim=1)
     mask = torch.zeros(1, T + 30, dtype=torch.bool)
     mask[:, :T] = True
-    a = post.sample_batch(tk, n=32, seed=3, n_steps=8)
-    b = post.sample_batch(tkp, n=32, seed=3, n_steps=8, mask=mask)
+    a = post.sample_batch(tk, n=32, seed=3, n_steps=8, solver="midpoint", t_grid="late")
+    b = post.sample_batch(tkp, n=32, seed=3, n_steps=8, mask=mask, solver="midpoint", t_grid="late")
     assert torch.allclose(a, b, atol=1e-6), "padded slots leak into the posterior"
 
 
@@ -253,7 +253,7 @@ def test_variable_length_inputs():
     sets = [tk[0][:30], tk[0][:74], tk[0][:55]]
     packed, mask = pack_tokens(sets)
     assert packed.shape[1] == 74 and mask.sum() == 30 + 74 + 55
-    out = post.sample_batch(sets, n=16, seed=1, n_steps=8)
+    out = post.sample_batch(sets, n=16, seed=1, n_steps=8, solver="midpoint", t_grid="late")
     assert out.shape == (3, 16, prob.prior.dim) and torch.isfinite(out).all()
 
 
@@ -290,7 +290,7 @@ def test_wdiff_embed_trains_and_samples():
     g = post.encoder.embed.raw_s.grad
     assert g is not None and torch.isfinite(g).all()
     _, tok = prob.simulate(2)
-    out = post.sample_batch(tok, n=8, seed=0, n_steps=8)
+    out = post.sample_batch(tok, n=8, seed=0, n_steps=8, solver="midpoint", t_grid="late")
     assert out.shape == (2, 8, prob.prior.dim) and torch.isfinite(out).all()
 
 
@@ -358,7 +358,7 @@ def test_wpair_trope_variable_designs():
     x = traj[0, idx, 0]
     z = torch.zeros_like(x)
     tok = torch.stack([t, x, z, z, z, z], dim=-1)
-    out = post.sample_batch([tok], n=16, seed=0, n_steps=8)
+    out = post.sample_batch([tok], n=16, seed=0, n_steps=8, solver="midpoint", t_grid="late")
     assert out.shape == (1, 16, prob.prior.dim) and torch.isfinite(out).all()
 
 
@@ -388,7 +388,7 @@ def test_design_zoo_end_to_end():
         k = prob.k_min + 4
         tidx, cidx = prob.sample_design(gen, k)
         tok = prob.tokens_for(raw[0], tidx, cidx, gen)
-        out = post.sample_batch([tok], n=8, seed=0, n_steps=6)
+        out = post.sample_batch([tok], n=8, seed=0, n_steps=6, solver="midpoint", t_grid="late")
         assert out.shape == (1, 8, prob.prior.dim), name
         assert torch.isfinite(out).all(), name
 
@@ -437,26 +437,26 @@ def test_design_token_layout_is_enforced():
     _, raw = prob.simulate(1, generator=gen)
     tidx, cidx = prob.sample_design(gen, 12)
     tok = prob.tokens_for(raw[0], tidx, cidx, gen)
-    assert post.sample(tok, n=4, n_steps=2).shape == (4, prob.prior.dim)
+    assert post.sample(tok, n=4, n_steps=2, solver="midpoint", t_grid="late").shape == (4, prob.prior.dim)
 
     # a second data channel in the reserved slot 2
     bad = tok.clone()
     bad[:, 2] = raw[0, tidx, 1]
     with pytest.raises(ValueError, match="slot 2") as info:
-        post.sample(bad, n=4, n_steps=2)
+        post.sample(bad, n=4, n_steps=2, solver="midpoint", t_grid="late")
     assert "tokens_for" in str(info.value)
     assert "tokens_from_data" in str(info.value)
     # the batch entry point and the variable-length list input, same check
     with pytest.raises(ValueError, match="slot 2"):
-        post.sample_batch(bad[None], n=4, n_steps=2)
+        post.sample_batch(bad[None], n=4, n_steps=2, solver="midpoint", t_grid="late")
     with pytest.raises(ValueError, match="slot 2"):
-        post.sample_batch([tok, bad], n=4, n_steps=2)
+        post.sample_batch([tok, bad], n=4, n_steps=2, solver="midpoint", t_grid="late")
 
     def rejected(edit, slot):
         t = tok.clone()
         edit(t)
         with pytest.raises(ValueError, match=f"slot {slot}"):
-            post.sample(t, n=4, n_steps=2)
+            post.sample(t, n=4, n_steps=2, solver="midpoint", t_grid="late")
 
     rejected(lambda t: t.__setitem__((3, 3), 1.0), 3)          # reserved
     rejected(lambda t: t.__setitem__((0, 0), 1.5), 0)          # beyond horizon
@@ -474,16 +474,16 @@ def test_design_token_layout_is_enforced():
     padded[0, 12:, 2] = 7.0
     mask = torch.zeros(1, obs.k_max, dtype=torch.bool)
     mask[0, :12] = True
-    out = post.sample_batch(padded, n=4, n_steps=2, mask=mask)
+    out = post.sample_batch(padded, n=4, n_steps=2, mask=mask, solver="midpoint", t_grid="late")
     assert out.shape == (1, 4, prob.prior.dim) and torch.isfinite(out).all()
     # zero padding with the mask forgotten: the design-size entry no longer
     # matches the number of rows the set would be read with
     padded[0, 12:, 2] = 0.0
     with pytest.raises(ValueError, match="slot 4"):
-        post.sample_batch(padded, n=4, n_steps=2)
+        post.sample_batch(padded, n=4, n_steps=2, solver="midpoint", t_grid="late")
     # wrong feature count
     with pytest.raises(ValueError, match="shape"):
-        post.sample(tok[:, :5], n=4, n_steps=2)
+        post.sample(tok[:, :5], n=4, n_steps=2, solver="midpoint", t_grid="late")
 
     # fit(): a retokenizer that writes slot 2 is rejected on the first batch
     base = prob.make_retokenizer()
@@ -525,7 +525,7 @@ def test_tokens_from_data_multi_channel():
     assert torch.equal(tok[:, 5], torch.tensor(channels, dtype=torch.float32))
     assert (tok[:, 2:4] == 0).all()
     assert torch.allclose(tok[:, 4], torch.full((12,), math.log(12) / math.log(obs.k_max)))
-    out = post.sample(tok, n=4, n_steps=2)
+    out = post.sample(tok, n=4, n_steps=2, solver="midpoint", t_grid="late")
     assert out.shape == (4, prob.prior.dim) and torch.isfinite(out).all()
     # numpy channel ids and a tensor of ids are accepted alike
     assert torch.equal(tokens_from_data(prob, times, values, channels=np.array(channels)), tok)
@@ -556,7 +556,7 @@ def test_design_sbc_runs():
     post = FlowPosterior(prob, dim_model=32, depth=2)
     post.fit(n_train=32, epochs=1, batch=16, verbose=False,
              retokenize=prob.make_retokenizer())
-    p = sbc_design(post, prob, n_sims=24, n_post=20, seed=0)
+    p = sbc_design(post, prob, n_sims=24, n_post=20, seed=0, n_steps=20, solver="midpoint", t_grid="late")
     assert p.shape == (3,) and np.isfinite(p).all()
 
 
@@ -598,8 +598,8 @@ def test_load_posterior_roundtrip_design(tmp_path, embed, cls_name):
     tidx, cidx = prob.sample_design(gen, prob.k_min + 4)
     tok = prob.tokens_for(raw[0], tidx, cidx, gen)
     post.eval()
-    a = post.sample_batch([tok], n=8, seed=0, n_steps=6)
-    b = loaded.sample_batch([tok], n=8, seed=0, n_steps=6)
+    a = post.sample_batch([tok], n=8, seed=0, n_steps=6, solver="midpoint", t_grid="late")
+    b = loaded.sample_batch([tok], n=8, seed=0, n_steps=6, solver="midpoint", t_grid="late")
     assert b.shape == (1, 8, prob.prior.dim) and torch.isfinite(b).all()
     assert torch.allclose(a, b, atol=1e-5), "reloaded model draws differ"
 
@@ -629,7 +629,7 @@ def test_load_posterior_roundtrip_gallery(tmp_path, problem_name, cls_name):
     assert type(loaded.encoder.embed) is type(post.encoder.embed)
     tk, _ = prob.observe(prob.prior.sample(1, generator=torch.Generator().manual_seed(0)))
     post.eval()
-    a = post.sample_batch(tk, n=8, seed=0, n_steps=6)
-    b = loaded.sample_batch(tk, n=8, seed=0, n_steps=6)
+    a = post.sample_batch(tk, n=8, seed=0, n_steps=6, solver="midpoint", t_grid="late")
+    b = loaded.sample_batch(tk, n=8, seed=0, n_steps=6, solver="midpoint", t_grid="late")
     assert b.shape == (1, 8, prob.prior.dim) and torch.isfinite(b).all()
     assert torch.allclose(a, b, atol=1e-5), "reloaded model draws differ"

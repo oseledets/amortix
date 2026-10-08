@@ -48,7 +48,7 @@ raw = prob.trajectories(m_true, gen)
 tidx, cidx = prob.sample_design(gen, 20)  # 20 observation points at random times
 tokens = prob.tokens_for(raw[0], tidx, cidx, gen)
 
-draws = post.sample(tokens, n=2000)       # posterior draws, milliseconds
+draws = post.sample(tokens, n=2000, n_steps=20, solver="midpoint", t_grid="late")       # posterior draws, milliseconds
 exact = gbm_exact_from_points(prob, raw[0, :, 0], tidx, n_samples=2000)
 print(fid(draws.numpy(), exact))          # distance to the exact posterior
 ```
@@ -108,6 +108,7 @@ import torch
 from amortix.designs import DesignObserver, DesignProblem
 
 class DampedOscillator(DesignProblem):
+    value_coord = "raw"          # the token carries the observed value itself
     obs_noise = 0.05                       # additive Gaussian measurement noise
 
     def __init__(self):
@@ -184,7 +185,7 @@ gen = torch.Generator().manual_seed(3)
 m_true = prob.prior.sample(1, gen)
 raw = prob.trajectories(m_true, gen)
 tidx, cidx = prob.sample_design(gen, 12)   # 12 points at random times
-draws = post.sample(prob.tokens_for(raw[0], tidx, cidx, gen), n=2000)
+draws = post.sample(prob.tokens_for(raw[0], tidx, cidx, gen), n=2000, n_steps=20, solver="midpoint", t_grid="late")
 print(draws.mean(0), draws.std(0))         # posterior mean and sd vs m_true
 ```
 
@@ -197,7 +198,7 @@ from amortix import tokens_from_data
 
 tokens = tokens_from_data(prob, times=[0.4, 1.1, 2.6, 7.3, 9.0],
                           values=[0.71, -0.32, 0.18, -0.09, 0.05])
-draws = post.sample(tokens, n=2000)
+draws = post.sample(tokens, n=2000, n_steps=20, solver="midpoint", t_grid="late")
 ```
 
 A token is one reading of one channel at one time, in the slots

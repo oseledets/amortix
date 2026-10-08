@@ -162,7 +162,7 @@ def make_design_gif(prob, post, path):
         cidx = torch.zeros(k, dtype=torch.long)
         tokens = prob.tokens_for(raw[0], tidx, cidx,
                                  torch.Generator().manual_seed(7))
-        draws = post.sample(tokens, n=1200, seed=0).numpy()
+        draws = post.sample(tokens, n=1200, seed=0, n_steps=20, solver="midpoint", t_grid="late").numpy()
         exact = gbm_exact_from_points(prob, raw[0, :, 0], tidx,
                                       n_samples=6000)
         for art in dyn:

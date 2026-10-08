@@ -21,7 +21,7 @@ Typical use::
 
     es = build_eval_set(problem, "merton", K=20, n_sets=32,
                         path="merton_K20.npz")
-    res = evaluate(posterior, es)           # seconds, no retraining
+    res = evaluate(posterior, es, n_steps=20, solver="midpoint", t_grid="late")   # seconds, no retraining
     print(res["fid_median"], res["null_median"])
 """
 from __future__ import annotations
@@ -269,7 +269,7 @@ def floor_at(battery: EvalSet, n_draw: int) -> float:
 
 
 def evaluate(post, battery: EvalSet, n_draw: int = 4000, seed: int = 0,
-             prior_range: np.ndarray = None) -> dict:
+             prior_range: np.ndarray = None, *, n_steps: int, solver: str, t_grid: str) -> dict:
     """Score a trained posterior against an evaluation set.
 
     ``n_draw`` is the number of samples drawn from the model; the reference
@@ -286,7 +286,8 @@ def evaluate(post, battery: EvalSet, n_draw: int = 4000, seed: int = 0,
     tokens = torch.as_tensor(battery.tokens)
     mask = torch.as_tensor(battery.mask) if battery.mask is not None else None
     kw = {} if mask is None else {"mask": mask}
-    smp = post.sample_batch(tokens, n=n_draw, seed=seed, **kw).numpy()
+    smp = post.sample_batch(tokens, n=n_draw, n_steps=n_steps, solver=solver, t_grid=t_grid,
+                            seed=seed, **kw).numpy()
     a = battery.chain_a
     vals = np.array([fid(smp[i], a[i]) for i in range(len(a))])
     # The floor must be measured in the SAME estimator configuration as the

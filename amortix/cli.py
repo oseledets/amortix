@@ -44,7 +44,7 @@ def cmd_recover(args):
     gen = torch.Generator().manual_seed(123)
     m_true = prob.prior.sample(args.n_test, generator=gen)
     tokens, traj = prob.observe(m_true, generator=gen)
-    draws = post.sample_batch(tokens, n=args.n_post, seed=0).numpy()
+    draws = post.sample_batch(tokens, n=args.n_post, n_steps=args.n_steps, solver=args.solver, t_grid=args.t_grid, seed=0).numpy()
     base = np.stack([mod.sota(tokens[i].numpy(), traj[i].numpy(), prob)
                      for i in range(args.n_test)])
 
@@ -66,7 +66,8 @@ def cmd_sbc(args):
     from .diagnostics import diagnose
     _, prob = _load(args.case)
     post = FlowPosterior(prob).fit(n_train=args.n_train, epochs=args.epochs)
-    diagnose(post, prob, n_sims=args.n_sims, n_post=args.n_post, plot_path=args.plot)
+    diagnose(post, prob, n_sims=args.n_sims, n_post=args.n_post, plot_path=args.plot,
+             n_steps=args.n_steps, solver=args.solver, t_grid=args.t_grid)
 
 
 def cmd_gallery(args):
@@ -80,7 +81,7 @@ def cmd_gallery(args):
         gen = torch.Generator().manual_seed(123)
         m_true = prob.prior.sample(args.n_test, generator=gen)
         tokens, traj = prob.observe(m_true, generator=gen)
-        draws = post.sample_batch(tokens, n=args.n_post, seed=0).numpy()
+        draws = post.sample_batch(tokens, n=args.n_post, n_steps=args.n_steps, solver=args.solver, t_grid=args.t_grid, seed=0).numpy()
         base = np.stack([mod.sota(tokens[i].numpy(), traj[i].numpy(), prob)
                          for i in range(args.n_test)])
         mt = m_true.numpy()
@@ -101,6 +102,9 @@ def main(argv=None):
         p.add_argument("--epochs", type=int, default=epochs)
         p.add_argument("--n_test", type=int, default=40)
         p.add_argument("--n_post", type=int, default=600)
+        p.add_argument("--n_steps", type=int, required=True, help="ODE steps of the sampler (no default; 20 recommended)")
+        p.add_argument("--solver", choices=["euler", "midpoint", "rk4"], required=True)
+        p.add_argument("--t_grid", choices=["uniform", "late"], required=True, help="late: the steps shrink towards t = 1; needed for posteriors much narrower than the prior")
 
     p = sub.add_parser("recover", help="train + benchmark one case vs its classical baseline")
     p.add_argument("case", choices=GALLERY); budget(p); p.set_defaults(fn=cmd_recover)
@@ -111,6 +115,9 @@ def main(argv=None):
     p.add_argument("--epochs", type=int, default=40)
     p.add_argument("--n_sims", type=int, default=300)
     p.add_argument("--n_post", type=int, default=150)
+    p.add_argument("--n_steps", type=int, required=True, help="ODE steps of the sampler (no default; 20 recommended)")
+    p.add_argument("--solver", choices=["euler", "midpoint", "rk4"], required=True)
+    p.add_argument("--t_grid", choices=["uniform", "late"], required=True, help="late: the steps shrink towards t = 1; needed for posteriors much narrower than the prior")
     p.add_argument("--plot", type=str, default=None, help="save an SBC plot here")
     p.set_defaults(fn=cmd_sbc)
 

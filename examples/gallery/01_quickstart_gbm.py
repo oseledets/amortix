@@ -27,6 +27,7 @@ MEDIA = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 class GBM(DesignProblem):
     """dS = mu S dt + sigma S dW, S0 = 1, observed at arbitrary times."""
+    value_coord = "raw"          # the token carries the observed value itself
 
 
     def __init__(self):
@@ -105,7 +106,7 @@ def main(argv=None):
     tidx, cidx = prob.sample_design(gen, 20)
     tokens = prob.tokens_for(raw[0], tidx, cidx, gen)
 
-    draws = post.sample(tokens, n=2000)                  # milliseconds
+    draws = post.sample(tokens, n=2000, n_steps=20, solver="midpoint", t_grid="late")                  # milliseconds
     exact = gbm_exact_from_points(prob, raw[0, :, 0], tidx, n_samples=2000)
 
     f = fid(draws.numpy(), exact)

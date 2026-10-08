@@ -145,6 +145,72 @@ def pack_tokens(token_sets):
     return out, mask
 
 
+def time_grid(n_steps: int, t_grid: str):
+    """The sampler's steps as a list of (t_i, h_i): t_0 = 0, t_i + h_i = t_{i+1},
+    t_n = 1.
+
+    "uniform": h_i = 1 / n. "late": t_i = 1 - (1 - i/n)^3, the steps shrink
+    towards t = 1 and the last one is 1 / n^3.
+
+    Why the grid matters. Think of a posterior that is much narrower than the
+    prior (width s << 1 in the flow's coordinates). Near t = 1 the Jacobian of
+    the field is approximately -1/(1 - t) until 1 - t is of the order of s.
+    There the contraction stops. An explicit scheme can resolve that turn only
+    with steps of the size of s. A uniform grid of n steps cannot see a width
+    below approximately 1/n. The samples then have the correct marginal
+    widths and the wrong joint structure. Measured on the exact flow-matching
+    field of correlated Gaussian targets (C2ST against the target; 0.5 means
+    "not distinguishable"):
+
+        target width         0.1    0.03   0.01   0.003
+        uniform/midpoint/20  0.53   0.72   0.92   0.995
+        late/midpoint/20     0.51   0.50   0.50   0.49
+        uniform/rk4/50       0.51   0.49   0.60   0.86
+
+    The late grid with 20 midpoint steps (40 field evaluations) resolves a
+    target 300 times narrower than the base. The uniform grids fail below a
+    width of approximately 1/n with every scheme. On trained flows for the
+    Lotka-Volterra system (20 observations, posteriors 20 to 100 times
+    narrower than the prior, C2ST against MCMC): uniform/midpoint/20 0.80,
+    uniform/rk4/50 0.57, late/midpoint/20 0.57. Where the posterior is wide,
+    the two grids agree to the Monte-Carlo error (tests/test_sampler.py)."""
+    if t_grid == "uniform":
+        dt = 1.0 / n_steps
+        return [(i * dt, dt) for i in range(n_steps)]
+    if t_grid == "late":
+        tau = [(1.0 - i / n_steps) ** 3 for i in range(n_steps + 1)]
+        tau[-1] = 0.0
+        return [(1.0 - tau[i], tau[i] - tau[i + 1]) for i in range(n_steps)]
+    raise ValueError(f"t_grid must be 'uniform' or 'late', got {t_grid!r}")
+
+
+def integrate_flow(field, z, n_steps: int, solver: str, t_grid: str):
+    """Integrate dz/dt = field(z, t) from t = 0 to t = 1.
+
+    z is [B, G, d]. The field receives t as a [B] tensor. solver is "euler"
+    (1 evaluation per step), "midpoint" (2) or "rk4" (4). t_grid is the
+    placement of the steps (see time_grid). With t_grid="uniform" the result
+    is bit-identical to the sampler of the package before the grid option
+    existed (commit 12b20f4)."""
+    B, dev = z.shape[0], z.device
+    for t0, h in time_grid(n_steps, t_grid):
+        t = torch.full((B,), t0, device=dev)
+        if solver == "euler":
+            z = z + h * field(z, t)
+        elif solver == "midpoint":
+            k1 = field(z, t)
+            z = z + h * field(z + 0.5 * h * k1, t + 0.5 * h)
+        elif solver == "rk4":
+            k1 = field(z, t)
+            k2 = field(z + 0.5 * h * k1, t + 0.5 * h)
+            k3 = field(z + 0.5 * h * k2, t + 0.5 * h)
+            k4 = field(z + h * k3, t + h)
+            z = z + (h / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+        else:
+            raise ValueError(f"solver must be 'euler', 'midpoint' or 'rk4', got {solver!r}")
+    return z
+
+
 class VelocityNet(nn.Module):
     def __init__(self, dim: int, ctx_dim: int, t_dim: int = 64,
                  hidden: int = 256, depth: int = 3):
@@ -484,8 +550,13 @@ class FlowPosterior(nn.Module):
         Combined at 12000 steps, on 32 datasets that took part in no decision:
         0.0023 +- 0.0005 (8 runs) against a Monte-Carlo floor of 0.00062 -- 5x
         better than the same budget without any of this (0.0114, 3 runs).
-        Refining the ODE solver does not move it (midpoint/20 = RK4/50 to 0.5%),
-        and neither does doubling the budget, so what is left is the model.
+        Refining the ODE solver does not move it here (midpoint/20 = RK4/50 to
+        0.5% on this testbed, whose posterior is 5 to 10 times narrower than
+        the prior), and neither does doubling the budget, so what is left is
+        the model. That solver statement holds on the uniform time grid for
+        wide posteriors only. For posteriors 20 times and more narrower than
+        the prior a uniform grid cannot resolve the end of the path with any
+        scheme. Use sample_batch(t_grid="late") there (see time_grid).
 
         `grad_clip` bounds a genuine blow-up (the Gaussian NLL of the base head
         can spike) and must therefore sit ABOVE the working gradient norm, or it
@@ -797,18 +868,30 @@ class FlowPosterior(nn.Module):
 
     # --- inference -------------------------------------------------------
     @torch.no_grad()
-    def sample_batch(self, tokens, n: int = 1000, n_steps: int = 20,
-                     seed: int = 0, chunk: int = 16, solver: str = "midpoint",
-                     mask: torch.Tensor = None) -> torch.Tensor:
-        """Posterior samples for a *batch* of observations. tokens [B, T, F] -> [B, n, d].
+    def sample_batch(self, tokens, *, n: int, n_steps: int, solver: str, t_grid: str,
+                     seed: int = 0, chunk: int = 16, mask: torch.Tensor = None) -> torch.Tensor:
+        """Posterior samples for a batch of observation sets. tokens [B, T, F] -> [B, n, d].
 
-        All B datasets are encoded together and their ODEs solved jointly, which is
-        what makes calibration studies (hundreds of datasets) tractable: one solve
-        instead of B python-loop solves. `chunk` bounds peak attention memory.
+        The settings that decide the result have no default values. Set them:
+          n        the number of draws per observation set;
+          n_steps  the number of ODE steps;
+          solver   "euler", "midpoint" or "rk4";
+          t_grid   "uniform" or "late" (see time_grid). Use "late" for posteriors
+                   that can be much narrower than the prior. A uniform grid of
+                   n_steps steps does not resolve a posterior narrower than
+                   approximately 1/n_steps of the prior.
+        The recommended settings are n_steps=20, solver="midpoint", t_grid="late".
+
+        All B observation sets are encoded together and their ODEs are solved
+        together. This is what makes calibration studies with hundreds of
+        observation sets fast: one solve instead of B solves. chunk bounds the
+        peak attention memory. seed sets the base draws. mask marks the valid
+        tokens of padded sets.
         """
         if isinstance(tokens, (list, tuple)):                 # variable-length input
             tokens, mask = pack_tokens([torch.as_tensor(t) for t in tokens])
         self._check_design_tokens(tokens, mask)
+        time_grid(n_steps, t_grid)                            # validate before any work
         gen = torch.Generator().manual_seed(seed)
         dev = next(self.parameters()).device
         outs = []
@@ -828,26 +911,16 @@ class FlowPosterior(nn.Module):
             grouped = self.velocity.forward_grouped
             cond = self.velocity.encode_memory(memory) if self.conditioning == "xattn" else ctx
             vmask = mb if self.conditioning == "xattn" else None
-            dt = 1.0 / n_steps
-            for i in range(n_steps):
-                t = torch.full((B,), i * dt, device=dev)
-                if solver == "euler":                         # 1 eval / step
-                    z = z + dt * grouped(z, t, cond, vmask)
-                elif solver == "midpoint":                    # 2 evals / step
-                    k1 = grouped(z, t, cond, vmask)
-                    z = z + dt * grouped(z + 0.5 * dt * k1, t + 0.5 * dt, cond, vmask)
-                else:                                         # rk4: 4 evals / step
-                    k1 = grouped(z, t, cond, vmask)
-                    k2 = grouped(z + 0.5 * dt * k1, t + 0.5 * dt, cond, vmask)
-                    k3 = grouped(z + 0.5 * dt * k2, t + 0.5 * dt, cond, vmask)
-                    k4 = grouped(z + dt * k3, t + dt, cond, vmask)
-                    z = z + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+            z = integrate_flow(lambda zz, tt: grouped(zz, tt, cond, vmask), z, n_steps, solver, t_grid)
             outs.append(self.prior.denormalize(z.cpu()))
         return torch.cat(outs, dim=0)
 
-    def sample(self, tokens: torch.Tensor, n: int = 2000, n_steps: int = 20,
-               seed: int = 0, solver: str = "midpoint") -> torch.Tensor:
-        """Posterior samples for one observation. tokens: [T, F] or [1, T, F] -> [n, d]."""
+    def sample(self, tokens: torch.Tensor, *, n: int, n_steps: int, solver: str, t_grid: str,
+               seed: int = 0) -> torch.Tensor:
+        """Posterior samples for one observation set. tokens: [T, F] or [1, T, F] -> [n, d].
+
+        n, n_steps, solver and t_grid have no default values (see sample_batch)."""
         if tokens.dim() == 2:
             tokens = tokens[None]
-        return self.sample_batch(tokens, n=n, n_steps=n_steps, seed=seed, solver=solver)[0]
+        return self.sample_batch(tokens, n=n, n_steps=n_steps, solver=solver, t_grid=t_grid,
+                                 seed=seed)[0]

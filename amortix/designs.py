@@ -11,7 +11,9 @@ zoo; see the technical report, report/techreport.pdf) is:
   * design sizes K follow the "mix" law: 50% log-uniform[k_min, k_max] +
     50% uniform over the dense half, which keeps dense designs well
     represented so that posterior widths stay calibrated at large K;
-  * tokens are bare points [t/horizon, y, 0, 0, logK/logKmax, channel] --
+  * tokens are bare points [t/horizon, v, 0, 0, logK/logKmax, channel],
+    v the observed value in the coordinate the problem declares
+    (``value_coord``, "raw" or "log", no default) --
     the logK slot is design metadata (normalized softmax attention is
     cardinality-blind without it), the last slot carries a channel/sensor
     id for multi-sensor (e.g. PDE) observations.
@@ -67,6 +69,34 @@ class DesignProblem:
     markov_observed: bool = False
     obs_noise: float = 0.0          # additive Gaussian on observed values
     LOGSD: float = 0.0              # multiplicative log-normal (assays)
+    #: REQUIRED, no default: the coordinate of the observed value in token
+    #: slot 1. "raw" = the value itself; "log" = its natural logarithm. Use
+    #: the coordinate in which the observation noise is additive: "log" for
+    #: log-normal noise (LOGSD > 0). The learnable warp of the embedding does
+    #: not replace this choice: with raw values, populations below ~0.05
+    #: under log-normal noise are compressed below the network's resolution,
+    #: and the posterior centre misses by several widths on such sets.
+    value_coord: str
+
+    def _value(self, y: torch.Tensor) -> torch.Tensor:
+        """The token value of observed y in the declared coordinate."""
+        coord = getattr(type(self), "value_coord", None)
+        if coord not in ("raw", "log"):
+            raise ValueError(
+                f"{type(self).__name__} must declare value_coord = 'raw' or 'log' "
+                "(the coordinate of the observed value in token slot 1; there is "
+                f"no default), got {coord!r}")
+        if self.LOGSD > 0 and coord != "log":
+            raise ValueError(
+                f"{type(self).__name__}: LOGSD = {self.LOGSD} (log-normal noise) "
+                "needs value_coord = 'log': the noise is additive in the log "
+                "coordinate, and raw values lose the small populations")
+        if coord == "raw":
+            return y
+        if (y <= 0).any():
+            raise ValueError(f"{type(self).__name__}: value_coord = 'log' needs "
+                             "positive observed values")
+        return torch.log(y)
 
     def trajectories(self, m: torch.Tensor,
                      generator: torch.Generator = None) -> torch.Tensor:
@@ -98,7 +128,7 @@ class DesignProblem:
     def tokens_for(self, raw_i: torch.Tensor, tidx: torch.Tensor,
                    cidx: torch.Tensor, gen: torch.Generator) -> torch.Tensor:
         obs = self.observer
-        y = self._noisy(raw_i[tidx, cidx], gen)
+        y = self._value(self._noisy(raw_i[tidx, cidx], gen))
         t = tidx.float() * obs.dt_sim / obs.horizon
         z = torch.zeros_like(y)
         kf = torch.full_like(y, math.log(tidx.numel()) / math.log(obs.k_max))
@@ -158,6 +188,10 @@ class DesignProblem:
             vals = raw.gather(1, tidx[..., None].expand(B, K, C))
             y = vals.gather(2, cidx[..., None]).squeeze(-1)
             y = self._noisy_vec(y, gen, dev)
+            # the padding rows carry y = 1 (grid index 1 of the raw path, gathered
+            # above); their value is zeroed with the mask below, after the
+            # coordinate map, so a log coordinate never sees the zero padding
+            y = self._value(torch.where(mask, y, torch.ones_like(y)))
             t = tidx.float() * obs.dt_sim / obs.horizon
             kf = (torch.log(k_i.float()) / math.log(obs.k_max))[:, None] \
                 .expand(B, K)
@@ -181,8 +215,9 @@ def tokens_from_data(prob: DesignProblem, times, values, channels=None):
     """Token tensor [K, 6] for measured data at arbitrary timestamps.
 
     times: array-like, in the same time units as the simulator grid
-    (the observer horizon is dt_sim * n_steps); values: raw signal
-    units; channels: integer channel per reading (default all 0).
+    (the observer horizon is dt_sim * n_steps); values: the measured
+    values in raw signal units (the problem's value_coord is applied
+    here); channels: integer channel per reading (default all 0).
     No noise is added -- the data are already measured. Rows are
     returned time-sorted, ready for FlowPosterior.sample.
     """
@@ -208,9 +243,9 @@ def tokens_from_data(prob: DesignProblem, times, values, channels=None):
                 f"got {c.tolist()}")
         c = c.float()
     order = torch.argsort(t, stable=True)
-    t, y, c = t[order], y[order], c[order]
+    t, y, c = t[order], prob._value(y[order]), c[order]
     # same feature layout as DesignProblem.tokens_for:
-    # [t/horizon, y, 0, 0, log(K)/log(k_max), channel]
+    # [t/horizon, value in prob.value_coord, 0, 0, log(K)/log(k_max), channel]
     z = torch.zeros_like(y)
     kf = torch.full_like(y, math.log(t.numel()) / math.log(obs.k_max))
     tokens = torch.stack([t / obs.horizon, y, z, z, kf, c], dim=-1)
@@ -320,7 +355,7 @@ _LAYOUT_HINT = (
 
 
 def sbc_design(post, prob: DesignProblem, n_sims: int = 400,
-               n_post: int = 200, seed: int = 0, k_fixed: int = None):
+               n_post: int = 200, seed: int = 0, k_fixed: int = None, *, n_steps: int, solver: str, t_grid: str):
     """SBC over random designs (mixed by default, or a fixed-K bucket).
 
     NOTE (measured): at these sizes SBC misses width ratios up to ~1.3 and
@@ -340,6 +375,7 @@ def sbc_design(post, prob: DesignProblem, n_sims: int = 400,
         tidx, cidx = prob.sample_design(gen, k)
         tokens[i, :k] = prob.tokens_for(raw[i], tidx, cidx, gen)
         mask[i, :k] = True
-    draws = post.sample_batch(tokens, n=n_post, seed=seed, chunk=32, mask=mask)
+    draws = post.sample_batch(tokens, n=n_post, n_steps=n_steps, solver=solver, t_grid=t_grid,
+                              seed=seed, chunk=32, mask=mask)
     ranks = (draws.numpy() < m_true.numpy()[:, None, :]).sum(1).astype(np.int64)
     return sbc_uniformity(ranks, n_post)

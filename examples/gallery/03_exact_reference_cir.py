@@ -48,7 +48,7 @@ def render_png(prob, post, es, r, path):
     # same draw configuration as evaluate() above, so the per-panel FIDs
     # match the printed median
     smp = post.sample_batch(torch.as_tensor(es.tokens), n=2000, seed=0,
-                            mask=torch.as_tensor(es.mask)).numpy()
+                            mask=torch.as_tensor(es.mask), n_steps=20, solver="midpoint", t_grid="late").numpy()
     n = len(es.chain_a)
     ncols = 2 if n <= 4 else 3
     nrows = math.ceil(n / ncols)
@@ -86,7 +86,7 @@ def main(argv=None):
     es = build_eval_set(prob, "cir", K=20, n_sets=4, n_chain=20000,
                         seed=11, workers=4)
     print(f"\nevaluation set: {es!r}")
-    r = evaluate(post, es, n_draw=2000)
+    r = evaluate(post, es, n_draw=2000, n_steps=20, solver="midpoint", t_grid="late")
     print(f"median FID {r['fid_median']:.4f} against a floor of "
           f"{r['null_median']:.4f}")
 
