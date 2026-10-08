@@ -62,91 +62,92 @@ with conditional flow matching}\\[2mm]
 
 \begin{document}
 \maketitle
-\begin{center}\small\emph{Measurements in this report correspond to package commit \texttt{fd36e4d}. The package's default observation embedding for variable-design problems was changed afterwards (commit \texttt{d35f9c4}): the consecutive-pair embedding used here for Markov-observed series is now an explicit option (\texttt{embed="wfilm"}), and the default is the bare-point embedding.}\end{center}
+\begin{center}\small\emph{Provenance of the measurements. All numbers in this report come from package commit
+\texttt{fd36e4d}. That version samples on a uniform time grid with 20 midpoint steps, and it puts the
+observed value into the token as it is (``raw''). Two later changes keep these numbers and change the package. Commit \texttt{d35f9c4} makes the
+bare-point embedding the default and the consecutive-pair embedding an explicit option
+(\texttt{embed="wfilm"}). The sampler and the token value coordinate have no default values any more,
+and the sampler has a second time grid (Sec.~\ref{sec:recipe}).}\end{center}
 
 \begin{abstract}
-A package for amortized Bayesian estimation of the parameters of dynamical systems (ODEs, SDEs,
-and discretized PDEs) from noisy observations at a finite set of time points is presented. A
-conditional flow-matching model with a learnable input representation is trained once per system on
-simulated pairs and then returns posterior samples for any observation set, at any number and
-placement of points, in about $70$ milliseconds. On a benchmark suite of fourteen systems, each
-equipped with an exact or validated reference posterior, twelve are matched to median Fr\'echet
-distances of $0.003$--$0.08$ in reference-normalized coordinates. The machinery that builds and
-validates the reference posteriors is part of the package.
+This report presents a package for amortized Bayesian estimation of the parameters of dynamical
+systems. The systems are ODEs, SDEs and discretized PDEs. The data are noisy observations at a finite
+set of time points. The package trains a conditional flow-matching model once for each system, on
+simulated pairs. The trained model returns posterior samples for any observation set, with any number
+and any placement of points, in about $70$ milliseconds. We test the package on fourteen systems. Each
+system has an exact or a validated reference posterior. Twelve of the fourteen systems match their
+reference to a median Fr\'echet distance of $0.003$--$0.08$ in reference-normalized coordinates. The
+tools that build and validate the reference posteriors are part of the package.
 \end{abstract}
 
 \section{Introduction}
 \label{sec:intro}
 
-Recovering the parameters of a differential-equation model from noisy measurements of its solution is one
-of the basic inverse problems of applied science: a modeler writes down a dynamical system (an ODE, an
-SDE, or a PDE) whose right-hand side depends on unknown physical constants, observes a trajectory at a
-finite set of time points, and asks what the observations say about the constants. Like most inverse
-problems, this one is ill-posed in the practical sense: different parameter values can produce nearly
-indistinguishable observations, especially when the state is partially observed or the sampling is
-sparse, so a point estimate both hides the ambiguity and is unstable under noise. The Bayesian
-formulation resolves this by reporting the full posterior distribution over parameters given the
-data, so that ambiguity becomes posterior spread and correlation, at the price of two computational
-obstacles. First, for most stochastic and partially observed systems, the likelihood of the
-observations requires integrating over unobserved trajectory segments and is intractable or expensive.
-Second, modern workflows need posteriors \emph{repeatedly}: calibration studies process thousands of
-synthetic observation sets, sequential experiments update the posterior after every new measurement, and Bayesian
-experimental design compares candidate observation schedules by the posteriors they would produce.
-Per-instance MCMC or optimization inside such loops is the dominant cost even when a likelihood is
-available.
+A modeler writes a dynamical system with unknown physical constants. The system is an ODE, an SDE or a
+PDE. The modeler observes one trajectory at a finite set of time points and asks what the observations
+say about the constants. This is one of the basic inverse problems of applied science. In practice the
+problem is ill-posed. Different parameter values can give almost the same observations. This happens
+most often when the state is partially observed or the sampling is sparse. A point estimate then hides
+the ambiguity and is unstable under noise. The Bayesian formulation reports the full posterior
+distribution over the parameters, given the data. Ambiguity becomes posterior spread and correlation.
+The price is two computational obstacles. First, for most stochastic and partially observed systems the
+likelihood of the observations is intractable or expensive, because it integrates over unobserved
+trajectory segments. Second, modern workflows need posteriors many times. Calibration studies process
+thousands of synthetic observation sets. Sequential experiments update the posterior after each new
+measurement. Bayesian experimental design compares candidate observation schedules by the posteriors
+they give. In such loops, MCMC or optimization for each instance is the dominant cost, even when a
+likelihood is available.
 
-Simulation-based inference (SBI) addresses both issues by learning a conditional generative model of the
-parameters given the data from simulated pairs (parameters drawn from the prior, observation sets
-produced by the simulator), thereby amortizing the cost of inference into a one-time training phase
-\citep{cranmer2020}. Neural posterior estimation (NPE) and its sequential variants
-\citep{papamakarios2016, greenberg2019} fit normalizing flows by maximum likelihood; flow-matching and
-diffusion variants \citep{wildberger2023, gloeckler2024} replace the density estimator with transport-based
-generative models. Mature software exists: the \texttt{sbi} toolkit \citep{boelts2024}, BayesFlow
-\citep{radev2020}, and the \texttt{sbibm} benchmark collection \citep{lueckmann2021}.
+Simulation-based inference (SBI) solves both problems with one idea \citep{cranmer2020}. It learns a
+conditional generative model of the parameters given the data from simulated pairs. The parameters
+come from the prior and the observation sets come from the simulator. The cost of inference moves into
+one training phase. Neural posterior estimation (NPE) and its sequential variants fit normalizing flows
+by maximum likelihood \citep{papamakarios2016, greenberg2019}. Flow-matching and diffusion variants use
+transport-based generative models instead \citep{wildberger2023, gloeckler2024}. Mature software
+exists: the \texttt{sbi} toolkit \citep{boelts2024}, BayesFlow \citep{radev2020} and the \texttt{sbibm}
+benchmark collection \citep{lueckmann2021}.
 
-These toolkits leave three things unsolved in the dynamical-systems setting, and the three are
-connected. First, the conditional density estimators consume a fixed-length data vector after global
-standardization: the estimator sees whatever coordinates the user chose. On multiplicative and
-heavy-tailed processes (prices, concentrations, populations) we found this convention to fail in
-reproducible ways: with prescribed coordinates the estimator ends up biased or mis-calibrated
-(Sec.~\ref{sec:features}).
-Second, a fixed-length interface cannot produce the object that sequential refinement and Bayesian
-experimental design consume: one posterior conditioned on an arbitrary subset of the measurement
-points. Third, the standard evaluation practice, simulation-based calibration \citep{talts2018}, is
-a necessary-condition test whose statistical power at practical sample sizes is limited, and learned
-posteriors can be confidently wrong in ways that rank diagnostics do not detect \citep{hermans2022},
-so a failure of the first kind can pass the accepted diagnostics.
+These toolkits leave three problems open for dynamical systems. The three problems are connected.
+First, the conditional density estimators consume a fixed-length data vector after global
+standardization. The estimator sees the coordinates the user chose. On multiplicative and heavy-tailed
+processes (prices, concentrations, populations) this convention fails in reproducible ways. With
+prescribed coordinates the estimator becomes biased or mis-calibrated (Sec.~\ref{sec:features}).
+Second, a fixed-length interface cannot give the object that sequential refinement and Bayesian
+experimental design need. That object is one posterior conditioned on an arbitrary subset of the
+measurement points. Third, the standard evaluation practice is simulation-based calibration
+\citep{talts2018}. This is a test of a necessary condition. Its statistical power at practical sample
+sizes is limited. A learned posterior can be confidently wrong in ways that rank diagnostics do not
+detect \citep{hermans2022}. A failure of the first kind can pass the accepted diagnostics.
 
-This report describes \amortix, a compact PyTorch package (about $3{,}500$ lines; one default
-model of $4.8 \times 10^5$ weights) built around three decisions that answer the three gaps in
-order: the input representation is learned as part of the model, one network is trained over random
-observation designs, and accuracy is measured against reference posteriors rather than
-self-consistency. Our main contributions are:
+This report describes \amortix, a compact PyTorch package. It has about $3{,}500$ lines and one
+default model of $4.8 \times 10^5$ weights. Three decisions answer the three problems, in order. The input representation is learned as part
+of the model. One network is trained over random observation designs. Accuracy is measured against
+reference posteriors, not against self-consistency. The main
+contributions are:
 \begin{itemize}
-  \item \emph{A learnable input representation} (Sec.~\ref{sec:arch}): a monotone
+  \item \emph{A learnable input representation} (Sec.~\ref{sec:arch}). It has three parts: a monotone
   mixture-of-scales reparametrization of the value axis, attention phases computed from the physical
-  observation times, and explicit design-size features. Each component is motivated by a measured
-  failure in the conditioning of the encoder input and carries a learnable repair, documented with
-  the component itself (Sec.~\ref{sec:features}).
-  \item \emph{Design amortization} (Secs.~\ref{sec:recipe}, \ref{sec:design-amortization}): one
-  network approximates $p(m \mid S)$ for every subset $S$ of the measurement points (arbitrary
-  sizes and placements, including spatio-temporal sensor designs for PDEs), together with the
-  training procedure this requires: designs resampled fresh at every optimizer step, under a
-  measured design-size law.
-  \item \emph{An evaluation methodology with references as the record} (Sec.~\ref{sec:protocol}):
-  exact or validated reference posteriors for all fourteen benchmark systems, built by the engine
-  the likelihood admits (closed forms, adaptive Metropolis, nested sampling, tempered SMC over
-  particle-filter estimates), admitted by three independent checks, with simulation-based
-  calibration used only as a screen; the machinery ships with the package.
-  \item \emph{Measurements} (Sec.~\ref{sec:results}): the accuracy record on
-  the suite and its dependence on model size, simulation budget, and data reuse; and the full
-  cost accounting (Table~\ref{tab:refcost}): training in $58$--$82$ minutes per system on one GPU,
-  bit-identical on a laptop CPU at four times the wall time; a posterior in ${\sim}70$\,ms
-  thereafter, against milliseconds to an hour per observation set for the per-instance reference
-  samplers. For a single dataset with a cheap likelihood, classical sampling
-  remains the right tool; the case for amortization is repetition and intractable likelihoods.
+  observation times, and explicit design-size features. A measured failure in the conditioning of the
+  encoder input motivates each part. Each part is a learnable repair, documented with the part itself
+  (Sec.~\ref{sec:features}).
+  \item \emph{Design amortization} (Secs.~\ref{sec:recipe}, \ref{sec:design-amortization}). One network
+  approximates $p(m \mid S)$ for every subset $S$ of the measurement points. The subsets have arbitrary
+  sizes and placements, and they include spatio-temporal sensor designs for PDEs. The training procedure
+  resamples the designs at every optimizer step, under a measured design-size law.
+  \item \emph{An evaluation methodology with references as the record} (Sec.~\ref{sec:protocol}). All
+  fourteen benchmark systems have exact or validated reference posteriors. The engine that the
+  likelihood admits builds each reference: closed forms, adaptive Metropolis, nested sampling, or tempered
+  SMC over particle-filter estimates. Three independent checks admit each reference. Simulation-based
+  calibration is only a screen. The tools ship with the package.
+  \item \emph{Measurements} (Sec.~\ref{sec:results}). We report the accuracy on the suite and its
+  dependence on model size, simulation budget and data reuse. We report the full cost
+  (Table~\ref{tab:refcost}). Training takes $58$--$82$ minutes per system on one GPU. A laptop CPU gives
+  bit-identical results at four times the wall time. After training, one posterior costs about
+  $70$\,ms. The per-instance reference samplers cost milliseconds to one hour per observation set. For
+  a single dataset with a cheap likelihood, classical sampling stays the right tool. Amortization pays
+  when posteriors repeat or when the likelihood is intractable.
 \end{itemize}
-Appendix~\ref{app:package} maps the terminology of this report to package options.
+Appendix~\ref{app:package} maps the terms of this report to package options.
 
 \section{Method}
 \label{sec:setup}
@@ -154,184 +155,183 @@ Appendix~\ref{app:package} maps the terminology of this report to package option
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figs/overview.pdf}
-\caption{The approach. Parameters drawn from the prior are simulated once on a fine grid (left).
-Training fits a conditional flow-matching posterior with a set-transformer encoder, drawing a fresh
-random observation design at every optimizer step (Secs.~\ref{sec:arch}, \ref{sec:recipe}). The
-trained network returns posterior samples for any observation set of the experiment, at any number
-and placement of points. Accuracy is measured against exact or validated reference posteriors
-computed on the same observed points (Sec.~\ref{sec:protocol}).}
+\caption{The approach. Parameters come from the prior and are simulated once on a fine grid (left).
+Training fits a conditional flow-matching posterior with a set-transformer encoder. Each optimizer
+step draws a fresh random observation design (Secs.~\ref{sec:arch}, \ref{sec:recipe}). The trained
+network returns posterior samples for any observation set of the experiment, with any number and any
+placement of points. We measure the accuracy against exact or validated reference posteriors computed on
+the same observed points (Sec.~\ref{sec:protocol}).}
 \label{fig:overview}
 \end{figure}
 
-Figure~\ref{fig:overview} shows the approach as a whole; this section defines each element.
+Figure~\ref{fig:overview} shows the approach. This section defines each element.
 
 \subsection{Problem formulation}
 
-Let a dynamical system depend on a parameter vector $m \in \R^{d}$ with a known prior $p(m)$, uniform on a
-box in all benchmarks below. The system produces a state trajectory $x(t)$, through an ODE
-$\dot{x} = f(x; m)$, an SDE $dx = f(x;m)\,dt + \sigma(x;m)\,dW_t$, or a spatially discretized PDE,
-and the trajectory is observed through a noisy channel at $K$ points:
+A dynamical system depends on a parameter vector $m \in \R^{d}$ with a known prior $p(m)$. In all
+benchmarks the prior is uniform on a box. The system gives a state trajectory $x(t)$. The trajectory
+comes from an ODE $\dot{x} = f(x; m)$, from an SDE $dx = f(x;m)\,dt + \sigma(x;m)\,dW_t$, or from a
+spatially discretized PDE. A noisy channel observes the trajectory at $K$ points:
 \begin{equation}
   y_i = h\bigl(x(t_i)\bigr) + \varepsilon_i, \qquad
   \D = \{(t_i, y_i)\}_{i=1}^{K}.
   \label{eq:obs}
 \end{equation}
-We call $\D$ the \emph{observation set} of one experiment; it is the entire input to inference.
-Training and evaluation below involve many independently simulated observation sets, each paired with
-the parameter that generated it.
-The observation operator $h$ may expose only part of the state: in the benchmarks below, only the price of
-an asset while its stochastic volatility is latent, only the membrane voltage of a neuron while its gating
-variables are latent, or only three spatial sensors of a PDE field. The target is the posterior
-$p(m \mid \D) \propto p(\D \mid m)\, p(m)$.
+We call $\D$ the \emph{observation set} of one experiment. It is the entire input to inference.
+Training and evaluation use many independently simulated observation sets. Each set is paired with the
+parameter that generated it. The observation operator $h$ can expose only part of the state. In the benchmarks below, $h$ gives only the price of an asset, and the stochastic volatility stays
+latent. Or it gives only the membrane voltage of a neuron, and the gating variables stay latent. Or it
+gives only three spatial sensors of a PDE field. The target is the posterior $p(m \mid \D) \propto p(\D \mid m)\, p(m)$.
 
-Three standing assumptions delimit the setting. The parameter is finite- and low-dimensional ($d = 2$--$5$
-in every benchmark below) with a prior that factorizes across components and has tractable marginal CDFs
-(uniform boxes throughout; the construction extends to any such prior). The simulator can be run forward
-cheaply and repeatedly, but nothing else is required of it: no likelihood evaluations, no gradients.
-Observation times (and sensor indices) are known exactly; the measurement noise $\varepsilon_i$ is
+Three assumptions define the setting. The parameter is finite- and low-dimensional ($d = 2$--$5$ in
+every benchmark). The prior factorizes across components and has tractable marginal CDFs (uniform
+boxes here; the construction extends to any such prior). The simulator runs forward cheaply and
+repeatedly, and nothing else is required of it: no likelihood evaluations and no gradients. The
+observation times and sensor indices are known exactly. The measurement noise $\varepsilon_i$ is
 independent across observations with a known per-system law.
 
-Although the posterior itself is intractable, sampling from the \emph{joint} distribution of parameters
-and data is easy: draw $m_j \sim p(m)$, simulate the system, apply the observation channel. This yields
-arbitrarily many training pairs $(m_j, \D_j)$, and a conditional generative model trained on them
-approximates the posterior for every observation set simultaneously: the cost of inference is moved
-into a one-time training phase, and inference for a new observation set is a forward pass. We impose one requirement
-beyond standard amortization: a single trained network must remain correct for any number $K$ and any
-placement of observation times (and, for PDEs, sensor positions). Formally, for every subset $S$ of the
-measurement points of one experiment the network must approximate $p(m \mid S)$, and the family of
-answers must be coherent; in particular the posterior must widen as points are removed. We refer to
-this requirement as \emph{design amortization}; it is the object consumed by sequential refinement and by
-Bayesian experimental design, where candidate observation schedules are ranked by the posteriors they
-would produce.
+The posterior is intractable, but sampling from the \emph{joint} distribution of parameters and data
+is easy. Draw $m_j \sim p(m)$, simulate the system, apply the observation channel. This gives as many
+training pairs $(m_j, \D_j)$ as needed. A conditional generative model trained on these pairs
+approximates the posterior for every observation set at the same time. The cost of inference moves
+into one training phase. Inference for a new observation set is one forward pass. We add one
+requirement to standard amortization. A single trained network must stay correct for any number $K$
+and any placement of observation times (and, for PDEs, sensor positions). In formal terms, for every
+subset $S$ of the measurement points of one experiment the network must approximate $p(m \mid S)$. The
+family of answers must be coherent; in particular the posterior must widen when points are removed. We
+call this requirement \emph{design amortization}. Sequential refinement and Bayesian experimental design
+consume this object, because they rank candidate observation schedules by the posteriors the schedules
+give.
 
 \subsection{Posterior sampling by conditional flow matching}
 \label{sec:method}
 
-The idea of the method is to represent the posterior not by a density formula but by a
-\emph{transport}: a learned, data-conditioned deformation that carries a fixed reference distribution
-onto the posterior. Sampling then amounts to drawing from the reference and applying the deformation:
-there is no normalizing constant to compute and no invertibility constraint to build into the network,
-because the deformation is defined implicitly as the flow of a velocity field, and the field itself is
-fitted by ordinary least-squares regression on simulated pairs. This construction is conditional flow
-matching \citep{lipman2023}.
+The method represents the posterior as a \emph{transport}, not as a density formula. The transport is
+a learned, data-conditioned deformation that carries a fixed reference distribution onto the posterior.
+Sampling draws from the reference and applies the deformation. There is no normalizing constant to
+compute and no invertibility constraint in the network. The flow of a velocity field defines the
+deformation implicitly. Ordinary least-squares regression on simulated pairs fits the field. This
+construction is conditional flow matching \citep{lipman2023}.
 
-Concretely, parameters are first reparametrized componentwise,
+First, the parameters are reparametrized component by component,
 \begin{equation}
   m \;\longmapsto\; \Phi^{-1}\!\bigl(F_{\text{prior}}(m)\bigr) \in \R^{d},
   \label{eq:probit}
 \end{equation}
-where $F_{\text{prior}}$ collects the marginal prior CDFs and $\Phi$ is the standard normal CDF. In
-the new coordinates the prior is exactly $\N(0, I)$ and box constraints disappear; usefully, the
-uninformative limit then costs nothing: when the data carry no information the posterior coincides
-with the reference and the transport is the identity. From here on we work exclusively in these
-coordinates and keep writing $m$ for the parameter in them; the inverse of \eqref{eq:probit} is
-applied exactly once, at the end of sampling, to return draws on the original scale.
+where $F_{\text{prior}}$ collects the marginal prior CDFs and $\Phi$ is the standard normal CDF. In the
+new coordinates the prior is exactly $\N(0, I)$ and the box constraints disappear. The uninformative
+limit then costs nothing: when the data carry no information, the posterior is the reference and the
+transport is the identity. From here on we work in these coordinates and keep the symbol $m$ for the
+parameter in them. The inverse of \eqref{eq:probit} is applied exactly once, at the end of sampling, to
+return the draws on the original scale.
 
-The transport is indexed by a \emph{virtual time} $\tau \in [0, 1]$, an algorithmic variable with
-no relation to the physical time $t$ at which the dynamical system is observed; $t$ appears only inside
-observation sets, $\tau$ only in the transport. Subscripts in $\tau$ denote the position along the transport
-path: $m_1$ is a parameter drawn jointly with its observation set $\D$ (the endpoint), $m_0 \sim \N(0, I)$ is
-pure reference noise (not the transform of any parameter, but the raw material that the transport
-turns into a posterior draw by $\tau = 1$), and between them lies the training
-interpolation $m_\tau = (1 - \tau)\, m_0 + \tau\, m_1$. The velocity network is trained to predict
-the direction of this path by regression:
+A \emph{virtual time} $\tau \in [0, 1]$ indexes the transport. This is an algorithmic variable. It has
+no relation to the physical time $t$ at which the system is observed. The symbol $t$ appears only inside
+observation sets, and $\tau$ only in the transport. Subscripts in $\tau$ give the position along the
+transport path. The endpoint $m_1$ is a parameter drawn together with its observation set $\D$. The start $m_0 \sim \N(0, I)$ is pure reference noise. It is not the transform of any parameter. It
+is the raw material that the transport turns into a posterior draw at $\tau = 1$. Between them lies the training
+interpolation $m_\tau = (1 - \tau)\, m_0 + \tau\, m_1$. The velocity network learns the direction of
+this path by regression:
 \begin{equation}
   \mathcal{L}(\theta) =
   \E_{\,m,\D,\; m_0 \sim \N(0,I),\; \tau \sim U[0,1]}
   \bigl\| v_\theta(m_\tau,\, \tau,\, \D) - (m_1 - m_0) \bigr\|^2 .
   \label{eq:cfm}
 \end{equation}
-The minimizer of \eqref{eq:cfm} is the marginal velocity field whose flow transports $\N(0, I)$ at
-$\tau = 0$ to $p(m_1 \mid \D)$ at $\tau = 1$ \citep{lipman2023}. Sampling draws $m_0 \sim \N(0, I)$, integrates $dm/d\tau = v_\theta(m, \tau, \D)$ from $\tau = 0$
-to $1$, and maps the endpoint back through the inverse of \eqref{eq:probit}; the numerical settings of
-the integration are implementation details, collected in Sec.~\ref{sec:recipe}.
-The same estimator family, with a different conditioning architecture, is available in \texttt{sbi}
-as flow-matching posterior estimation (FMPE) \citep{wildberger2023}; this package differs in the
-input representation rather than in the generative engine.
+The minimizer of \eqref{eq:cfm} is the marginal velocity field. Its flow transports $\N(0, I)$ at
+$\tau = 0$ to $p(m_1 \mid \D)$ at $\tau = 1$ \citep{lipman2023}. Sampling draws $m_0 \sim \N(0, I)$,
+integrates $dm/d\tau = v_\theta(m, \tau, \D)$ from $\tau = 0$ to $1$, and maps the endpoint back
+through the inverse of \eqref{eq:probit}. The numerical settings of the integration are not details.
+Sec.~\ref{sec:recipe} states them, and it reports a case where the usual grid fails. The same
+estimator family, with a different conditioning architecture, is available in \texttt{sbi} as
+flow-matching posterior estimation (FMPE) \citep{wildberger2023}. This package differs in the input
+representation, not in the generative engine.
 
-No likelihood evaluations, simulator gradients, or per-instance optimization are required at any stage; the
-simulator is executed only forward, during training-set generation.
+No stage needs likelihood evaluations, simulator gradients or per-instance optimization. The simulator
+runs only forward, during the generation of the training set.
 
 The training objective is consistent in the following sense.
 
 \begin{proposition}[consistency]
-Let $(m, \D) \sim p(m)\,p(\D \mid m)$ and let $m_1$ be given by \eqref{eq:probit}. If the loss
-\eqref{eq:cfm} is minimized over all measurable velocity fields, then for $p(\D)$-almost every $\D$ the
-flow of the minimizer transports $\N(0, I)$ at $t = 0$ to the conditional law $p(m_1 \mid \D)$ at
-$t = 1$; equivalently, the sampling procedure above draws exactly from the posterior
+Let $(m, \D) \sim p(m)\,p(\D \mid m)$ and let $m_1$ be given by \eqref{eq:probit}. Minimize the loss
+\eqref{eq:cfm} over all measurable velocity fields. Then for $p(\D)$-almost every $\D$ the flow of the
+minimizer transports $\N(0, I)$ at $\tau = 0$ to the conditional law $p(m_1 \mid \D)$ at $\tau = 1$.
+Equivalently, the sampling procedure above draws exactly from the posterior
 \citep{lipman2023, wildberger2023}.
 \end{proposition}
 
-The proposition is an idealization: with a finite network, a finite simulation budget, and a numerical
-solver, no calibration guarantee survives, and the residual error becomes an empirical quantity.
+The proposition is an idealization. A finite network, a finite simulation budget and a numerical
+solver remove every calibration guarantee. The residual error becomes an empirical quantity.
 Section~\ref{sec:protocol} builds the instruments that measure it.
 
 \section{Conditioning architecture}
 \label{sec:arch}
 
-The velocity field $v_\theta(m, \tau, \D)$ must be conditioned on an observation set of
-time-stamped measurements, and three properties of that set drive the architecture: the number of
-observations $K$ varies from experiment to experiment (by two orders of magnitude in the variable-design
-setting); the observation times are arbitrary real numbers, in general not equally
-spaced, so positional schemes built for uniform sequences do not apply; and the times carry all
-ordering information, so the output must not depend on how the observations happen to be stored. These
-properties rule out the fixed-length-vector conditioners that are the default in NPE implementations,
-and they are naturally met by a transformer operating on one feature vector per observation,
-called a \emph{token} throughout this section.
+The velocity field $v_\theta(m, \tau, \D)$ is conditioned on an observation set of time-stamped
+measurements. Three properties of that set drive the architecture. The number of observations $K$
+varies from experiment to experiment, by two orders of magnitude in the variable-design setting. The
+observation times are arbitrary real numbers, in general not equally spaced, so positional schemes for
+uniform sequences do not apply. The times carry all ordering information, so the output must not depend
+on the storage order of the observations. These properties rule out the fixed-length-vector
+conditioners that NPE implementations use. A transformer that operates on one feature vector per
+observation meets them. We call that feature vector a \emph{token}.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.95\linewidth]{figs/arch.pdf}
-\caption{Model architecture; arrows denote data flow, bottom to top. Left: each observation is
-featurized and linearly embedded into one token; $L$ transformer encoder blocks, whose attention phases
-are computed from the physical observation times (Sec.~\ref{sec:trope}), produce a memory $H$ of $K$
-encoded states. Middle: the $d$ components of the flow state $m_\tau$ form $d$ parameter-slot tokens
-processed by $L$ velocity blocks and a linear head into the velocity $v_\theta$. Right: one velocity
-block expanded --- self-attention across parameter slots, cross-attention reading the observation memory
-$H$, and an MLP, each preceded by layer normalization with scale-shift $(\gamma, \beta)$ and followed by
-a gated residual connection ($g$, marked $+$); the triples $(\gamma, \beta, g)$ are produced from the
-virtual time $\tau$ by a zero-initialized map, so the untrained block is the identity \citep{peebles2023}.}
+\caption{Model architecture. Arrows show the data flow, bottom to top. Left: each observation is
+featurized and linearly embedded into one token. $L$ transformer encoder blocks produce a memory $H$ of
+$K$ encoded states. Their attention phases come from the physical observation times
+(Sec.~\ref{sec:trope}). Middle: the $d$ components of the flow state $m_\tau$ form $d$ parameter-slot
+tokens. $L$ velocity blocks and a linear head map them to the velocity $v_\theta$. Right: one velocity
+block. It has self-attention across the parameter slots, cross-attention that reads the observation
+memory $H$, and an MLP. Layer normalization with scale-shift $(\gamma, \beta)$ precedes each part, and a
+gated residual connection ($g$, marked $+$) follows it. A zero-initialized map produces the triples
+$(\gamma, \beta, g)$ from the virtual time $\tau$, so the untrained block is the identity
+\citep{peebles2023}.}
 \label{fig:arch}
 \end{figure}
 
 \subsection{Overall scheme}
 \label{sec:scheme}
 
-The network evaluates $v_\theta(m, \tau, \D)$, where $m$ is the normalized parameter vector partway
-along its transport path (the interpolation $m_\tau$ at training time, the current ODE state at
-sampling time) and $\tau$ is the virtual time of the transport. The design follows the encoder--decoder pattern that is standard in
-conditional flow-matching and diffusion models: the data are encoded once, and a decoder combines that
+The network evaluates $v_\theta(m, \tau, \D)$. Here $m$ is the normalized parameter vector partway along
+its transport path: the interpolation $m_\tau$ at training time, the current ODE state at sampling time.
+The scalar $\tau$ is the virtual time of the transport. The design follows the encoder--decoder pattern of
+conditional flow-matching and diffusion models. The data are encoded once. A decoder combines that
 encoding with the object being generated,
 \begin{equation}
-  v_\theta(m, \tau, \D) \;=\; \mathrm{Dec}\bigl(m,\; \tau,\; \mathrm{Enc}(\D)\bigr),
+  v_\theta(m, \tau, \D) \;=\; \mathrm{Dec}\bigl(m,\; \tau,\; \mathrm{Enc}(\D)\bigr).
   \label{eq:encdec}
 \end{equation}
-with explicit types: $\mathrm{Enc}$ maps the observation set, the $K$ time-stamped measurements of
-one experiment, to a memory of $K$ vectors,
-$\mathrm{Enc}(\D) \in \R^{K \times d_{\mathrm{model}}}$, computed once per observation set, and $\mathrm{Dec} : \R^{d} \times [0,1] \times \R^{K \times d_{\mathrm{model}}} \to
-\R^{d}$ combines the current transport point and the virtual time with that memory. Two differences
-from the image and text instances of this pattern dictate the concrete form (Fig.~\ref{fig:arch}). First, the conditioning is not a fixed-size embedding but an observation set whose size $K$
-varies: $\mathrm{Enc}$ is therefore a transformer over per-observation tokens, its output is a
-\emph{memory} of $K$ encoded states rather than one pooled vector, and $\mathrm{Dec}$ reads the memory
-by cross-attention, the one standard mechanism indifferent to $K$. Second, the generated object is
-not an image but a short vector of $d$ parameters, so the decoder is small: the $d$ components of $m$
-are treated as $d$ tokens, self-attention among them expresses posterior correlations (the ridge of the
-Fisher--KPP posterior, the drift--volatility coupling of GBM), and the virtual time $\tau$ enters every block
-through zero-initialized adaptive layer normalization (adaLN-Zero), the conditioning mechanism of
-diffusion transformers \citep{peebles2023}, so that the untrained network is an identity-like map.
+The types are explicit. $\mathrm{Enc}$ maps the observation set, the $K$ time-stamped measurements of
+one experiment, to a memory of $K$ vectors, $\mathrm{Enc}(\D) \in \R^{K \times d_{\mathrm{model}}}$. The
+memory is computed once per observation set. $\mathrm{Dec} : \R^{d} \times [0,1] \times \R^{K \times
+d_{\mathrm{model}}} \to \R^{d}$ combines the current transport point and the virtual time with that
+memory. Two differences from the image and text instances of this pattern set the concrete form
+(Fig.~\ref{fig:arch}). First, the conditioning is not a fixed-size embedding. It is an observation set
+of variable size $K$. Thus $\mathrm{Enc}$ is a transformer over per-observation tokens. Its output is a \emph{memory} of
+$K$ encoded states, not one pooled vector. $\mathrm{Dec}$ reads the memory by cross-attention, the one
+standard mechanism that does not depend on $K$. Second, the generated object
+is a short vector of $d$ parameters, not an image. Thus the decoder is small. The $d$ components of $m$
+are $d$ tokens. Self-attention among them expresses posterior correlations, such as the ridge of the
+Fisher--KPP posterior or the drift--volatility coupling of GBM. The virtual time $\tau$ enters every
+block through zero-initialized adaptive layer normalization (adaLN-Zero), the conditioning mechanism of
+diffusion transformers \citep{peebles2023}. The untrained network is then an identity-like map.
 
-On the encoder side, observation $i$ is described by a few features and lifted to the model width by
-a learned linear map. The features are its time $t_i$; its transformed value $w(y_i)$, with $w$ the
-learnable monotone map of Sec.~\ref{sec:features}; an index identifying the sensor or state
-component that produced the value (multivariate states contribute one token per observed component
-per time); and the design-size feature of Sec.~\ref{sec:features}. The attention mechanism that lets these tokens interact is the subject of
-the next subsection; the choice of features is the subject of Sec.~\ref{sec:features}.
+On the encoder side, a few features describe observation $i$, and a learned linear map lifts them to
+the model width. There are four features. The first is the time $t_i$. The second is the transformed value $w(v_i)$.
+Here $v_i$ is the observed value in the coordinate the problem declares, and $w$ is the learnable
+monotone map (Sec.~\ref{sec:features}). The third is an index of the sensor or state component that
+produced the value. A multivariate state gives one token per observed component per time. The fourth
+is the design-size feature of Sec.~\ref{sec:features}. The next subsection describes the attention mechanism that lets
+the tokens interact. Section~\ref{sec:features} describes the choice of features.
 
-This scheme is the survivor of a sequence of measured alternatives; the
-failed ones are retained in the package as reproducible controls. All sizes are configuration parameters. One default configuration (width 64, four heads, three blocks
-per side) is used unchanged for every experiment in this report; at the training-set sizes we use,
-models of this scale proved sufficient (doubling width and depth changes no benchmark result), and
-nothing in the construction caps the scale.
+This scheme is the survivor of a sequence of measured alternatives. The failed alternatives stay in
+the package as reproducible controls. All sizes are configuration parameters. One configuration
+(width 64, four heads, three blocks per side) serves every experiment in this report. At the
+training-set sizes we use, models of this scale are sufficient: doubling width and depth changes no
+benchmark result. Nothing in the construction caps the scale.
 
 \subsection{Attention phases from observation times}
 \label{sec:trope}
@@ -339,198 +339,207 @@ nothing in the construction caps the scale.
 We adapt rotary position embeddings, the standard positional scheme of modern transformers
 \citep{su2024}, to irregular time sampling.
 
-First the classical construction. For token states $x_1, \dots, x_K \in \R^{d_{\mathrm{model}}}$
-entering an attention layer, each head computes
+First the classical construction. Token states $x_1, \dots, x_K \in \R^{d_{\mathrm{model}}}$ enter an
+attention layer. Each head computes
 \begin{equation}
   q_i = W_Q x_i, \qquad k_i = W_K x_i, \qquad u_i = W_V x_i,
   \qquad W_Q, W_K, W_V \in \R^{d_h \times d_{\mathrm{model}}},
 \end{equation}
-and token $i$ aggregates the others with weights
-$a_{il} = \operatorname{softmax}_l\bigl(\hat q_i^\top \hat k_l / \sqrt{d_h}\bigr)$, where
-$\hat q, \hat k$ are position-modulated: each query and key is split into $d_h/2$ planar blocks
-$q_i^{(j)} \in \R^2$ and block $j$ is rotated by an angle set by a per-token scalar $\phi_i$,
+and token $i$ aggregates the other tokens with weights
+$a_{il} = \operatorname{softmax}_l\bigl(\hat q_i^\top \hat k_l / \sqrt{d_h}\bigr)$. The hats mark
+position-modulated vectors. Each query and key is split into $d_h/2$ planar blocks $q_i^{(j)} \in \R^2$. Block $j$ is rotated
+by an angle that a per-token scalar $\phi_i$ sets,
 \begin{equation}
   \hat q_i^{(j)} = R(\omega_j \phi_i)\, q_i^{(j)}, \qquad
   \hat k_i^{(j)} = R(\omega_j \phi_i)\, k_i^{(j)}, \qquad
   R(\phi) = \begin{pmatrix} \cos\phi & -\sin\phi \\ \sin\phi & \cos\phi \end{pmatrix}.
   \label{eq:trope}
 \end{equation}
-In the classical scheme the scalar is the token's integer position in the sequence, $\phi_i = n_i$, and
-the frequencies form a geometric progression across blocks,
-$\omega_j = \omega_{\max} (\omega_{\min}/\omega_{\max})^{(j-1)/(d_h/2-1)}$, so that high-frequency
-blocks resolve neighboring positions and low-frequency blocks long ranges. Because rotations preserve
-inner products up to the relative angle,
+In the classical scheme the scalar is the integer position of the token in the sequence,
+$\phi_i = n_i$. The frequencies form a geometric progression across blocks,
+$\omega_j = \omega_{\max} (\omega_{\min}/\omega_{\max})^{(j-1)/(d_h/2-1)}$. High-frequency blocks
+resolve neighboring positions and low-frequency blocks resolve long ranges. Rotations preserve inner
+products up to the relative angle,
 \begin{equation}
   \hat q_i^{\top} \hat k_l
   \;=\; \sum_{j=1}^{d_h/2} \bigl(q_i^{(j)}\bigr)^{\top} R\bigl(\omega_j (\phi_l - \phi_i)\bigr)\, k_l^{(j)},
   \label{eq:ropeinv}
 \end{equation}
-every attention logit depends on the positions only through differences $\phi_l - \phi_i$:
-relative position awareness with no positional parameters.
+so every attention logit depends on the positions only through the differences $\phi_l - \phi_i$.
+This gives relative position awareness with no positional parameters.
 
-For irregularly sampled data the integer position is meaningless, and the generalization is immediate:
-we set $\phi_i = t_i$, the physical time stamp of observation $i$, and choose the frequency range so
-that the periods $2\pi/\omega_j$ span from the finest observable time gap to several times the horizon.
-Nothing else changes; by \eqref{eq:ropeinv}, every logit now depends on the time stamps only through
-differences $t_l - t_i$. The substitution of physical time for position is the same one that time-aware
-attention models for irregular clinical and event series make in other positional schemes
-\citep{horn2020, shukla2021}. Two consequences follow at once: the encoder is exactly
-permutation-invariant (relabeling tokens leaves the right-hand side of \eqref{eq:ropeinv} unchanged;
-verified numerically to $10^{-8}$), and variable designs require no positional bookkeeping. The phases
-enter only the encoder's self-attention; the cross-attention from parameter slots to the observation
-memory is unmodified attention, since parameter slots carry no time stamp and the memory states already
-encode temporal structure.
+For irregularly sampled data the integer position has no meaning. The generalization is direct. We set
+$\phi_i = t_i$, the physical time stamp of observation $i$. We choose the frequency range so that the
+periods $2\pi/\omega_j$ span from the finest observable time gap to several times the horizon. Nothing
+else changes. By \eqref{eq:ropeinv}, every logit now depends on the time stamps only through the
+differences $t_l - t_i$. Time-aware attention models for irregular clinical and event series make the
+same substitution in other positional schemes \citep{horn2020, shukla2021}. Two consequences follow.
+The encoder is exactly permutation-invariant: relabeling the tokens leaves the right-hand side of
+\eqref{eq:ropeinv} unchanged, and we verified this numerically to $10^{-8}$. Variable designs need no
+positional bookkeeping. The phases enter only the self-attention of the encoder. The cross-attention from the parameter slots to the observation memory is unmodified attention.
+The parameter slots carry no time stamp, and the memory states already encode the temporal
+structure.
 
-Integer positions, by contrast, create an implicit train/test contract on token placement: we
-found that a model trained on spread-out subsampled positions and evaluated on contiguously packed
-ones acquires substantial posterior biases while every component remains individually correct. With
-physical-time phases the contract does not arise.
+Integer positions create an implicit train/test contract on token placement. We trained a model on
+spread-out subsampled positions and evaluated it on contiguously packed ones. The posterior acquired
+substantial biases while every component stayed individually correct. With physical-time phases the
+contract does not exist.
 
 \subsection{Input features}
 \label{sec:features}
 
-The remaining design choices concern what the tokens contain. Three of them matter and are described in
-turn: a learnable transform of the observed values, an optional increment-based token construction for
-directly observed diffusions, and an explicit design-size feature. Each occupies a few lines of code;
-each repairs a measured failure in the conditioning of the numbers presented to the set encoder, and
-each repair is a learnable module rather than a problem-specific transformation. The same
+The remaining design choices concern the content of the tokens. Four of them matter. The first is the
+coordinate of the observed value. The other three are learnable modules. The first is a transform of the observed values. The second
+is an optional increment-based token construction for directly observed diffusions. The third is an
+explicit design-size feature. Each module occupies a few lines of code. Each module repairs a measured
+failure in the conditioning of the numbers that the set encoder receives. Each repair is a learnable
+module and not a problem-specific transformation.
 
+\paragraph{Value coordinate.} The problem declares the coordinate in which the observed value enters
+the token: the value itself, or its logarithm. The package has no default for this choice. The rule is:
+use the coordinate in which the observation noise is additive. For log-normal assay noise this is the
+logarithm. The learnable transform of the next paragraph does not replace this rule. With raw values under log-normal noise, the populations below about $0.05$ are compressed into an
+interval below the resolution of the network. The noise model measures their logarithm to
+$\pm 0.1$. On such
+observation sets the posterior centre then misses by several posterior widths. We measured this on the Lotka--Volterra system of the \texttt{sbibm} benchmark. The token value
+changed from the raw population to its logarithm. The median classifier two-sample test against MCMC
+improved from $0.79$ to $0.73$. All measurements in this report use raw values.
 
-\paragraph{Value transform.} State variables of the benchmark systems live on very different scales,
-and some (prices, concentrations, populations) are multiplicative: the information sits in
-relative rather than absolute changes, and the coordinate in which such a variable is well-behaved is
-logarithmic. We found that ignoring this is costly: on GBM, raw price tokens under global standardization force
-the network to divide squared increments by squared levels internally, and the result is a
-persistent volatility bias that no amount of training removes. Rather than prescribing
-coordinates per problem, each value enters its token through a
-learned monotone map,
+\paragraph{Value transform.} The state variables of the benchmark systems live on very different
+scales. Some of them (prices, concentrations, populations) are multiplicative: the information sits in
+relative changes, and the natural coordinate is logarithmic. Ignoring this is costly. On GBM, raw price
+tokens under global standardization force the network to divide squared increments by squared levels
+internally. The result is a persistent volatility bias that training does not remove. We do not
+prescribe coordinates per problem. Each value enters its token through a learned monotone map,
 \begin{equation}
   w(x) \;=\; \sum_{k=1}^{S} a_k \,\operatorname{sign}(x) \log\!\bigl(1 + |x| / s_k\bigr),
   \qquad a_k \ge 0.
   \label{eq:warp}
 \end{equation}
-Each basis function is linear for $|x| \ll s_k$ and logarithmic for $|x| \gg s_k$, so the family
-contains the identity, the signed logarithm, and every compression in between; positivity of the
-weights makes $w$ monotone by construction; and, most importantly, every candidate
-compression is present from initialization, so training only reweights fixed nonlinearities, and the
-downstream network can exploit whichever coordinate helps from the first optimizer step. The scales
-$s_k$ sit on a fixed geometric grid covering the dynamic range of the data ($S = 8$ octaves by default,
-one setting for all fourteen systems, no per-problem adjustment).
+Each basis function is linear for $|x| \ll s_k$ and logarithmic for $|x| \gg s_k$. The family contains
+the identity, the signed logarithm and every compression in between. The weights are positive, so $w$
+is monotone by construction. Every candidate compression is present from initialization. Training
+only reweights fixed nonlinearities, and the downstream network can use the helpful coordinate from the
+first optimizer step. The scales $s_k$ sit on a fixed geometric grid that covers the dynamic range of the data. There are
+$S = 8$ octaves. One setting serves all fourteen systems, with no per-problem adjustment.
 
-This structure was compared against simpler-looking learnable alternatives on geometric Brownian
-motion, where the correct coordinate (the log-price) is known, so a failure to find it is visible
-against the closed-form posterior. A
-generic two-layer MLP on the raw values and a random-Fourier-feature map both fail to find the
-coordinate at matched budget: a free-form map must discover the shape and the scale of the
-compression simultaneously, from gradients arriving through the whole downstream network, and in
-practice it does not. The Yeo--Johnson power transforms \citep{yeo2000}, a classical one-parameter
-family (in essence $x \mapsto ((1+|x|)^{\lambda} - 1)/\lambda$ applied with sign symmetry, which
-passes through the identity at $\lambda = 1$ and tends to the logarithm as $\lambda \to 0$), also
-fail, for an instructive reason: trained end-to-end, $\lambda$ never
-leaves its initialization, because a single global exponent must traverse a gradient plateau before
-the downstream network has learned anything that would reward the move. What decides the outcome is
-therefore the parametrization rather than the hypothesis class: the mixture \eqref{eq:warp}
-finds the coordinate reliably, with the trained weights concentrating on the small-scale
-components, i.e.\ the model learns the log-price.
+We compared this structure with simpler learnable alternatives on geometric Brownian motion. There the
+correct coordinate, the log-price, is known, so a failure to find it is visible against the closed-form
+posterior. A generic two-layer MLP on the raw values and a random-Fourier-feature map both fail to
+find the coordinate at a matched budget. A free-form map must discover the shape and the scale of the compression at the same time. Its
+gradients arrive through the whole downstream network. In practice it does not find them. The Yeo--Johnson power transforms \citep{yeo2000} also fail. This is a classical
+one-parameter family, in essence $x \mapsto ((1+|x|)^{\lambda} - 1)/\lambda$ with sign symmetry. It
+passes through the identity at $\lambda = 1$ and tends to the logarithm as $\lambda \to 0$. Trained end-to-end, $\lambda$ never leaves its initialization. A single global exponent must cross a
+gradient plateau before the downstream network learns anything that rewards the move. The parametrization
+decides the outcome, not the hypothesis class. The mixture \eqref{eq:warp} finds the coordinate
+reliably. The trained weights concentrate on the small-scale components: the model learns the
+log-price.
 
-\paragraph{Increment features for directly observed diffusions.} For scalar SDEs whose state is observed directly, with no latent components, the package offers a
-second token construction: after sorting by time, consecutive observations contribute
+\paragraph{Increment features for directly observed diffusions.} For scalar SDEs whose state is
+observed directly, with no latent components, the package offers a second token construction. After a
+sort by time, consecutive observations contribute
 \[
   \bigl[\,t_{(i)},\; w(y_{(i)}),\; \Delta w_i,\; (\Delta w_i)^2,\; w_t(\Delta t_{(i)})\,\bigr],
   \qquad \Delta w_i = w(y_{(i+1)}) - w(y_{(i)}).
 \]
-The motivation is elementary: for a Markov observed process
-the likelihood factorizes over consecutive pairs, transition densities of diffusions depend on
-increments and gaps, and squared increments carry the quadratic-variation information that identifies
-diffusion coefficients. This is an inductive bias of the same character as convolutions for images:
-useful where its assumption holds, not a requirement of the method; the point-token path of
-Sec.~\ref{sec:scheme} is fully general.
+The motivation is elementary. For a Markov observed process the likelihood factorizes over consecutive
+pairs. Transition densities of diffusions depend on increments and gaps. Squared increments carry the
+quadratic-variation information that identifies diffusion coefficients. This is an inductive bias of
+the same kind as convolutions for images: useful where its assumption holds, not a requirement of the
+method. The point-token path of Sec.~\ref{sec:scheme} is fully general.
 
-The rule for choosing between the constructions (increment tokens exactly when the observed process
-is Markov) was tested in both directions: an increment-token model transfers across Markov systems without
-adjustment, and on the Heston model, whose observed price is not Markov because the volatility is
-latent, increment and point tokens perform identically, as the factorization argument predicts.
-The package selects the construction from a per-problem flag.
+The rule for the choice between the constructions is: use increment tokens exactly when the observed
+process is Markov. We tested the rule in both directions. An increment-token model transfers across
+Markov systems without adjustment. On the Heston model the observed price is not Markov, because the volatility is latent. There
+increment and point tokens perform identically, as the factorization argument predicts. A per-problem flag selects the construction.
 
-Two further normalization details matter for processes with jumps, where squared increments within
-one observation set span several orders of magnitude. A running feature normalization then takes
-its scale from the rare outliers and never converges; the representation drifts during training and
-the flow trains against a moving target, which we found produces a substantial volatility bias on
-the Merton jump-diffusion. Probing the encoder showed the failure to be one of representation
-stability rather than extraction: the failing configuration encodes robust volatility statistics as
-well as the healthy one. Two repairs follow. First, increment features are logarithmically
-compressed before normalization; this is a near-identity on systems without jumps, since
-$\log(1+x) \approx x$ for small $x$, and in our experiments it removes the bias. Second, a smaller
-residual remains whose mechanism is a jump-classification threshold that floats with the unknown
-volatility; to remove it, the normalization is made adaptive to the observation set: robust summary
-statistics $s$ of the set, pooled over non-padding positions, are mapped by a zero-initialized MLP
-to per-channel scale and shift corrections,
+Two normalization details matter for processes with jumps, where squared increments within one
+observation set span several orders of magnitude. A running feature normalization then takes its scale
+from the rare outliers and never converges. The representation drifts during training, the flow trains
+against a moving target, and the Merton jump-diffusion acquires a substantial volatility bias. Probes of the encoder show a failure of representation stability, not of extraction. The failing
+configuration encodes robust volatility statistics as well as the healthy one does. Two repairs follow.
+First, the increment features are logarithmically compressed before normalization. This is a
+near-identity on systems without jumps, since $\log(1+x) \approx x$ for small $x$, and in our
+experiments it removes the bias. Second, a smaller residual remains. Its mechanism is a
+jump-classification threshold that floats with the unknown volatility. To remove it, the normalization adapts to the observation set. Robust summary statistics $s$ of the
+set are pooled over the non-padding positions. A zero-initialized MLP maps them to per-channel scale
+and shift corrections,
 \begin{equation}
-  h_c \;\mapsto\; \bigl(1 + \gamma_c(s)\bigr)\, h_c + \beta_c(s)
+  h_c \;\mapsto\; \bigl(1 + \gamma_c(s)\bigr)\, h_c + \beta_c(s).
   \label{eq:film}
 \end{equation}
---- a feature-wise affine modulation, FiLM in the terminology of \citet{perez2018}. We found that
-it removes the residual as effectively as a hand-crafted per-observation-set rescaling, and that
-three conditions are required for it to help: zero initialization, modulation applied \emph{after}
-the running normalization, and pooled statistics that exclude padding positions.
+This is a feature-wise affine modulation, FiLM in the terminology of \citet{perez2018}. It removes the
+residual as well as a hand-crafted per-observation-set rescaling does. Three conditions are necessary
+for it to help: zero initialization, modulation applied \emph{after} the running normalization, and
+pooled statistics that exclude the padding positions.
 
-\paragraph{Design size.} Posterior width is governed by the number of observations (in regular
-models the error scales as $K^{-1/2}$), while softmax attention computes normalized weighted
-means and is therefore nearly invariant to the size of the set it aggregates. Probing the encoder confirms the mechanism: every variant we tested recovers posterior-mean
-statistics from the pooled output, while how well the pooled output encodes $\log K$ varies widely
-across variants and ranks them exactly in the order of their width errors. We found that supplying
-this one number as an explicit feature, $\log K$ in every token, removes most of the width error at
-dense designs, and that the design-resampling training procedure of Sec.~\ref{sec:recipe} closes
-the rest. Appending a few learned register tokens \citep{darcet2024} achieves the same effect
-without an explicit feature.
+\paragraph{Design size.} The number of observations governs the posterior width: in regular models the
+error scales as $K^{-1/2}$. Softmax attention computes normalized weighted means and is therefore almost
+invariant to the size of the set it aggregates. Probes of the encoder confirm the mechanism. Every
+variant we tested recovers posterior-mean statistics from the pooled output. How well the pooled output
+encodes $\log K$ varies widely across variants, and it ranks them exactly in the order of their width
+errors. We supply this one number as an explicit feature, $\log K$ in every token. This removes most of
+the width error at dense designs. The design-resampling training procedure of Sec.~\ref{sec:recipe}
+removes the rest. A few learned register tokens \citep{darcet2024} give the same effect without an
+explicit feature.
 
 \section{Training procedures}
 \label{sec:recipe}
 
-\paragraph{Common settings.} Sampling integrates the velocity field with a fixed-step midpoint
-scheme, 20 steps by default; the step count was fixed once by a convergence check (fourth-order
-Runge--Kutta with three times as many steps changes no benchmark statistic), and evaluation uses an
-exponential moving average of the training weights (decay $0.999$). The default optimizer is Muon
-\citep{jordan2024}: the momentum of every two-dimensional weight is orthogonalized by a
-Newton--Schulz iteration before it is applied, with Adam retained for biases, normalizations, and
-embeddings. Its step size follows a measured batch-size rule $\eta(B)$ (Appendix~\ref{app:optmeas});
-the schedule is cosine with linear warmup, and gradients are clipped. At every optimizer step the
-virtual times are drawn afresh, stratified over $[0,1]$: $\tau_i = (i - 1 + u_i)/B$ for a batch of
-size $B$, with $u_i \sim U[0,1]$ i.i.d., $i = 1, \dots, B$; fresh reference noise $m_0$ is drawn
-with them, so no pairing between observation sets and virtual times is ever repeated. For
-fixed-design problems the training set consists of $n$ simulated observation sets and training runs
-for a fixed number of epochs over it; the calibration-screen gallery of
-Appendix~\ref{app:systems} uses $n = 40{,}000$ simulations and 35 epochs.
+\paragraph{Common settings.} All measurements in this report sample with the midpoint scheme, 20 steps,
+on a uniform time grid. We fixed the step count with a convergence check on the benchmark suite:
+fourth-order Runge--Kutta with three times as many steps changes no benchmark statistic. That check
+holds for the posteriors of the suite, which are $4$--$107$ times narrower than the prior at the
+median instances. It does not hold for posteriors that are much narrower. We found this later, on the
+Lotka--Volterra system of \texttt{sbibm} with 20 observations, where the posterior is $20$--$280$
+times narrower than the prior. There, near $\tau = 1$, the Jacobian of the field is about
+$-1/(1-\tau)$ until $1 - \tau$ is of the order of the posterior width, in the normalized coordinates.
+A uniform grid of $n$ steps cannot resolve a posterior narrower than about $1/n$ with any explicit
+scheme. The samples then have the correct marginal widths and the wrong joint structure. Take the exact flow-matching field of a Gaussian target of width $0.01$. The uniform grid with 20
+midpoint steps gives a classifier two-sample test of $0.92$ against the target ($0.5$ means not
+distinguishable). Fourth-order Runge--Kutta with 50 uniform steps gives $0.60$. A grid whose steps shrink towards
+$\tau = 1$ as $(1 - i/n)^3$ gives $0.50$ with the same 20 midpoint steps, down to a width of $0.003$.
+On the trained Lotka--Volterra flow the same change moves the test from $0.80$ to $0.57$ at no extra
+cost. The package now has both grids, and the caller must name the grid, the scheme and the step count
+in every sampling call. Use the shrinking grid for posteriors that can be much narrower than the prior.
+Evaluation uses an exponential moving average of the training weights (decay $0.999$). The optimizer is Muon \citep{jordan2024}. A Newton--Schulz iteration orthogonalizes the momentum of
+every two-dimensional weight before the update. Adam updates the biases, normalizations and
+embeddings.
+Its step size follows a measured batch-size rule $\eta(B)$ (Appendix~\ref{app:optmeas}). The schedule
+is cosine with linear warmup, and the gradients are clipped. At every optimizer step the virtual times
+are drawn afresh, stratified over $[0,1]$: $\tau_i = (i - 1 + u_i)/B$ for a batch of size $B$, with
+$u_i \sim U[0,1]$ i.i.d., $i = 1, \dots, B$. Fresh reference noise $m_0$ is drawn with them. No pairing
+of observation sets and virtual times repeats. For fixed-design problems the training set has $n$
+simulated observation sets, and training runs for a fixed number of epochs over it. The
+calibration-screen gallery of Appendix~\ref{app:systems} uses $n = 40{,}000$ simulations and 35 epochs.
 
-\paragraph{Design amortization.} Training data are simulated once on a fine grid; observation designs are
-then resampled \emph{from the stored fine trajectories at every optimizer step}. The procedure has three
-components, each fixed by a controlled comparison on GBM, Ornstein--Uhlenbeck, and
-FitzHugh--Nagumo:
+\paragraph{Design amortization.} Training data are simulated once on a fine grid. Observation designs
+are then resampled \emph{from the stored fine trajectories at every optimizer step}. The procedure has
+three parts. A controlled comparison on GBM, Ornstein--Uhlenbeck and FitzHugh--Nagumo fixed each part:
 \begin{enumerate}
-  \item \emph{Fresh designs at every step.} Re-drawing each trajectory's observation subset at each step
-  makes design memorization impossible and lets one simulation serve arbitrarily many designs. The
-  alternative, one fixed design per trajectory, closes the dense-design error at long budgets but
-  overfits the design set: in our experiments it produces overconfident posteriors at sparse $K$.
-  \item \emph{The design-size law.} $K$ is drawn $50\%$ log-uniform on $[K_{\min}, K_{\max}]$ and $50\%$
-  uniform on the dense half of the range. Log-uniform sampling alone puts too little mass at large
-  $K$ and leaves dense designs under-trained; the mixture removes the effect.
-  \item \emph{Budget scaling.} When higher accuracy is required, simulations and optimizer steps are scaled
-  together at constant epochs; in our experiments the residuals then decrease steadily with this
-  single budget variable, while passes over reused observation vectors eventually destroy accuracy,
-  which is why the scaling must be joint.
+  \item \emph{Fresh designs at every step.} Each step re-draws the observation subset of each
+  trajectory. Design memorization becomes impossible, and one simulation serves arbitrarily many
+  designs. The alternative is one fixed design per trajectory. It closes the dense-design error at long
+  budgets but overfits the design set. In our experiments it gives overconfident posteriors at sparse
+  $K$.
+  \item \emph{The design-size law.} $K$ is drawn $50\%$ log-uniform on $[K_{\min}, K_{\max}]$ and
+  $50\%$ uniform on the dense half of the range. Log-uniform sampling alone puts too little mass at
+  large $K$ and leaves dense designs under-trained. The mixture removes the effect.
+  \item \emph{Budget scaling.} For higher accuracy, scale simulations and optimizer steps together at a
+  constant number of epochs. In our experiments the residuals then decrease steadily with this single
+  budget variable. Passes over reused observation vectors eventually destroy accuracy. This is why the
+  scaling must be joint.
 \end{enumerate}
-With this procedure, we found the posterior width to match the exact per-design posterior closely
-and uniformly over the whole range of design sizes.
+With this procedure, the posterior width matches the exact per-design posterior closely and uniformly
+over the whole range of design sizes.
 
-\paragraph{Budgets and stopping.} Step budgets are set with deliberate slack, and the shipped
-weights are chosen by validation: training monitors a validation set (built by the same machinery
-as the test evaluation sets, from disjoint seeds) and replaces the final weights with the best
-monitored checkpoint only when the improvement exceeds the monitor's own resolution and the
-monitored value itself sits at least three floors above it, since a monitor asked to rank values of
-its own resolution returns noise in both directions. With that margin
-in place, overshooting a budget costs time, never quality, so the step budget is not a per-system
-quantity to tune. The measurements behind the margin, including the two failure modes of the naive
-best-checkpoint rule, are in Appendix~\ref{app:optmeas}.
+\paragraph{Budgets and stopping.} Step budgets have deliberate slack, and validation chooses the shipped
+weights. Training monitors a validation set, built by the same tools as the test evaluation sets from
+disjoint seeds. The final weights are replaced by the best monitored checkpoint only when two conditions
+hold. The improvement must exceed the resolution of the monitor. The monitored value must sit at least three floors above that resolution. A monitor that ranks
+values of its own resolution returns noise in both directions. With that margin, overshooting a budget costs time and never quality. The step
+budget is therefore not a per-system quantity to tune. Appendix~\ref{app:optmeas} gives the measurements
+behind the margin, including the two failure modes of the naive best-checkpoint rule.
 
 \begin{figure}[t]
 \begin{lstlisting}[style=he]
@@ -559,17 +568,16 @@ return ema
 # ---- inference: n posterior draws for one observation set S ----------------
 C = Enc(tokenize(S))                   # encode once; any size, any placement
 z = randn(n, d)                        # or the learned base, where enabled
-h = 1 / L                              # L midpoint steps on [0,1]
-for tau in arange(0, 1, h):            # all n draws batched
-    z_mid = z + h/2 * v(z, tau, C)
+for tau, h in grid(L, kind):           # L steps; kind = "uniform" or "late"
+    z_mid = z + h/2 * v(z, tau, C)     # midpoint scheme, 2 evaluations per step
     z = z + h * v(z_mid, tau + h/2, C)
 return denormalize(z)
 \end{lstlisting}
-\caption{Training (top) and inference (bottom). Package defaults: the step rule
-$\eta(B)$ of Sec.~\ref{sec:recipe}, monitor period $\Delta = T/24$, resolution
-multiple $\kappa = 3$ with monitor floor $\varphi$ (Appendix~\ref{app:optmeas}),
-and $L = 20$ ODE steps, fixed once by the convergence check of
-Sec.~\ref{sec:recipe}.}
+\caption{Training (top) and inference (bottom). The step rule $\eta(B)$ is that of
+Sec.~\ref{sec:recipe}, the monitor period is $\Delta = T/24$, the resolution multiple is
+$\kappa = 3$ with monitor floor $\varphi$ (Appendix~\ref{app:optmeas}). The measurements of this
+report use $L = 20$ steps on the uniform grid. The caller names $L$, the scheme and the grid in every
+sampling call (Sec.~\ref{sec:recipe}).}
 \label{fig:pseudocode}
 \end{figure}
 
@@ -578,7 +586,8 @@ Sec.~\ref{sec:recipe}.}
 import torch
 from amortix import FlowPosterior, DESIGN_ZOO
 
-prob = DESIGN_ZOO["heston"]()             # or any DesignProblem subclass
+prob = DESIGN_ZOO["heston"]()             # or any DesignProblem subclass; the class
+                                          #   declares value_coord ("raw" or "log")
 post = FlowPosterior(prob)                # embedding/RoPE resolve from the class
 post.fit(n_train=120_000, steps=72_000,   # about 1 h on one GPU
          retokenize=prob.make_retokenizer())  # fresh designs at every step
@@ -587,148 +596,138 @@ gen = torch.Generator().manual_seed(0)
 m, raw = prob.simulate(1, gen)            # here: one synthetic observation set
 tidx, cidx = prob.sample_design(gen, 20)  # 20 (time, sensor) points
 tokens = prob.tokens_for(raw[0], tidx, cidx, gen)
-draws = post.sample(tokens, n=2000)       # [2000, d] draws, milliseconds
+draws = post.sample(tokens, n=2000, n_steps=20, solver="midpoint",
+                    t_grid="late")       # [2000, d] draws, milliseconds
 \end{lstlisting}
-\caption{The interface for the procedure of Fig.~\ref{fig:pseudocode}: a
-benchmark system from the design zoo, training with the package defaults, and
-posterior draws for one observation set. The correspondence between the terms
-of this report and the package options is tabulated in
-Appendix~\ref{app:package}.}
+\caption{The interface for the procedure of Fig.~\ref{fig:pseudocode}: a benchmark system from the
+design zoo, training, and posterior draws for one observation set. The sampling settings have no
+default values. Appendix~\ref{app:package} maps the terms of this report to the package options.}
 \label{fig:usage}
 \end{figure}
 
 \section{Evaluation methodology}
 \label{sec:protocol}
 
-Accuracy is measured throughout against reference posteriors computed on the same observed
-points, so that a number in this report always says how far the network's posterior is from the
-posterior the data actually imply, rather than how well it satisfies a self-consistency condition.
+We measure accuracy against reference posteriors computed on the same observed points. A number in
+this report always says how far the posterior of the network is from the posterior that the data
+imply. It never says how well the network satisfies a self-consistency condition.
 
 \subsection{Reference posteriors as the record}
 \label{sec:refs}
 
-Wherever a tractable likelihood exists, we compare distributions on the same observed points. The
-headline statistic is a single number per observation set, the squared Fr\'echet distance between
-Gaussian fits of the two sample sets in reference-normalized coordinates (each parameter divided by the
-reference posterior standard deviation),
+Where a tractable likelihood exists, we compare distributions on the same observed points. The headline statistic is one number per observation set. It is the squared Fr\'echet distance
+between Gaussian fits of the two sample sets. The coordinates are reference-normalized: each parameter
+is divided by the standard deviation of the reference posterior,
 \begin{equation}
   d_F^2 \;=\; \lVert \mu_a - \mu_r \rVert^2
   + \operatorname{tr}\!\bigl(\Sigma_a + \Sigma_r
-  - 2\,(\Sigma_r^{1/2} \Sigma_a \Sigma_r^{1/2})^{1/2}\bigr)
+  - 2\,(\Sigma_r^{1/2} \Sigma_a \Sigma_r^{1/2})^{1/2}\bigr).
   \label{eq:fid}
 \end{equation}
---- the construction used as the FID score in the image-generation literature, and we adopt that name.
-The quantity is dimensionless only after a choice of scale; two are used. Writing $\sigma_{r,i}$ for the reference posterior's standard deviation in
-coordinate $i$ and $\Delta_i$ for the width of the prior box,
+This is the construction of the FID score in the image-generation literature, and we use that name.
+The quantity is dimensionless only after a choice of scale. We use two scales. Let $\sigma_{r,i}$ be
+the standard deviation of the reference posterior in coordinate $i$ and $\Delta_i$ the width of the
+prior box. Then
 \begin{equation}
   \FIDsd = d_F^2\bigl(\{m_a/\sigma_r\},\ \{m_r/\sigma_r\}\bigr), \qquad
-  \FIDpr = d_F^2\bigl(\{m_a/\Delta\},\ \{m_r/\Delta\}\bigr),
+  \FIDpr = d_F^2\bigl(\{m_a/\Delta\},\ \{m_r/\Delta\}\bigr).
   \label{eq:fidnorm}
 \end{equation}
-that is, every coordinate is divided by the reference posterior's own standard deviation
-($\FIDsd$, the default; an unadorned FID anywhere in this report means $\FIDsd$) or by the prior
-range ($\FIDpr$). They answer different questions, error relative to what the data determine
-versus error relative to the scale of the problem, and a model of fixed absolute accuracy reads
-very differently in the two wherever the posterior is narrow
-(Sec.~\ref{sec:design-amortization}).
+In $\FIDsd$ every coordinate is divided by the standard deviation of the reference posterior. This is
+the default, and an unadorned FID in this report means $\FIDsd$. In $\FIDpr$ every coordinate is
+divided by the prior range. The two answer different questions: error relative to what the data
+determine, and error relative to the scale of the problem. A model of fixed absolute accuracy reads
+very differently in the two scales where the posterior is narrow (Sec.~\ref{sec:design-amortization}).
 
-FID is zero for a perfect match, dimensionless, and combines the three ways a posterior can be
-wrong: location, width, and orientation error. For scale, a bias of $0.1$ reference-sd in each of
-$d$ dimensions gives FID $0.01\,d$, and a posterior $30\%$ too wide in one dimension gives
-FID $\approx 0.09$. Where the direction of a failure matters (a posterior that is too wide is conservative, while one
-that is too narrow misleads without warning) we additionally quote the per-parameter decomposition:
-the signed posterior-mean error in reference-sd units (\emph{bias}) and the ratio of standard
-deviations
-(\emph{width}; $1$ exact, above one conservative, below one overconfident).
+FID is zero for a perfect match. It is dimensionless. It combines the three ways a posterior can be
+wrong: location, width and orientation. For scale: a bias of $0.1$ reference-sd in each of $d$ dimensions gives FID $0.01\,d$. A posterior
+$30\%$ too wide in one dimension gives FID $\approx 0.09$. Where the direction of a failure matters, we also quote the per-parameter decomposition.
+A posterior that is too wide is conservative. A posterior that is too narrow misleads without a
+warning. The decomposition gives the signed posterior-mean error in reference-sd units (\emph{bias}). It
+also gives the ratio of standard deviations (\emph{width}). A width of $1$ is exact, above one is
+conservative, below one is overconfident.
 
-References are built by the engines of the next paragraph, with construction detailed in
-Appendix~\ref{app:refs}. Every MCMC reference is validated by a second chain from a
-well-separated start: a reference is used only once its two chains agree, and the between-chain
-posterior-mean discrepancy, in posterior-sd units, is the floor below which nothing can be
-measured, quoted alongside the model's value throughout. That floor
-scales with chain length: the Merton jump-diffusion needs $2 \times 10^5$-draw chains to clear it
-(two chains then agreeing to $0.016$~sd in the median, $0.060$ at worst); a system whose chains did
-not converge at any affordable length would be reported under the calibration screen instead;
-after the engine upgrades of the next paragraph, no system of the suite remains in that state.
+The engines of the next paragraph build the references. Appendix~\ref{app:refs} gives the
+construction. A second chain from a well-separated start validates every MCMC reference. A reference
+is used only when its two chains agree. The between-chain discrepancy of the posterior mean, in
+posterior-sd units, is the floor below which nothing can be measured. We quote that floor next to the
+value of the model throughout. The floor scales with the chain length. The Merton jump-diffusion needs
+$2 \times 10^5$-draw chains to clear it: two chains then agree to $0.016$~sd in the median and
+$0.060$ at worst. A system whose chains do not converge at any affordable length is reported under the
+calibration screen instead. After the engine upgrades of the next paragraph, no system of the suite is
+in that state.
 
-\paragraph{Reference samplers and their admission.} For nonlinear ODEs and SDEs, obtaining
-trustworthy reference posteriors is itself a nontrivial task; for every system several approaches
-were tested, and the per-problem methods below were adopted. The choice of sampler follows the
-structure of the likelihood. Posteriors are drawn exactly where a closed form exists (linear-Gaussian; GBM through its conjugate structure).
-Where the likelihood is exact but the posterior is not, adaptive Metropolis suffices for the
-well-conditioned systems (Ornstein--Uhlenbeck, Cox--Ingersoll--Ross through its noncentral $\chi^2$
-transitions, SEIR, Merton, pharmacokinetics, Fisher--KPP); FitzHugh--Nagumo and Hodgkin--Huxley have needle-thin or multimodal posteriors: their sharpest
-evaluation instances concentrate the posterior to $0.4\%$ and $1.0\%$ of the prior range in the
-narrowest coordinate, and adaptive Metropolis chains from separated starts disagreed on them by
-hundreds of posterior standard deviations; these two use nested sampling with \texttt{dynesty}
-\citep{skilling2006,speagle2020} instead. On the median instances the posteriors are
-unremarkable ($3$--$30\times$ narrower than the prior); the needle is a property of the sharp tail,
-which is exactly where chain methods fail. Double well and polynomial drift
-have no transition density in closed form; their likelihood is an unbiased bridge estimate
-\citep{durham2002} inside pseudo-marginal MH \citep{andrieu2010}. Stochastic Lotka--Volterra and Heston are the two systems whose likelihood is available only as a
-Monte-Carlo estimate rather than a computable number, so nested sampling, whose volume shrinkage
-assumes a deterministic likelihood, does not apply to them; their references come from adaptive
+\paragraph{Reference samplers and their admission.} For nonlinear ODEs and SDEs, trustworthy
+reference posteriors are a task in themselves. For every system we tested several approaches and
+adopted the per-problem methods below. The structure of the likelihood decides the sampler. Where a
+closed form exists, we draw the posterior exactly (linear-Gaussian; GBM through its conjugate
+structure). Where the likelihood is exact but the posterior is not, adaptive Metropolis suffices for the
+well-conditioned systems. These are Ornstein--Uhlenbeck, Cox--Ingersoll--Ross (through its noncentral
+$\chi^2$ transitions), SEIR, Merton, pharmacokinetics and Fisher--KPP. FitzHugh--Nagumo and Hodgkin--Huxley have
+needle-thin or multimodal posteriors. Their sharpest evaluation instances concentrate the posterior to $0.4\%$ and $1.0\%$ of the prior
+range in the narrowest coordinate. Adaptive Metropolis chains from separated starts disagreed on them
+by hundreds of posterior standard deviations. These two systems use
+nested sampling with \texttt{dynesty} \citep{skilling2006,speagle2020}. On the median instances their
+posteriors are unremarkable ($3$--$30\times$ narrower than the prior). The needle is a property of the
+sharp tail, and there chain methods fail. Double well and polynomial drift have no transition density
+in closed form. Their likelihood is an unbiased bridge estimate \citep{durham2002} inside
+pseudo-marginal MH \citep{andrieu2010}. Stochastic Lotka--Volterra and Heston are the two systems whose
+likelihood is available only as a Monte-Carlo estimate, not as a computable number. Nested sampling
+assumes a deterministic likelihood and does not apply to them. Their references come from adaptive
 tempered SMC \citep{delmoral2006} over an unbiased particle estimate, admitted by population
-doubling. Because the estimate enters a pseudo-marginal kernel, its own variance is a property of
-the reference rather than a nuisance: the log of an unbiased estimator is biased downward by roughly
-half its variance, and where that variance varies over the parameter space the bias tilts the
-posterior. Both systems are therefore run at a particle count high enough that the estimator's
-spread is a fraction of a nat, verified by repeating the estimate at fixed parameters.
+doubling. The estimate enters a pseudo-marginal kernel, so its variance is a property of the reference.
+The log of an unbiased estimator is biased downward by about half its variance. Where that variance
+varies over the parameter space, the bias tilts the posterior. Both systems therefore run at a particle
+count at which the spread of the estimator is a fraction of a nat. We verify this by repeated estimates
+at fixed parameters.
 
-Every reference then passes three checks before it is used. Two independent runs must agree below
-$0.25$ posterior sd; the likelihood must reproduce the simulator (on noiseless data its value at the
-generating parameters is zero to machine precision); and the generating parameters must lie inside
-the posterior. The three are not redundant: each caught a wrong likelihood in this work that the
-other two passed, and the third is the one that catches a reference describing a different model
-than the simulator. Across the suite's frozen evaluation sets the generating parameters sit at a
-median $0.5$--$0.8$ posterior sd from the reference mean, with $0$--$1\%$ of coordinates beyond
-three (Appendix~\ref{app:optmeas}).
+Every reference passes three checks before use. Two independent runs must agree below $0.25$
+posterior sd. The likelihood must reproduce the simulator: on noiseless data its value at the
+generating parameters is zero to machine precision. The generating parameters must lie inside the
+posterior. The three checks are not redundant. Each one caught a wrong likelihood in this work that
+the other two passed. The third check catches a reference that describes a different model than the
+simulator. Across the frozen evaluation sets of the suite, the generating parameters sit at a median
+$0.5$--$0.8$ posterior sd from the reference mean. Only $0$--$1\%$ of the coordinates lie beyond three
+(Appendix~\ref{app:optmeas}).
 
-Heston is the sharpest case of the third check, because the failure is invisible to the first
-two. Its reference was first built from the idealized transition of the continuous-time model,
-which is a different process from the one that generated the data: the simulator integrates the
-variance by clamped Euler, so past the Feller condition the variance spends real time pinned at
-zero, and the discrepancy grows with the vol-of-vol $\xi$. On instances generated with
-$\xi \approx 0.9$ the reference placed $\xi$ near $0.27$ at half the true width, the two
-independent chains agreed on that wrong answer to $0.17$~sd, and only the generating parameter,
-sitting $8.1$ posterior sd outside its own reference, exposed the defect. Replacing the idealized
-transition by a bootstrap particle filter that runs the simulator's own update rule, admitted
-against two closed forms in the $\xi = 0$ limit, moved the worst deviation to $2.6$~sd, tightened
-the two-chain agreement to $0.06$~sd, and halved the set's floor; measured against the corrected
-reference, Heston's dependence on model size is unremarkable (Sec.~\ref{sec:results}).
+Heston is the sharpest case of the third check, because the first two checks do not see the failure.
+We first built its reference from the idealized transition of the continuous-time model. That is a
+different process from the one that generated the data. The simulator integrates the variance by clamped Euler. Past the Feller condition the variance
+spends real time pinned at zero. The discrepancy grows with the vol-of-vol $\xi$. On instances generated with $\xi \approx 0.9$ the
+reference placed $\xi$ near $0.27$ at half the true width. The two independent chains agreed on that
+wrong answer to $0.17$~sd. Only the generating parameter, $8.1$ posterior sd outside its own
+reference, exposed the defect. We replaced the idealized transition by a bootstrap particle filter that runs the update rule of
+the simulator itself. Two closed forms in the $\xi = 0$ limit admit the filter. The worst deviation moved to $2.6$~sd, the two-chain agreement tightened to $0.06$~sd, and the
+floor of the set halved. Against the corrected reference, the dependence of Heston on model size is
+unremarkable (Sec.~\ref{sec:results}).
 
-\paragraph{Resolution of the estimator.} Both sample sets are finite, so
-\eqref{eq:fid} is positive even for a perfect posterior, and the size of that offset sets what the
-metric can resolve. We measured it directly: drawing \emph{two independent sample sets from the same
-exact GBM posterior} and scoring one against the other gives a median FID of $0.0157$ at $500$
-samples, $0.0038$ at $2{,}000$, $0.0009$ at
-$8{,}000$, and $0.0002$ at $32{,}000$: a clean $1/n$, as the estimation error of the fitted means
-and covariances predicts. Two consequences follow. Differences below ${\approx}0.005$ at $n = 2{,}000$
-(${\approx}0.002$ at the $4{,}000$ used to score the evaluation sets of Table~\ref{tab:main}) are
-not resolved, so values in that range are reported as ``at the resolution limit'' rather than
-compared. And the best
-values in this report sit above it rather than at it: the design-amortized GBM model reads $0.0107$
-at $n = 2{,}000$, $0.0100$ at $8{,}000$, and $0.0072$ at $32{,}000$ on the same evaluation set, so after
-subtracting the estimator offset its excess over the reference is ${\approx}0.007$ at every sample
-size, a real error of the model rather than an artifact of the finite sample count.
+\paragraph{Resolution of the estimator.} Both sample sets are finite. Thus \eqref{eq:fid} is positive
+even for a perfect posterior, and the size of that offset sets what the metric can resolve. We measured
+it directly. We drew \emph{two independent sample sets from the same exact GBM posterior} and scored
+one against the other. The median FID is $0.0157$ at $500$ samples, $0.0038$ at $2{,}000$, $0.0009$
+at $8{,}000$ and $0.0002$ at $32{,}000$. This is a clean $1/n$, as the estimation error of the fitted
+means and covariances predicts. Two consequences follow. Differences below $\approx 0.005$ at
+$n = 2{,}000$ ($\approx 0.002$ at the $4{,}000$ draws that score the evaluation sets of
+Table~\ref{tab:main}) are not resolved. We report values in that range as ``at the resolution limit''
+and do not compare them. The best values in this report sit above the limit, not at it. The
+design-amortized GBM model reads $0.0107$ at $n = 2{,}000$, $0.0100$ at $8{,}000$ and $0.0072$ at
+$32{,}000$ on the same evaluation set. After subtraction of the estimator offset, its excess over the
+reference is $\approx 0.007$ at every sample size. This is a real error of the model, not an artifact
+of the finite sample count.
 
-Equation~\eqref{eq:fid} is the squared $2$-Wasserstein distance between Gaussian fits; the division
-by the reference standard deviation is ours, since the parameters carry different physical units.
+Equation~\eqref{eq:fid} is the squared $2$-Wasserstein distance between Gaussian fits. The division by
+the reference standard deviation is ours, because the parameters carry different physical units.
 Distribution-free discrepancies and the classifier two-sample test of \citet{lueckmann2021} rank the
-systems identically; the choice with consequences is the normalization,
-which the notation above makes explicit.
+systems identically. The choice with consequences is the normalization, and the notation above makes
+it explicit.
 
-% Replacement for Sec. 6 (Benchmark suite), techreport.tex lines 680-741.
-% Systems are now defined in the main text; Appendix A shrinks to the
-% controls + calibration screen (see blocks/app_a_remnant.tex).
 \section{Benchmark suite}
 \label{sec:suite}
 
-The suite contains fourteen systems (Table~\ref{tab:suite}); each is defined below with its
-equations, parameter ranges, and observation model. Variable-design training,
-with observation subsets resampled at every optimizer step, is the package default and the
-recommended mode: beyond enabling inference at any design, the resampling acts as data augmentation over designs.
-
+The suite has fourteen systems (Table~\ref{tab:suite}). This section defines each system with its
+equations, parameter ranges and observation model. Every system is trained and evaluated in the
+variable-design mode, with the observation subsets resampled at every optimizer step. This mode enables
+inference at any design, and the resampling is also a data augmentation over designs.
 
 \begin{table}[t]
 \centering
@@ -755,46 +754,44 @@ pharmacokinetics (Bateman) & ODE (closed form) & 3 & concentration & variable & 
 Fisher--KPP & PDE (64-point grid) & 2 & 3 sensors & variable & PDE-likelihood MCMC \\
 \bottomrule
 \end{tabular}
-\caption{The benchmark suite. ``obs.'' names the observed coordinate where the state is only
-partly visible; every system is trained and evaluated in the design-amortized mode, so each
-observation set carries its own (time, sensor) points. The last column names the instrument that
-builds that system's reference posterior; the choice follows the structure of the likelihood
-(Sec.~\ref{sec:refs}).}
+\caption{The benchmark suite. ``obs.'' names the observed coordinate where the state is only partly
+visible. Every system is trained and evaluated in the design-amortized mode, so each observation set
+carries its own (time, sensor) points. The last column names the instrument that builds the reference
+posterior of that system. The structure of the likelihood decides the choice (Sec.~\ref{sec:refs}).}
 \label{tab:suite}
 \end{table}
 
-All SDEs are integrated by Euler--Maruyama on the stated fine grid; ODEs by RK4 (Hodgkin--Huxley by a
-semi-implicit scheme for the gating variables); the PDE by finite differences. Every system is trained and evaluated in the design-amortized mode
-of Sec.~\ref{sec:setup}: the observation times (and, for the PDE, sensor indices) of every
-observation set are drawn at random, and one trained network serves all of them. The
-\emph{classical estimator} listed for each system is the standard non-Bayesian method a practitioner
-would apply; all of them return point estimates, not distributions, and they serve as an accuracy floor
-for the posterior mean. Three recur and are defined here once. \emph{Kramers--Moyal regression}
-estimates the drift and squared diffusion from the conditional first and second moments of the observed
-increments ($f(x) \approx \E[\Delta X \mid X = x]/\Delta t$,
-$\sigma^2(x) \approx \E[\Delta X^2 \mid X = x]/\Delta t$) and fits the parametric form to these
-estimates by least squares. \emph{Multi-start nonlinear least squares} fits the deterministic solve of
-the system to the observed trajectory by minimizing squared error over parameters, restarted from many
-random initial points to escape local minima. \emph{Exact maximum likelihood} is available where the
-transition density is known in closed form. Fixed-design observations
-are token sets over the union of the stated channels; ``fast/slow'' channels observe every step over a
-short window and every $j$-th step over the horizon respectively. Priors are uniform on the stated boxes.
+Euler--Maruyama integrates all SDEs on the stated fine grid. RK4 integrates the ODEs (Hodgkin--Huxley
+uses a semi-implicit scheme for the gating variables). Finite differences integrate the PDE. Every system is trained and evaluated in the design-amortized mode of Sec.~\ref{sec:setup}. The
+observation times of every observation set are random, and so are the sensor indices for the PDE. One
+trained network serves all of them. The \emph{classical estimator} listed for each system is the standard
+non-Bayesian method a practitioner would apply. All of them return point estimates, not distributions.
+They serve as an accuracy floor for the posterior mean. Three of them recur, and we define them here
+once. \emph{Kramers--Moyal regression} estimates the drift and the squared diffusion from the conditional
+first and second moments of the observed increments ($f(x) \approx \E[\Delta X \mid X = x]/\Delta t$,
+$\sigma^2(x) \approx \E[\Delta X^2 \mid X = x]/\Delta t$). It fits the parametric form to these
+estimates by least squares. \emph{Multi-start nonlinear least squares} fits the deterministic solve of the system to the
+observed trajectory. It minimizes the squared error over the parameters. Restarts from many random
+initial points escape the local minima. \emph{Exact maximum
+likelihood} is available where the transition density is known in closed form. Fixed-design
+observations are token sets over the union of the stated channels. ``Fast/slow'' channels observe
+every step over a short window and every $j$-th step over the horizon. Priors are uniform on the
+stated boxes. The token of every system carries the observed value itself (Sec.~\ref{sec:features}).
 
-Every system runs in the design-amortized mode: an observation set draws $K$
-random (time, channel) points on the stated simulation grid, with $K$ between the per-system
-minimum and $128$ under the design-size law of Sec.~\ref{sec:recipe}. The ``channels'' entries
-below additionally define the conventional fixed grids used by the calibration-screen gallery of
-Appendix~\ref{app:systems} for the systems that appear there.
+Every system runs in the design-amortized mode. An observation set draws $K$ random (time, channel) points on the stated simulation grid. $K$ lies
+between the per-system minimum and $128$, under the design-size law of Sec.~\ref{sec:recipe}. The ``channels'' entries below also define the conventional
+fixed grids of the calibration-screen gallery of Appendix~\ref{app:systems}, for the systems that
+appear there.
 
 \paragraph{Linear-Gaussian.} $y = Am + \varepsilon$, $\varepsilon \sim \N(0, 0.5^2 I_6)$, with a fixed
-correlated design matrix $A \in \R^{6 \times 4}$; $m \in [-3, 3]^4$. Exact Gaussian posterior; the
-classical estimator is the posterior mean itself. This system checks the flow engine in isolation from
-the encoder.
+correlated design matrix $A \in \R^{6 \times 4}$; $m \in [-3, 3]^4$. The posterior is exactly
+Gaussian. The classical estimator is the posterior mean itself. This system checks the flow engine in
+isolation from the encoder.
 
 \paragraph{Geometric Brownian motion.} $dS = \mu S\,dt + \sigma S\,dW$, $S_0 = 1$; $dt = 0.01$, $500$
 steps (five ``years''); channels: fast $(1 \times 60)$, slow $(10 \times 40)$. Prior
-$\mu \in [-0.2, 0.4]$, $\sigma \in [0.1, 0.6]$. Classical: exact MLE on log-returns. Reference: conjugate
-posterior (Appendix~\ref{app:refs}).
+$\mu \in [-0.2, 0.4]$, $\sigma \in [0.1, 0.6]$. Classical: exact MLE on log-returns. Reference:
+conjugate posterior (Appendix~\ref{app:refs}).
 
 \paragraph{Ornstein--Uhlenbeck.} $dX = -\theta X\,dt + \sigma\,dW$, stationary start
 $X_0 \sim \N(0, \sigma^2/2\theta)$; $dt = 0.02$, $500$ steps; channels: fast $(1 \times 50)$, slow
@@ -805,108 +802,110 @@ per-gap Gaussian transitions.
 channels as OU. Prior $a \in [0.3, 3]$, $b \in [0.3, 1.5]$, $\sigma \in [0.1, 0.5]$. Classical: Euler
 pseudo-likelihood MLE \citep{cox1985}.
 
-\paragraph{Double well.} $dX = (\theta_1 X - \theta_2 X^3)\,dt + \sigma\,dW$; $dt = 0.01$, $1000$ steps,
-noise strong enough for barrier crossings; channels: fast $(1 \times 80)$, slow $(25 \times 36)$. Prior
-$\theta_{1,2} \in [0.5, 3]$, $\sigma \in [0.4, 1.2]$. Classical: Kramers--Moyal regression (defined above).
+\paragraph{Double well.} $dX = (\theta_1 X - \theta_2 X^3)\,dt + \sigma\,dW$; $dt = 0.01$, $1000$
+steps, with noise strong enough for barrier crossings; channels: fast $(1 \times 80)$, slow
+$(25 \times 36)$. Prior $\theta_{1,2} \in [0.5, 3]$, $\sigma \in [0.4, 1.2]$. Classical: Kramers--Moyal
+regression (defined above).
 
-\paragraph{Polynomial-drift SDE.} $dX = (c_0 + c_1 X + c_2 X^2 + c_3 X^3)\,dt + \sigma\,dW$:
-drift identification on a dense polynomial basis, the setting of SINDy \citep{brunton2016} without its
-sparsity prior (a sparse-coefficient variant is discussed in Sec.~\ref{sec:discussion}); $dt = 0.01$, $1000$ steps; channels: fast $(1 \times 80)$, slow $(20 \times 45)$.
-Prior $c_0, c_2 \in [-0.5, 0.5]$, $c_1 \in [-2, 0]$, $c_3 \in [-1, -0.1]$, $\sigma \in [0.3, 0.8]$.
-Classical: least squares of the Kramers--Moyal drift estimate on the polynomial basis, the
-dense-basis version of SINDy regression.
+\paragraph{Polynomial-drift SDE.} $dX = (c_0 + c_1 X + c_2 X^2 + c_3 X^3)\,dt + \sigma\,dW$. This is drift identification on a dense polynomial basis, the setting of SINDy \citep{brunton2016}
+without its sparsity prior. Sec.~\ref{sec:discussion} discusses a sparse-coefficient variant;
+$dt = 0.01$, $1000$ steps; channels: fast $(1 \times 80)$, slow $(20 \times 45)$. Prior $c_0, c_2 \in [-0.5, 0.5]$,
+$c_1 \in [-2, 0]$, $c_3 \in [-1, -0.1]$, $\sigma \in [0.3, 0.8]$. Classical: least squares of the
+Kramers--Moyal drift estimate on the polynomial basis, the dense-basis version of SINDy regression.
 
-\paragraph{Stochastic Lotka--Volterra.} Prey/predator pair with multiplicative noise,
+\paragraph{Stochastic Lotka--Volterra.} A prey/predator pair with multiplicative noise,
 $dx_1 = (\alpha x_1 - \beta x_1 x_2)\,dt + 0.05\,x_1\,dW_1$,
 $dx_2 = (\delta x_1 x_2 - \gamma x_2)\,dt + 0.05\,x_2\,dW_2$; $dt = 0.01$, $600$ steps. Each
-observation token is one (time, species) point, so a design of $K$ points spreads over both
-species; $K \in [4, 128]$. Prior $\alpha, \gamma \in [0.8, 1.5]$,
-$\beta, \delta \in [0.4, 1.2]$. Classical: multi-start nonlinear least squares (defined above).
+observation token is one (time, species) point, so a design of $K$ points spreads over both species;
+$K \in [4, 128]$. Prior $\alpha, \gamma \in [0.8, 1.5]$, $\beta, \delta \in [0.4, 1.2]$. Classical:
+multi-start nonlinear least squares (defined above).
 
-\paragraph{Heston.} $dS = \mu S\,dt + \sqrt{v}\,S\,dW_1$,
-$dv = \kappa(\bar v - v)\,dt + \xi \sqrt{v}\,dW_2$, $\operatorname{corr}(dW_1, dW_2) = \rho$
-\citep{heston1993}; price observed, volatility latent; $dt = 0.01$, $500$ steps, designs of
-$K \in [2, 128]$ random times. Prior $\mu \in [-0.1, 0.3]$, $\kappa \in [0.5, 5]$,
-$\bar v \in [0.02, 0.3]$, $\xi \in [0.1, 1]$, $\rho \in [-0.9, 0]$.
+\paragraph{Heston.} $dS = \mu S\,dt + \sqrt{v}\,S\,dW_1$, $dv = \kappa(\bar v - v)\,dt + \xi \sqrt{v}\,dW_2$,
+$\operatorname{corr}(dW_1, dW_2) = \rho$ \citep{heston1993}. The price is observed and the volatility
+is latent; $dt = 0.01$, $500$ steps, designs of $K \in [2, 128]$ random times. Prior
+$\mu \in [-0.1, 0.3]$, $\kappa \in [0.5, 5]$, $\bar v \in [0.02, 0.3]$, $\xi \in [0.1, 1]$,
+$\rho \in [-0.9, 0]$.
 
-\paragraph{Merton jump-diffusion.} $dS/S = \mu\,dt + \sigma\,dW + d\bigl(\sum_i (e^{J_i}
-- 1)\bigr)$ with Poisson jump rate $\lambda$ and $J_i \sim \N(\mu_J, s_J^2)$ \citep{merton1976};
-$dt = 0.01$, $500$ steps, $K \in [2, 128]$. Prior $\mu \in [-0.1, 0.3]$, $\sigma \in [0.1, 0.5]$,
+\paragraph{Merton jump-diffusion.} $dS/S = \mu\,dt + \sigma\,dW + d\bigl(\sum_i (e^{J_i} - 1)\bigr)$
+with Poisson jump rate $\lambda$ and $J_i \sim \N(\mu_J, s_J^2)$ \citep{merton1976}; $dt = 0.01$,
+$500$ steps, $K \in [2, 128]$. Prior $\mu \in [-0.1, 0.3]$, $\sigma \in [0.1, 0.5]$,
 $\lambda \in [0.2, 3]$, $\mu_J \in [-0.3, 0.3]$, $s_J \in [0.05, 0.4]$. Reference: Poisson-mixture
 transition density (Appendix~\ref{app:refs}).
 
-\paragraph{FitzHugh--Nagumo.} The classical two-dimensional reduction of the neuronal
-excitability equations \citep{fitzhugh1961,nagumo1962}: $\dot v = v - v^3/3 - w + I$,
-$\dot w = \epsilon(v + a - b w)$; only $v$ is observed, at arbitrary times drawn per observation
-set ($K \in [4, 64]$, horizon 40, $dt = 0.05$), with observation noise $0.05$; the recovery
-variable $w$ is never seen. Prior $a, b \in [0.5, 0.9]$, $\epsilon \in [0.05, 0.3]$,
-$I \in [0, 0.5]$. This is deliberately harder than the community's toy configuration (e.g.\ the
-three-parameter, fully observed variant shipped with \texttt{pints}, \citealt{clerx2019}): partial
-observation leaves a latent coordinate, the drive $I$ is a fourth unknown, and the resulting
-posteriors are the needle-and-mode geometry documented in Sec.~\ref{sec:refs}. Classical:
-multi-start nonlinear least squares (defined above).
+\paragraph{FitzHugh--Nagumo.} The classical two-dimensional reduction of the neuronal excitability
+equations \citep{fitzhugh1961,nagumo1962}: $\dot v = v - v^3/3 - w + I$,
+$\dot w = \epsilon(v + a - b w)$. Only $v$ is observed, at arbitrary times drawn per observation set
+($K \in [4, 64]$, horizon 40, $dt = 0.05$), with observation noise $0.05$. The recovery variable $w$
+is never seen. Prior $a, b \in [0.5, 0.9]$, $\epsilon \in [0.05, 0.3]$, $I \in [0, 0.5]$. This is deliberately harder than the toy configuration of the community, for example the
+three-parameter, fully observed variant that ships with \texttt{pints} \citep{clerx2019}. Partial
+observation leaves a latent coordinate. The drive $I$ is a fourth unknown. The posteriors have the
+needle-and-mode geometry of Sec.~\ref{sec:refs}. Classical: multi-start nonlinear least squares (defined above).
 
-\paragraph{Hodgkin--Huxley.} Standard four-dimensional membrane model
-\citep{hodgkin1952}; voltage observed at random times; parameters $(g_{\mathrm{Na}}, g_K, g_L, I)$ with
-prior $[60, 180] \times [10, 50] \times [0.05, 0.5] \times [4, 12]$; $3000$ integration steps,
+\paragraph{Hodgkin--Huxley.} The standard four-dimensional membrane model \citep{hodgkin1952}. The
+voltage is observed at random times. The parameters are $(g_{\mathrm{Na}}, g_K, g_L, I)$ with prior
+$[60, 180] \times [10, 50] \times [0.05, 0.5] \times [4, 12]$; $3000$ integration steps,
 $K \in [4, 96]$.
 
-\paragraph{SEIR with mortality.} Five-compartment stochastic epidemic (two-phase contact rate $\beta_1
-\to \beta_2$, incubation $\alpha$, recovery $\gamma_r$, mortality $\gamma_d$); infected and deceased
-compartments observed, each token one (time, compartment) point, $K \in [4, 64]$; 60-day horizon
-($dt = 0.1$), observation noise $0.004$. Prior $\beta_1 \in [0.2, 0.6]$, $\beta_2 \in [0.05, 0.3]$, $\alpha \in [0.2, 0.5]$,
-$\gamma_r \in [0.05, 0.2]$, $\gamma_d \in [0.005, 0.05]$. Classical: nonlinear least squares on $(I, D)$.
+\paragraph{SEIR with mortality.} A five-compartment stochastic epidemic (two-phase contact rate
+$\beta_1 \to \beta_2$, incubation $\alpha$, recovery $\gamma_r$, mortality $\gamma_d$). The infected
+and deceased compartments are observed. Each token is one (time, compartment) point, $K \in [4, 64]$;
+60-day horizon ($dt = 0.1$), observation noise $0.004$. Prior $\beta_1 \in [0.2, 0.6]$,
+$\beta_2 \in [0.05, 0.3]$, $\alpha \in [0.2, 0.5]$, $\gamma_r \in [0.05, 0.2]$,
+$\gamma_d \in [0.005, 0.05]$. Classical: nonlinear least squares on $(I, D)$.
 
-\paragraph{Pharmacokinetics.} The standard one-compartment oral-dosing model of
-pharmacokinetics \citep[e.g.][]{gabrielsson2000}: absorption at rate $k_a$, elimination at rate $k_e$,
-distribution volume $V$, giving the Bateman concentration curve,
-concentration $c(t) = \frac{D_0 k_a}{V(k_a - k_e)}\bigl(e^{-k_e t} - e^{-k_a t}\bigr)$ with dose
-$D_0 = 500$; log-normal assay noise ($10\%$); horizon 24 h, $K \in [3, 64]$ irregular draws. Prior
+\paragraph{Pharmacokinetics.} The standard one-compartment oral-dosing model of pharmacokinetics
+\citep[e.g.][]{gabrielsson2000}: absorption at rate $k_a$, elimination at rate $k_e$, distribution
+volume $V$. The Bateman concentration curve is
+$c(t) = \frac{D_0 k_a}{V(k_a - k_e)}\bigl(e^{-k_e t} - e^{-k_a t}\bigr)$ with dose $D_0 = 500$;
+log-normal assay noise ($10\%$); horizon 24 h, $K \in [3, 64]$ irregular draws. Prior
 $k_a \in [0.5, 4]$, $k_e \in [0.05, 0.4]$, $V \in [20, 100]$. Reference: log-normal likelihood MCMC.
+The measurements of this report put the raw concentration into the token. The rule of
+Sec.~\ref{sec:features} says to use its logarithm for this noise model, and the package now requires
+the problem to declare that choice.
 
-\paragraph{Fisher--KPP.} $\partial_t \theta = D\,\partial_{xx} \theta + r\,\theta(1 -
-\theta)$ on $[0, 1]$ with reflecting boundaries, 64-point finite-difference grid, Gaussian initial bump;
-three fixed sensors at $x = 16/63, 32/63, 48/63$ observed at random (time, sensor) pairs with noise
-$0.02$; $dt = 0.01$, $200$ steps, $K \in [4, 96]$. Prior $D \in [0.001, 0.01]$, $r \in [2, 10]$.
-Reference: Gaussian observation model around the deterministic solve; one likelihood evaluation is one
-PDE solve.
+\paragraph{Fisher--KPP.} $\partial_t \theta = D\,\partial_{xx} \theta + r\,\theta(1 - \theta)$ on
+$[0, 1]$ with reflecting boundaries, a 64-point finite-difference grid and a Gaussian initial bump.
+Three fixed sensors at $x = 16/63, 32/63, 48/63$ are observed at random (time, sensor) pairs with
+noise $0.02$; $dt = 0.01$, $200$ steps, $K \in [4, 96]$. Prior $D \in [0.001, 0.01]$,
+$r \in [2, 10]$. Reference: Gaussian observation model around the deterministic solve. One likelihood
+evaluation is one PDE solve.
 
 \section{Experimental results}
 \label{sec:results}
 
-This section is organized as an experimental study: the protocol (references, baselines, model
-sizes, budgets) is fixed first; the main results (posterior overlays and the global metric on
-every system) follow; then the evaluation of design amortization and the cost of training and
-inference.
+This section is an experimental study. First we fix the protocol: references, baselines, model sizes
+and budgets. Then we give the main results: posterior overlays and the global metric on every system.
+Then we evaluate design amortization and the cost of training and inference.
 
 \subsection{Experimental protocol}
 \label{sec:protocol-exp}
 
 \paragraph{References and baselines.} Every accuracy number in this section is the FID of
-Sec.~\ref{sec:refs} against a reference posterior computed on the same observed points, reported as
-the median over the system's evaluation set: a frozen collection of observation-set instances
-($200$ where the reference is closed form, $100$ where it is cheap MCMC, $32$ where each reference
-costs minutes of validated MCMC), built once with two-chain validation (Sec.~\ref{sec:refs}) and
-reused for every
-number in this report, so any two entries differ only in the model being scored. The reference
-engines span more than six orders of magnitude in per-instance cost, from the closed-form GBM
-posterior (${<}1$\,ms) through exact-likelihood MCMC (seconds) to nested sampling and
-pseudo-marginal chains (minutes, and an hour on the hardest instances); the full accounting,
-alongside the amortized model's own training and inference cost, is Table~\ref{tab:refcost} in
-Sec.~\ref{sec:cost}. We do not
-report accuracy comparisons with other amortized packages: their estimators consume fixed-length
-summary vectors, at package defaults we could not obtain converged posteriors from them on raw
-irregular time series, and building fair problem-specific summary networks for every system is
-outside the scope of this report; the validated reference posteriors, not another package, are the
-accuracy record throughout. Simulation-based calibration serves as the screen for the fixed-design gallery systems that carry
-no validated reference; its per-parameter results are in Appendix~\ref{app:systems}.
+Sec.~\ref{sec:refs} against a reference posterior computed on the same observed points. We report the
+median over the evaluation set of the system. The evaluation set is a frozen collection of observation-set instances. It has $200$ instances
+where the reference is closed form, $100$ where it is cheap MCMC, and $32$ where each reference costs
+minutes of validated MCMC. It is built once with two-chain validation
+(Sec.~\ref{sec:refs}) and reused for every number in this report. Thus any two entries differ only in
+the model that is scored. The reference engines span more than six orders of magnitude in per-instance cost. The closed-form
+GBM posterior costs ${<}1$\,ms. Exact-likelihood MCMC costs seconds. Nested sampling and
+pseudo-marginal chains cost minutes, and one hour on the hardest instances.
+Table~\ref{tab:refcost} in Sec.~\ref{sec:cost} gives the full accounting, next to the training and
+inference cost of the amortized model. We do not report accuracy comparisons with other amortized
+packages. Their estimators consume fixed-length summary vectors. At package defaults we could not get
+converged posteriors from them on raw irregular time series. Fair problem-specific summary networks for
+every system are outside the scope of this report. The validated reference posteriors are the accuracy
+record throughout, not another package. Simulation-based calibration is the screen for the
+fixed-design gallery systems without a validated reference. Appendix~\ref{app:systems} gives its
+per-parameter results.
 
 \paragraph{Models and training.} For each reference system we train the same architecture at three
-sizes (tiny, $0.1$M parameters; the default small, $0.5$M; big, $2.3$M) plus two
-miniature sizes (nano, $26$k; pico, $7$k) used to probe the low-capacity end. All runs follow the
-procedure of Sec.~\ref{sec:recipe}. Simulation budgets range from $5{,}000$ to $480{,}000$ per system. The size sweep under the default recipe opens the results (Table~\ref{tab:main}). Observation
-designs are random at training and at evaluation wherever the system defines a design distribution;
-fixed designs appear only where a reference requires them.
+sizes: tiny ($0.1$M parameters), the default small ($0.5$M) and big ($2.3$M). Two miniature sizes,
+nano ($26$k) and pico ($7$k), probe the low-capacity end. All runs follow the procedure of
+Sec.~\ref{sec:recipe}. Simulation budgets range from $5{,}000$ to $480{,}000$ per system. The size
+sweep under the default recipe opens the results (Table~\ref{tab:main}). Observation designs are random
+at training and at evaluation wherever the system defines a design distribution. Fixed designs appear
+only where a reference requires them. Every number of this section samples with 20 midpoint steps on
+the uniform grid and $4{,}000$ draws per observation set (Sec.~\ref{sec:recipe}).
 
 \subsection{Main comparison: quality, model size, data, and baselines}
 \label{sec:summary}
@@ -914,19 +913,16 @@ fixed designs appear only where a reference requires them.
 \label{sec:pairs}
 \label{sec:maincomp}
 
-One comparison, run identically on every task, opens the results: the package's default recipe
-(Muon with the batch step rule, batch 512, a deliberately generous $90{,}000$ steps with validated
-stopping; Sec.~\ref{sec:recipe}), trained at five model sizes on every system with a validated
-random-design reference, three seeds at the top three sizes, and scored on the frozen evaluation
-sets.
-Every system of the suite has a row, and every row carries a validated reference built by the
-engine matched to its likelihood (Sec.~\ref{sec:refs}): closed forms where they exist, adaptive
-Metropolis or nested sampling where the likelihood is exact, and pseudo-marginal MH or tempered SMC
-over unbiased estimates where the transition density has no closed form. Hodgkin--Huxley was
-built twice, once by tempered SMC and once by nested sampling, and the two size sweeps agree to less
-than the seed spread at every model size, the strongest cross-check in this report.
-Table~\ref{tab:main} is the result;
-Fig.~\ref{fig:pairs} shows the corresponding posteriors.
+One comparison, run identically on every task, opens the results. The recipe is the package recipe of
+Sec.~\ref{sec:recipe}: Muon with the batch step rule, batch 512, a deliberately generous $90{,}000$
+steps with validated stopping. We train it at five model sizes on every system with a validated random-design reference. The top
+three sizes have three seeds. We score the models on the frozen evaluation sets. Every system of the suite has a row. Every row carries a validated reference built by the engine that matches its likelihood
+(Sec.~\ref{sec:refs}). These are closed forms where they exist. They are adaptive Metropolis or nested
+sampling where the likelihood is exact. They are pseudo-marginal MH or tempered SMC over unbiased
+estimates where the transition density has no closed form. Hodgkin--Huxley was built
+twice, once by tempered SMC and once by nested sampling. The two size sweeps agree to less than the
+seed spread at every model size. This is the strongest cross-check in this report.
+Table~\ref{tab:main} is the result. Fig.~\ref{fig:pairs} shows the corresponding posteriors.
 
 \begin{table}[!htbp]
 \centering
@@ -956,142 +952,135 @@ Hodgkin--Huxley & $0.0049$ & $9.76 \pm 1.41$ & $5.83 \pm 0.87$ & $2.37 \pm 0.32$
 stochastic Lotka--Volterra & $0.0073$ & $7.29 \pm 0.23$ & $3.23 \pm 0.58$ & $1.42 \pm 0.20$ & \textbf{0.80 $\pm$ 0.10} & $0.95 \pm 0.23$ \\
 \bottomrule
 \end{tabular}}
-\caption{The main result: every system of the suite against its validated reference. Entries are
-$\FIDsd$ (median over the frozen evaluation set of
-Sec.~\ref{sec:protocol-exp}; $K = 20$; Merton $K = 56$; Fisher--KPP $K = 40$ with $4{,}000$-draw
-PDE-likelihood chains, hence its higher floor; linear-Gaussian references are exact, no MCMC), one
-design-amortized network per cell trained with the package default recipe at $120{,}000$ simulations;
-$\pm$ is the half-range over independent training seeds (single-seed cells at pico and nano carry
-none); the best cell of each row is set in bold.}
+\caption{The main result: every system of the suite against its validated reference. Entries are $\FIDsd$, the median over the frozen evaluation set of Sec.~\ref{sec:protocol-exp}.
+$K = 20$, Merton $K = 56$, Fisher--KPP $K = 40$. Fisher--KPP uses $4{,}000$-draw PDE-likelihood
+chains, hence its higher floor. Linear-Gaussian references are exact, no MCMC. Each cell is one design-amortized network trained with
+the package recipe at $120{,}000$ simulations. $\pm$ is the half-range over independent training seeds
+(single-seed cells at pico and nano carry none). The best cell of each row is in bold.}
 \label{tab:main}
 \end{table}
 
 \begin{figure}[!htbp]
 \centering
 \includegraphics[width=\linewidth,height=0.82\textheight,keepaspectratio]{figs/marginals_muon.pdf}
-\caption{One-dimensional posterior marginals, model (line) against reference (filled), for every
-system of Table~\ref{tab:main}: the median-$\FIDsd$ test instance of each, $4{,}000$ draws per
-side, dotted line at the generating parameter; each panel's axis spans its sample range, not the
-prior box (Fig.~\ref{fig:pairs} shows the prior-relative scale). Rows are systems, columns their
-parameters. This is
-the same comparison the table reduces to one number per cell, and it shows what that number cannot:
-where the model is exact (linear-Gaussian, GBM, double well), where it is faithful but slightly
-over-dispersed, and where a single coordinate carries the whole error (Lotka--Volterra's $\beta$,
-Hodgkin--Huxley's conductances on sharp instances).}
+\caption{One-dimensional posterior marginals, model (line) against reference (filled), for every system of
+Table~\ref{tab:main}. Each panel shows the median-$\FIDsd$ test instance of its system, with $4{,}000$
+draws per side. The dotted line is at the generating parameter. The axis of each panel spans its sample range, not the prior
+box (Fig.~\ref{fig:pairs} shows the prior-relative scale). Rows are systems, columns their parameters.
+This is the same comparison that the table reduces to one number per cell. It shows what that number cannot. The model is exact on linear-Gaussian, GBM and double well. On
+other systems it is faithful but slightly over-dispersed. On Lotka--Volterra's $\beta$ and on
+Hodgkin--Huxley's conductances on sharp instances, a single coordinate carries the whole error.}
 \label{fig:marginals}
 \end{figure}
 
 \begin{figure}[!htbp]
 \centering
 \includegraphics[width=\linewidth,height=0.82\textheight,keepaspectratio]{figs/pairs_muon.pdf}
-\caption{Joint posteriors of \amortix\ (filled contours: 39\% and 86\% highest-density
-regions) against exact or validated reference posteriors (open contours, same levels), for the
-median-$\FIDsd$ test instance of every system of Table~\ref{tab:main}; the big
-model of the default recipe, $4{,}000$ draws per side; the cross marks the true parameters. Each
-panel shows that system's most correlated parameter pair, so what is being compared is the shape of
-the dependence and not only its marginal spread. Axes span the sample range of each panel, not the
-prior box: the prior is $4$--$107\times$ wider than the posterior standard deviation across the
-panels shown, and the sharp FitzHugh--Nagumo and Hodgkin--Huxley instances of Sec.~\ref{sec:refs}
-reach ${\sim}230\times$, so the plotted shapes carry no information about absolute sharpness.}
+\caption{Joint posteriors of \amortix\ (filled contours: 39\% and 86\% highest-density regions) against
+exact or validated reference posteriors (open contours, same levels). Each panel is the
+median-$\FIDsd$ test instance of one system of Table~\ref{tab:main}, from the big model of the package
+recipe, with $4{,}000$ draws per side. The cross marks the true parameters. Each panel shows the most correlated parameter pair of that system. The comparison is thus of the
+shape of the dependence and not only of the marginal spread. Axes span the sample range of each panel, not the prior box. The prior is $4$--$107\times$
+wider than the posterior standard deviation across the panels shown, and the sharp FitzHugh--Nagumo and
+Hodgkin--Huxley instances of Sec.~\ref{sec:refs} reach ${\sim}230\times$. The plotted shapes carry no
+information about absolute sharpness.}
 \label{fig:pairs}
 \end{figure}
 
-On GBM every size from tiny up sits within two floors of the evaluation set's own resolution
-($0.0028$--$0.0036$ against $0.0018$), and linear-Gaussian, double well, and SEIR land within a few
-floors at the larger sizes, so those cells bound the error from above rather than measure it.
-Ornstein--Uhlenbeck (${\sim}0.028$) and Cox--Ingersoll--Ross ($0.07$--$0.08$) are independent of
-model size, so their residuals belong to the task rather than to capacity or recipe.
-FitzHugh--Nagumo and Hodgkin--Huxley improve most strongly with model size ($0.45 \to 0.036$ from
-pico to small, $9.8 \to 0.31$ across the five sizes with the largest model still improving) and
-carry the largest residuals of the suite; the stochastic Lotka--Volterra residual ($0.80$) is
-concentrated almost entirely in one coordinate (Fig.~\ref{fig:marginals}) and is not explained by
-capacity ($0.95$ at the big size). Validated stopping has a measurable effect: under the margin
-rule of Sec.~\ref{sec:recipe}, the best-on-validation checkpoint replaced the final weights in half
-of the $194$ training runs behind Table~\ref{tab:main}, in 13 of 15 on Cox--Ingersoll--Ross and in
-15 of 15 on FitzHugh--Nagumo (Appendix~\ref{app:optmeas}).
+On GBM every size from tiny up sits within two floors of the resolution of the evaluation set
+($0.0028$--$0.0036$ against $0.0018$). Linear-Gaussian, double well and SEIR land within a few floors
+at the larger sizes. Those cells bound the error from above and do not measure it.
+Ornstein--Uhlenbeck (${\sim}0.028$) and Cox--Ingersoll--Ross ($0.07$--$0.08$) do not depend on the
+model size. Their residuals belong to the task, not to capacity or recipe. FitzHugh--Nagumo and
+Hodgkin--Huxley improve most strongly with model size ($0.45 \to 0.036$ from pico to small, $9.8 \to
+0.31$ across the five sizes, with the largest model still improving). They carry the largest residuals
+of the suite. The stochastic Lotka--Volterra residual ($0.80$) sits almost entirely in one coordinate
+(Fig.~\ref{fig:marginals}). Capacity does not explain it ($0.95$ at the big size). Validated stopping
+has a measurable effect. Under the margin rule of Sec.~\ref{sec:recipe}, the best-on-validation checkpoint replaced the
+final weights in half of the $194$ training runs behind Table~\ref{tab:main}. It did so in 13 of 15
+runs on Cox--Ingersoll--Ross and in 15 of 15 on FitzHugh--Nagumo (Appendix~\ref{app:optmeas}).
 
-Figure~\ref{fig:pairs} shows the object the package produces, the joint posterior itself,
-for the median-error test instance of every reference-block system, model against reference, under
-the same recipe and checkpoints as Table~\ref{tab:main}.
-
-
+Figure~\ref{fig:pairs} shows the object the package produces, the joint posterior itself. It shows
+the median-error test instance of every reference-block system, model against reference. The recipe
+and the checkpoints are those of Table~\ref{tab:main}.
 
 \subsection{Amortization over observation designs}
 \label{sec:design-amortization}
 
-The package's central claim is that one trained network answers $p(m \mid S)$ for \emph{every}
-observation design $S$, at any number and placement of points. Fig.~\ref{fig:fidk} tests the
-claim on the six systems of the suite where a per-design reference can be computed and validated: each test observation set draws a fresh random design,
-the reference posterior is recomputed on exactly those points, and FID is evaluated per design-size
-bucket. In our experiments, amortization over designs is not a trade-off against accuracy: wherever a
-network trained on a single fixed design exists for comparison (the stars in
-Fig.~\ref{fig:fidk}), the amortized network is comparable to it at that design size and is the
-only one of the two that answers anywhere else on the $K$ axis. It also
-removes a failure mode, since resampling the observation subset at every optimizer step doubles as
-data augmentation. The two systems with elevated FID are not noise; the next paragraph analyzes them.
+The central claim of the package is that one trained network answers $p(m \mid S)$ for \emph{every}
+observation design $S$, at any number and placement of points. Fig.~\ref{fig:fidk} tests the claim on
+the six systems of the suite where a per-design reference can be computed and validated. Each test
+observation set draws a fresh random design, the reference posterior is recomputed on exactly those
+points, and FID is evaluated per design-size bucket. In our experiments, amortization over designs is
+not a trade-off against accuracy. The stars in Fig.~\ref{fig:fidk} are networks trained on a single fixed design. Wherever such a
+network exists, the amortized network is comparable to it at that design size. Only the amortized
+network answers anywhere else on the $K$ axis. It also
+removes a failure mode, because the resampling of the observation subset at every optimizer step is
+also a data augmentation. The two systems with elevated FID are not noise. The next paragraph
+analyzes them.
 
 \begin{figure}[!htbp]
 \centering
 \includegraphics[width=0.98\linewidth]{figs/fid_vs_k.pdf}
-\caption{FID as a function of the evaluation design size, for one design-amortized network per
-system: median (line) and interquartile range (band) over the test observation sets of each bucket
-($100$ per bucket for GBM, OU, and linear-Gaussian, $32$ for the MCMC-referenced systems), each set
-with a fresh random design and a per-design reference recomputed on exactly those points. These are
-the six systems whose references were built on a grid of design sizes; the rest of the suite has
-references at one design size (Table~\ref{tab:main}), which is enough to score a model but not to
-trace a curve. Stars: networks of the same architecture trained on a single fixed design, which exist only at
-their own $K$; shown for context. The Merton and pharmacokinetics curves use the converged references of
-Sec.~\ref{sec:refs}; the pharmacokinetic rise with $K$ is the precision floor analyzed in the
-text. Both axes logarithmic; note the different vertical scales.}
+\caption{FID as a function of the evaluation design size, for one design-amortized network per system. The
+line is the median and the band is the interquartile range over the test observation sets of each
+bucket. A bucket has $100$ sets for GBM, OU and linear-Gaussian, and $32$ for the MCMC-referenced
+systems. Each set has a fresh
+random design and a per-design reference recomputed on exactly those points. These are the six systems
+whose references were built on a grid of design sizes. The rest of the suite has references at one
+design size (Table~\ref{tab:main}), which scores a model but does not trace a curve. Stars: networks of
+the same architecture trained on a single fixed design. They exist only at their own $K$ and are shown
+for context. The Merton and pharmacokinetics curves use the converged references of
+Sec.~\ref{sec:refs}. The text analyzes the pharmacokinetic rise with $K$, which is the precision floor.
+Both axes are logarithmic. Note the different vertical scales.}
 \label{fig:fidk}
 \end{figure}
 
-\paragraph{Why $\FIDsd$ rises with the design size.} $\FIDsd$ is a ratio, and on
-pharmacokinetics ($0.07 \to 0.34$ from $K = 5$ to $50$, Fig.~\ref{fig:fidk}) only its denominator
-moves. Measured on the same evaluation sets, in prior-range units: the network's absolute
-posterior-mean error is flat in $K$ ($\varepsilon_\Delta = 1$--$12 \times 10^{-3}$, no trend),
-the reference posterior contracts by the $\sqrt{K}$ of a regular model (widths fall
-$2.8$--$5.1\times$, against $\sqrt{10} \approx 3.2$), and the bias term
-$\sum_i (\varepsilon_{\Delta,i}/w_{\Delta,i})^2$ grows accordingly, $0.025 \to 0.121$; in the
-prior normalization the same model reads $\FIDpr \approx 3 \times 10^{-4}$ at the densest
-designs. The posterior widths themselves stay within $1$--$8\%$ of
-the reference at every $K$: what grows is the visibility of the network's fixed localization floor,
-$10^{-3}$--$10^{-2}$ of the prior range, once the data determine the parameters more precisely than
-that. The pharmacokinetic entries are therefore reported per design size rather than pooled: the
-narrowest-posterior instances read several times worse than the rest, and a median over one
+\paragraph{Why $\FIDsd$ rises with the design size.} $\FIDsd$ is a ratio. On pharmacokinetics
+($0.07 \to 0.34$ from $K = 5$ to $50$, Fig.~\ref{fig:fidk}) only its denominator moves. We measured
+this on the same evaluation sets, in prior-range units. The absolute posterior-mean error of the network
+is flat in $K$ ($\varepsilon_\Delta = 1$--$12 \times 10^{-3}$, no trend). The reference posterior
+contracts by the $\sqrt{K}$ of a regular model (widths fall $2.8$--$5.1\times$, against
+$\sqrt{10} \approx 3.2$). The bias term $\sum_i (\varepsilon_{\Delta,i}/w_{\Delta,i})^2$ grows
+accordingly, $0.025 \to 0.121$. In the prior normalization the same model reads
+$\FIDpr \approx 3 \times 10^{-4}$ at the densest designs. The posterior widths stay within $1$--$8\%$
+of the reference at every $K$. The network has a fixed localization floor of $10^{-3}$--$10^{-2}$ of the prior range. What grows
+is its visibility, once the data determine the parameters more precisely than that. We therefore report the pharmacokinetic entries per design size and do not pool
+them. The narrowest-posterior instances read several times worse than the rest. A median over one
 32-instance evaluation set moves between $0.04$ and $0.15$ between otherwise identical training
-runs. The stochastic systems stay an order of magnitude above the floor even at $K = 100$;
-Fisher--KPP approaches it only at its densest bucket ($0.126$ at $K = 90$).
+runs.
+The stochastic systems stay an order of magnitude above the floor even at $K = 100$. Fisher--KPP
+approaches the floor only at its densest bucket ($0.126$ at $K = 90$).
 
 \subsection{Cost of training and inference}
 \label{sec:cost}
 
-Training under the default recipe ($90{,}000$ steps at batch $512$, $120{,}000$ simulations,
-validated stopping) costs $58$--$82$ minutes per system at the default size on one H200 GPU, and
-$67$--$111$ minutes at the big size ($136$ for Hodgkin--Huxley, whose simulator is the most
-expensive). The budget is deliberately generous: with the checkpoint chosen by validation, overshooting it
-costs time, never quality (Sec.~\ref{sec:recipe}), and at a $20{,}000$-simulation budget training
-takes $4$--$8$ minutes. The same
-run on a laptop CPU takes roughly four times longer and produces a bit-identical posterior, because
-all stochastic generation is kept on a CPU random number generator. At inference, $2{,}000$
-posterior samples for one observation set cost $72$\,ms batched ($135$\,ms single) on the GPU and $426$\,ms
-on the laptop CPU, at any design size and placement.
+Training under the package recipe ($90{,}000$ steps at batch $512$, $120{,}000$ simulations,
+validated stopping) costs $58$--$82$ minutes per system at the small size on one H200 GPU. The big size
+costs $67$--$111$ minutes. Hodgkin--Huxley costs $136$ minutes, because its simulator is the most
+expensive. The budget
+is deliberately generous. With the checkpoint chosen by validation, overshooting it costs time and never
+quality (Sec.~\ref{sec:recipe}). At a $20{,}000$-simulation budget training takes $4$--$8$ minutes.
+The same run on a laptop CPU takes about four times longer. It gives a bit-identical posterior,
+because all stochastic generation stays on a CPU random number generator. At inference, $2{,}000$ posterior samples for one observation set cost $72$\,ms batched ($135$\,ms
+single) on the GPU. On the laptop CPU they cost $426$\,ms. This holds at any design size and
+placement.
 
-Table~\ref{tab:refcost} sets these numbers against the per-instance cost of the reference engines
-that built the evaluation sets, at the settings that built them: chains long enough to clear the
-two-chain floors of Sec.~\ref{sec:refs}, i.e.\ reference grade rather than user grade (a
-$2{,}000$-draw exact-likelihood chain costs $42$--$124$\,ms). The comparison cuts both ways. Where the likelihood costs microseconds,
-exact-likelihood MCMC produces a user-grade posterior in tens of milliseconds and a reference-grade
-one in seconds, cheaper than training the amortized network for any realistic number of
-observation sets, which is why those engines, not the network, are the accuracy record of this
-report. The relationship inverts where one likelihood evaluation is itself a simulation: a
-Fisher--KPP reference costs $186$\,s (a PDE solve per evaluation), a SEIR reference $16$ minutes
-(an epidemic integration per evaluation), a Hodgkin--Huxley reference a median $18$ minutes of
-nested sampling, and a double-well or polynomial-drift reference $38$ minutes of pseudo-marginal
-MH. At those prices the entire training run amortizes within a handful of posteriors (two on the
-double well, four on SEIR and on Hodgkin--Huxley, about twenty on Fisher--KPP), and every
-posterior after that costs $70$\,ms. Sequential refinement and design search require posteriors by the
-hundred; that is the intended regime of the package.
+Table~\ref{tab:refcost} sets these numbers against the per-instance cost of the reference engines that
+built the evaluation sets, at the settings that built them. The chains are long enough to clear the
+two-chain floors of Sec.~\ref{sec:refs}. This is reference grade and not user grade: a $2{,}000$-draw
+exact-likelihood chain costs $42$--$124$\,ms. The comparison cuts both ways. Where the likelihood costs
+microseconds, exact-likelihood MCMC gives a user-grade posterior in tens of milliseconds and a
+reference-grade one in seconds. That is cheaper than the training of the amortized network for any
+realistic number of observation sets. This is why those engines are the accuracy record of this report,
+not the network. The relation inverts where one likelihood evaluation is itself a simulation. A
+Fisher--KPP reference costs $186$\,s (a PDE solve per evaluation). A SEIR reference costs $16$ minutes
+(an epidemic integration per evaluation). A Hodgkin--Huxley reference costs a median $18$ minutes of
+nested sampling. A double-well or polynomial-drift reference costs $38$ minutes of pseudo-marginal MH.
+At those prices the entire training run amortizes within a handful of posteriors. The number is two
+on the double well, four on SEIR and on Hodgkin--Huxley, and about twenty on Fisher--KPP. Every posterior after that
+costs $70$\,ms. Sequential refinement and design search require posteriors by the hundred. That is the
+intended regime of the package.
 
 \begin{table}[t]
 \centering
@@ -1115,42 +1104,42 @@ pseudo-marginal MH, bridge likelihood & double well, polynomial-drift & ${\appro
 \amortix\ small (laptop CPU) & & $0.43$\,s \\
 \bottomrule
 \end{tabular}
-\caption{Per-instance cost of one reference posterior at the settings that built the frozen
-evaluation sets: MCMC rows are single chains of $1.5$--$2 \times 10^5$ draws (Fisher--KPP
-$4{,}000$; double well and polynomial drift $60{,}000$ pseudo-marginal draws), thinned to the
-$4{,}000$ stored draws; the two-chain admission of Sec.~\ref{sec:refs} runs each engine two to
-three times. Every engine runs on the CPU (one to a few threads on one server core) except the
-Heston SMC filter, which runs on the GPU at the production population ($16{,}384$
-$\theta$-particles over a $4{,}096$-particle filter; median over $96$ runs, spread
-$28$--$144$\,s). The CPU chains are single-instance timings; the dynesty rows are medians over the
-$32$ test instances, reconstructed from the per-job wall times of the reference builds
-(\texttt{nlive}${=}1000$), with a spread across instances of about four on FitzHugh--Nagumo and
-about twenty on Hodgkin--Huxley, whose hardest instances take an hour. Training the amortized
-network costs $58$--$82$ minutes on one H200 GPU (text above); after training, one posterior costs
-the entry in the last two rows.}
+\caption{Per-instance cost of one reference posterior at the settings that built the frozen evaluation
+sets. MCMC rows are single chains of $1.5$--$2 \times 10^5$ draws (Fisher--KPP $4{,}000$; double well
+and polynomial drift $60{,}000$ pseudo-marginal draws), thinned to the $4{,}000$ stored draws. The
+two-chain admission of Sec.~\ref{sec:refs} runs each engine two to three times. Every engine runs on the CPU, with one to a few threads on one server core. The exception is the
+Heston SMC filter. It runs on the GPU at the production population of $16{,}384$ $\theta$-particles
+over a $4{,}096$-particle filter (median over $96$ runs, spread $28$--$144$\,s). The CPU chains are single-instance timings. The dynesty rows are medians over the $32$ test instances, reconstructed from the per-job wall times
+of the reference builds (\texttt{nlive}${=}1000$). The spread across instances is about four on
+FitzHugh--Nagumo and about twenty on Hodgkin--Huxley. The hardest Hodgkin--Huxley instances take one
+hour. Training the amortized network
+costs $58$--$82$ minutes on one H200 GPU (text above). After training, one posterior costs the entry in
+the last two rows.}
 \label{tab:refcost}
 \end{table}
 
 \section{Discussion and limitations}
 \label{sec:discussion}
 
-The evidence assembled here supports a specific claim: for dynamical-systems inverse problems, the
-input representation of an amortized posterior estimator is not a preprocessing detail but the
-dominant accuracy factor, and it can be made part of the model rather than part of the problem
-specification. With prescribed coordinates our own estimator acquires the failures documented in
-Sec.~\ref{sec:features}; the learnable representation removes them with one configuration for all
-fourteen systems, and the reference posteriors of Sec.~\ref{sec:protocol} certify the result.
+The evidence supports one specific claim. For dynamical-systems inverse problems, the input
+representation of an amortized posterior estimator is the dominant accuracy factor, not a preprocessing
+detail. It can be part of the model and not part of the problem specification. With prescribed
+coordinates our own estimator acquires the failures of Sec.~\ref{sec:features}. The learnable
+representation removes them with one configuration for all fourteen systems. The reference posteriors
+of Sec.~\ref{sec:protocol} certify the result.
 
-\paragraph{Limitations.} Bayesian experimental design, the intended consumer of design
-amortization, is not demonstrated yet; the training procedure of Sec.~\ref{sec:recipe} was built so
-that the required object $p(m \mid S)$ is already coherent across subsets $S$. No real-data study
-with posterior predictive checks is included. Priors are limited to factorized distributions with
-tractable marginal CDFs, the class the probit map \eqref{eq:probit} covers; correlated priors would
-require a different normalization, and priors with atoms at zero, which would admit a
-sparse-coefficient variant of the polynomial-drift system, are a planned extension. Finally, the
-two hardest systems are not yet at reference quality: Hodgkin--Huxley is still improving at the
-largest model size, and the Lotka--Volterra residual is not explained by capacity
-(Sec.~\ref{sec:summary}), the clearest open problem in the suite.
+\paragraph{Limitations.} Bayesian experimental design, the intended consumer of design amortization,
+is not demonstrated yet. The training procedure of Sec.~\ref{sec:recipe} makes the required object
+$p(m \mid S)$ coherent across subsets $S$. No real-data study with posterior predictive checks is
+included. Priors are limited to factorized distributions with tractable marginal CDFs, the class the
+probit map \eqref{eq:probit} covers. Correlated priors need a different normalization. Priors with atoms
+at zero, which would admit a sparse-coefficient variant of the polynomial-drift system, are a planned
+extension. The two hardest systems are not at reference quality. Hodgkin--Huxley still improves at the
+largest model size. Capacity does not explain the Lotka--Volterra residual (Sec.~\ref{sec:summary}).
+That residual is the clearest open problem in the suite. One more limitation concerns the sampler. The
+uniform time grid of these measurements does not resolve posteriors much narrower than the prior
+(Sec.~\ref{sec:recipe}). The numbers of this report are not affected, because the posteriors of the suite are wide enough.
+Numbers on sharper problems measured with that grid are lower bounds on the quality of the model.
 
 \appendix
 
@@ -1160,23 +1149,23 @@ largest model size, and the Lotka--Volterra residual is not explained by capacit
 \paragraph{Controls.}
 \label{sec:baselines-tiers}
 Two model-free controls accompany every result. The \emph{prior-mean predictor} ignores the data
-entirely (exactly $25\%$ mean absolute error under a uniform prior). The \emph{ridge control} is a
-point predictor of the parameters: a degree-2 ridge regression on generic summary statistics of the
-token set: per token feature, the mean, standard deviation, mean square, mean absolute value, and
-the $0.1/0.5/0.9$ quantiles, computed over however many observations are present. It recovers no
-distribution and is not meant to; its role is to detect a specific silent failure that the calibration
-screen cannot see: a posterior that ignores the data and returns the prior passes SBC perfectly, and
-only a point-accuracy control unmasks it.
+(exactly $25\%$ mean absolute error under a uniform prior). The \emph{ridge control} is a point
+predictor of the parameters: a degree-2 ridge regression on generic summary statistics of the token
+set. Per token feature it uses the mean, the standard deviation, the mean square, the mean absolute
+value and the $0.1/0.5/0.9$ quantiles. These are computed over the observations that are present. It recovers no
+distribution and is not meant to. Its role is to detect one silent failure that the calibration screen
+cannot see. A posterior that ignores the data and returns the prior passes SBC perfectly. Only a
+point-accuracy control unmasks it.
 
 \paragraph{Calibration of the fixed-grid gallery.}
 
-Per-parameter SBC $p$-values for the standard-budget gallery run ($40{,}000$ simulations) are
-listed in Table~\ref{tab:pvals}. The protocol: for each system, 500 synthetic observation sets are
-simulated with known parameters; for each observation set the model produces 200 posterior draws,
-and the rank of the true parameter among the draws is recorded. A calibrated posterior yields
-uniform ranks, and each $p$-value tests this uniformity for one parameter. All parameters pass
-except Cox--Ingersoll--Ross $b$, whose deviation corresponds to an $\approx 0.15$~sd location shift
-of the posterior in $b$, the largest calibration deviation in the gallery.
+Table~\ref{tab:pvals} lists the per-parameter SBC $p$-values of the standard-budget gallery run
+($40{,}000$ simulations). The protocol: for each system, 500 synthetic observation sets are simulated
+with known parameters. For each observation set the model gives 200 posterior draws, and the rank of
+the true parameter among the draws is recorded. A calibrated posterior gives uniform ranks. Each
+$p$-value tests this uniformity for one parameter. All parameters pass except Cox--Ingersoll--Ross $b$.
+Its deviation corresponds to a location shift of the posterior in $b$ of $\approx 0.15$~sd, the largest
+calibration deviation in the gallery.
 
 \begin{table}[t]
 \centering
@@ -1197,20 +1186,20 @@ polynomial-drift SDE & $c_0$: 0.06 \quad $c_1$: 0.96 \quad $c_2$: 0.46 \quad $c_
 \bottomrule
 \end{tabular}
 \caption{Per-parameter SBC uniformity $p$-values for the standard-budget fixed-design gallery run
-(500 observation sets $\times$ 200 draws; $p > 0.05$ passes). The single failure is marked in
-bold.}
+(500 observation sets $\times$ 200 draws; $p > 0.05$ passes). The single failure is in bold.}
 \label{tab:pvals}
 \end{table}
 
 \section{Optimizer and stopping-rule measurements}
 \label{app:optmeas}
 
-\paragraph{Setup.} Every number in this appendix comes from one configuration, so that only the
-optimizer variables change: the design-amortized GBM system, the big model ($2.3$M parameters), and
-scoring by $\FIDsd$ against the exact conjugate reference on a fixed six-bucket evaluation set (design sizes
-$K = 2, 5, 10, 20, 50, 95$; $32$ observation sets per bucket; two-chain floors $0.0012$--$0.0019$).
-Reported values are means over the six buckets. Each training run occupies one H200 GPU; several
-comparisons hold the example budget (batch $\times$ steps) fixed on purpose, and state it.
+\paragraph{Setup.} Every number in this appendix comes from one configuration, so that only the optimizer variables
+change. The system is the design-amortized GBM. The model is the big one ($2.3$M parameters). The score
+is $\FIDsd$ against the exact conjugate reference on a fixed six-bucket evaluation set. The design
+sizes are $K = 2, 5, 10, 20, 50, 95$, with $32$ observation sets per bucket and two-chain floors of
+$0.0012$--$0.0019$. Reported values are means over the six buckets. Each training run occupies one
+H200 GPU. Several comparisons hold the example budget (batch $\times$ steps) fixed on purpose and say
+so.
 
 \paragraph{Step size at the reference batch.} At batch $512$ and $9{,}000$ steps ($4.6$M examples):
 
@@ -1225,88 +1214,83 @@ $\FIDsd$ & $0.0133$ & $0.0070$ & $0.0065$ & $0.0061$ & $0.0085$ & diverges \\
 \end{tabular}
 \end{center}
 
-The basin is broad and shallow between $3\times10^{-3}$ and $10^{-2}$, and the edge beyond it is
-hard. The default sits at $10^{-2}$.
+The basin is broad and shallow between $3\times10^{-3}$ and $10^{-2}$. The edge beyond it is hard.
+The package value is $10^{-2}$.
 
-\paragraph{Scaling with batch size.} Repeating the sweep at batches $64$, $2{,}048$, and $8{,}192$
-(example budget fixed within each comparison) locates the optimum at $3.5\times10^{-3}$, $10^{-2}$
-(flat to $2\times10^{-2}$), and $2\times10^{-2}$ respectively. From batch 64 to 512 the optimum
-moves by $\times2.82$ against $\times2.83$ predicted by $\sqrt{B}$; the fourth-root alternative is
-excluded rather than disfavored, since its prediction costs $0.0079$ against $0.0066$ at batch 64.
-Past batch ${\sim}2{,}048$ the optimum stops moving: at $8{,}192$ the square root would extrapolate
-to $4\times10^{-2}$, which scores worse than the capped $2\times10^{-2}$ ($0.0060$ against
-$0.0052$), and twice the extrapolation diverges. Hence the default rule of Sec.~\ref{sec:recipe}:
+\paragraph{Scaling with batch size.} We repeated the sweep at batches $64$, $2{,}048$ and $8{,}192$,
+with the example budget fixed within each comparison. The optimum is at $3.5\times10^{-3}$, $10^{-2}$
+(flat to $2\times10^{-2}$) and $2\times10^{-2}$. From batch 64 to 512 the optimum moves by
+$\times2.82$, against $\times2.83$ predicted by $\sqrt{B}$. The fourth-root alternative is excluded,
+not only disfavored: its prediction costs $0.0079$ against $0.0066$ at batch 64. Past batch
+${\sim}2{,}048$ the optimum stops moving. At $8{,}192$ the square root would extrapolate to
+$4\times10^{-2}$, which scores worse than the capped $2\times10^{-2}$ ($0.0060$ against $0.0052$),
+and twice the extrapolation diverges. Hence the rule of Sec.~\ref{sec:recipe}:
 $\eta(B) = \min\bigl(10^{-2}\sqrt{B/512},\ 2\times10^{-2}\bigr)$, square root below the critical
 batch, constant above it.
 
-\paragraph{Transfer across width.} At batch 512 and fixed budget, the step $10^{-2}$ against the
-hotter $2\times10^{-2}$ across three widths: tiny $0.0089$ vs $0.0087$, small $0.0066$ vs $0.0076$,
-big $0.0061$ vs $0.0085$. At the hotter step accuracy is non-monotone in model size (big worse than
-small); at the step given by the rule it is ordered by capacity. ``Wider is worse'' can therefore be
-a statement about one number inside the optimizer rather than about capacity.
+\paragraph{Transfer across width.} At batch 512 and fixed budget, we compare the step $10^{-2}$ with the hotter $2\times10^{-2}$ across
+three widths. The results are tiny $0.0089$ vs $0.0087$, small $0.0066$ vs $0.0076$, big $0.0061$ vs
+$0.0085$. At the hotter step the accuracy is non-monotone in model size (big is worse
+than small). At the step of the rule the accuracy follows the capacity. ``Wider is worse'' can
+therefore be a statement about one number inside the optimizer and not about capacity.
 
 \paragraph{Steps against examples.} At a fixed budget of $9.2$M examples, batch $512 \times 18{,}000$
-steps reads $0.0051$, batch $2{,}048 \times 4{,}500$ reads $0.0045$, and batch $8{,}192 \times
-1{,}125$ collapses to $0.0076$; at the same batch and step size, doubling the steps to $2{,}020$
-recovers $0.0060$. Above a step floor the example budget governs quality; below it no example budget helps. The
-floor is per-system and spans an order of magnitude: the pharmacokinetic validation curve reaches its
-optimum near $66{,}000$ steps at batch 512, where GBM's shows no interior optimum up to
-$36{,}000$; this fact motivates validated stopping in place of per-system budgets.
+steps reads $0.0051$, batch $2{,}048 \times 4{,}500$ reads $0.0045$, and batch $8{,}192 \times 1{,}125$
+collapses to $0.0076$. At the same batch and step size, twice the steps ($2{,}020$) recovers
+$0.0060$. Above a step floor the example budget governs the quality. Below it no example budget helps.
+The floor is per-system and spans an order of magnitude. The pharmacokinetic validation curve
+reaches its optimum near $66{,}000$ steps at batch 512. The GBM curve shows no interior optimum up to
+$36{,}000$. This fact motivates validated stopping in place of per-system budgets.
 
-\paragraph{Validated stopping.} The monitor's resolution must be evaluated at the monitor's own
-sample count: the GBM validation set resolves $0.0013$ at $4{,}000$ draws but only $0.0044$ at
-$1{,}000$. Both failure modes of the naive keep-the-best rule were measured before the margin was
-adopted. A monitor coarser than its model ships the deepest noise dip: $0.0053$ on test against
-$0.0040$ for the final weights. A resolving monitor still ships $0.0052$, because under a cosine
-schedule mid-run checkpoints are systematically inflated, and an argmin over the whole curve mistakes
-that for a reversal. The margin rule (accept the best checkpoint only when it improves on the final
-weights by more than the monitor's resolution) passes both cases, and a genuine late reversal
-clears it by an order of magnitude: on pharmacokinetics the validation curve turns from $0.1066$ at
-step $66{,}222$ to $0.1321$ at $72{,}072$, twenty floors, and the selected checkpoint recovers the
-difference.
+\paragraph{Validated stopping.} The resolution of the monitor must be evaluated at the sample count of
+the monitor itself. The GBM validation set resolves $0.0013$ at $4{,}000$ draws but only $0.0044$ at
+$1{,}000$. We measured both failure modes of the naive keep-the-best rule before we adopted the margin.
+A monitor coarser than its model ships the deepest noise dip: $0.0053$ on test against $0.0040$ for
+the final weights. A resolving monitor still ships $0.0052$. Under a cosine schedule the mid-run checkpoints are
+systematically inflated, and an argmin over the whole curve mistakes that for a reversal. The margin rule accepts the best checkpoint only when it improves on the final weights by
+more than the resolution of the monitor. It passes both cases. A genuine late reversal clears it by an order of magnitude. On pharmacokinetics the validation
+curve turns from $0.1066$ at step $66{,}222$ to $0.1321$ at $72{,}072$, which is twenty floors. The
+selected checkpoint recovers the difference.
 
 \section{Reference posteriors}
 \label{app:refs}
 
 \paragraph{GBM conjugate posterior.} With observations at indices $i_0 = 0 < i_1 < \dots$ of the fine
-grid, log-returns $r_k = \log(S_{i_{k+1}}/S_{i_k})$ over gaps $\tau_k$ are independent
+grid, the log-returns $r_k = \log(S_{i_{k+1}}/S_{i_k})$ over gaps $\tau_k$ are independent
 $\N\bigl((\mu - \sigma^2/2)\tau_k, \sigma^2 \tau_k\bigr)$. In the coordinates
 $(b, \sigma^2) = (\mu - \sigma^2/2, \sigma^2)$ the model is a Gaussian location--scale family with
-sufficient statistics $T = \sum_k \tau_k$, $R_1 = \sum_k r_k$, and
-$SS_w = \sum_k r_k^2 / \tau_k - R_1^2 / T$; draws from the standard conjugate posterior
+sufficient statistics $T = \sum_k \tau_k$, $R_1 = \sum_k r_k$ and
+$SS_w = \sum_k r_k^2 / \tau_k - R_1^2 / T$. Draws from the standard conjugate posterior
 ($\sigma^2 = SS_w / \chi^2_{n-1}$, $b \mid \sigma^2 \sim \N(R_1/T, \sigma^2/T)$) are transformed to
-$(\mu, \sigma)$ and importance-resampled to the uniform box prior with the appropriate Jacobian weight.
-The sampler was validated against exact-likelihood MCMC on the same designs: over 24 comparisons, worst
-posterior-mean discrepancy $0.099$~sd, width ratios $0.91$--$1.03$.
+$(\mu, \sigma)$ and importance-resampled to the uniform box prior with the Jacobian weight. We validated the sampler against exact-likelihood MCMC on the same designs. Over 24 comparisons, the
+worst posterior-mean discrepancy is $0.099$~sd and the width ratios are $0.91$--$1.03$.
 
-\paragraph{Adaptive Metropolis.} Random-walk Metropolis on the box, proposal
-$x' = x + s\,C\,\xi$, $\xi \sim \N(0, I)$. During burn-in (default $\max(500, n/2)$ iterations) the scalar
-$s$ is adapted toward a $0.25$ acceptance rate in blocks of 50 with a decaying Robbins--Monro gain, and
-once sufficient burn-in states are collected the shape $C$ is replaced by the Cholesky factor of the
-empirical covariance rescaled by $2.38/\sqrt{d}$ \citep{haario2001}; adaptation is frozen for the retained
-phase. Out-of-box proposals are rejected, which samples the box-truncated target exactly since the
-proposal is symmetric. Likelihoods: per-gap Euler--Maruyama Gaussian transitions for OU (matching the
-generative process, plus the stationary density of $X_0$); the exact GBM log-return density; the
-Poisson-mixture transition density for Merton (truncated at the numerically negligible jump count);
-log-normal residuals around the Bateman curve; a Gaussian observation model around the deterministic PDE
-solve for Fisher--KPP. Every chain used as a reference is paired with a second chain from a
-well-separated start; between-chain posterior-mean discrepancies are reported alongside the results they
-certify.
+\paragraph{Adaptive Metropolis.} Random-walk Metropolis on the box, with proposal
+$x' = x + s\,C\,\xi$, $\xi \sim \N(0, I)$. During burn-in ($\max(500, n/2)$ iterations) the scalar $s$
+adapts toward a $0.25$ acceptance rate in blocks of 50 with a decaying Robbins--Monro gain. Once enough
+burn-in states are collected, the Cholesky factor of the empirical covariance, rescaled by
+$2.38/\sqrt{d}$, replaces the shape $C$ \citep{haario2001}. Adaptation is frozen for the retained
+phase. Out-of-box proposals are rejected, which samples the box-truncated target exactly because the
+proposal is symmetric. The likelihoods are as follows. OU uses per-gap Euler--Maruyama Gaussian transitions, which match
+the generative process, plus the stationary density of $X_0$. GBM uses the exact log-return density.
+Merton uses the Poisson-mixture transition density, truncated at the numerically negligible jump
+count. Pharmacokinetics uses log-normal residuals around the Bateman curve. Fisher--KPP uses a Gaussian
+observation model around the deterministic PDE solve. Every chain used as a reference is paired with a second chain from a
+well-separated start. The between-chain posterior-mean discrepancies are reported next to the results
+they certify.
 
 \paragraph{Nested sampling, SMC, and particle-filter likelihoods.} FitzHugh--Nagumo and
-Hodgkin--Huxley references are drawn with \texttt{dynesty} (static nested sampling; the prior
-transform is the uniform box; \texttt{nlive}${=}1000$; the admission partner runs \texttt{nlive}${=}2000$
-from an independent seed, and the pair must agree below the two-chain threshold of
-Sec.~\ref{sec:refs}). Stochastic Lotka--Volterra and Heston use adaptive tempered SMC
-\citep{delmoral2006}: the inverse-temperature step is chosen at each stage so the effective sample
-size stays at half the population, followed by systematic resampling and random-walk rejuvenation at
-the current temperature; admission is by population doubling ($N$ against $2N$ from independent
-seeds). Their likelihoods are unbiased Monte-Carlo estimates (a Durham--Gallant bridge sampler
-for Lotka--Volterra \citep{durham2002}, a bootstrap particle filter running the simulator's own
-clamped-Euler update for Heston; Sec.~\ref{sec:refs}), at particle counts chosen so the
-estimator's spread at fixed parameters is a fraction of a nat. Double well and polynomial drift use
-the same bridge estimator inside the pseudo-marginal variant \citep{andrieu2010} of the adaptive
-Metropolis sampler above.
+Hodgkin--Huxley references come from \texttt{dynesty} (static nested sampling; the prior transform is
+the uniform box; \texttt{nlive}${=}1000$). The admission partner runs \texttt{nlive}${=}2000$ from an
+independent seed, and the pair must agree below the two-chain threshold of Sec.~\ref{sec:refs}.
+Stochastic Lotka--Volterra and Heston use adaptive tempered SMC \citep{delmoral2006}. The
+inverse-temperature step is chosen at each stage so that the effective sample size stays at half the
+population. Systematic resampling and random-walk rejuvenation at the current temperature follow.
+Admission is by population doubling ($N$ against $2N$ from independent seeds). Their likelihoods are unbiased Monte-Carlo estimates. Lotka--Volterra uses a Durham--Gallant bridge
+sampler \citep{durham2002}. Heston uses a bootstrap particle filter that runs the clamped-Euler update
+of the simulator itself (Sec.~\ref{sec:refs}). The particle counts keep the spread of the estimator at fixed parameters to a
+fraction of a nat. Double well and polynomial drift use the same bridge estimator inside the
+pseudo-marginal variant \citep{andrieu2010} of the adaptive Metropolis sampler above.
 
 \section{Correspondence with package options}
 \label{app:package}
@@ -1321,9 +1305,11 @@ point tokens & \texttt{embed="wpoint"} \\
 pair tokens + set conditioning & \texttt{embed="wfilm"} \\
 warped values/increments (fixed designs) & \texttt{embed="wbasis"} / \texttt{"wdiff"} \\
 attention phases from physical time & \texttt{rope="time"} \\
+value coordinate of the token (raw or log) & \texttt{DesignProblem.value\_coord}, required \\
 fresh designs each optimizer step & \texttt{fit(retokenize=...)} via \texttt{make\_retokenizer()} \\
 Muon with the batch step law & \texttt{fit(optimizer="muon")}; \texttt{muon\_lr=None} $\to$ the measured law \\
 validated stopping with margin & \texttt{fit(keep\_best=True, monitor\_floor=...)} \\
+sampler steps, scheme and time grid & \texttt{sample(n=, n\_steps=, solver=, t\_grid=)}, all required \\
 evaluation-set resolution at $n$ draws & \texttt{evaluation.floor\_at} \\
 variable-design problem wrapper & \texttt{amortix.designs.DesignProblem} \\
 benchmark systems & \texttt{amortix.problems} (\texttt{DESIGN\_ZOO}) \\
@@ -1333,8 +1319,11 @@ reference machinery & \texttt{amortix.mcmc}, \texttt{.smc}, \texttt{.bridgelik},
 \end{tabular}
 \end{center}
 
-All defaults named in this report are selected automatically by \texttt{FlowPosterior(problem)}; the
-non-default options are retained as reproducible controls.
+\texttt{FlowPosterior(problem)} selects the embedding and the attention phases from the problem class.
+The settings that decide the result of a sampling call have no default values. The number of draws,
+the number of ODE steps, the scheme and the time grid are named in every call. The coordinate of the
+observed value is declared by the problem class. The non-default architecture options stay in the
+package as reproducible controls.
 
 \clearpage
 \setlength{\bibsep}{0.9pt plus 0.2ex}
